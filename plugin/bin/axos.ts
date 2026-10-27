@@ -342,7 +342,8 @@ function write(msg: unknown): void {
 
 function currentIdentity(): Identity | null {
   const sf = sessionOfParent();
-  return identity(sf?.sessionId ?? process.env.CLAUDE_CODE_SESSION_ID, sf?.cwd ?? process.env.CLAUDE_PROJECT_DIR, sf?.name);
+  // Clients other than Claude Code (a Codex wrapper) name their session with AXOS_SESSION_NAME.
+  return identity(sf?.sessionId ?? process.env.CLAUDE_CODE_SESSION_ID, sf?.cwd ?? process.env.CLAUDE_PROJECT_DIR, sf?.name ?? process.env.AXOS_SESSION_NAME);
 }
 
 async function forward(id: Identity, msg: { id?: unknown; method?: string }): Promise<void> {

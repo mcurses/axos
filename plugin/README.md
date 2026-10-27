@@ -101,6 +101,21 @@ ls -t ~/.codex/sessions/*/*/*/*.jsonl | head -1          # the newest session; i
 axos codex-bell --thread <that id> --session codex-<machine>-<repo>
 ```
 
+Codex can also reach the hub through this plugin's stdio proxy, with a small wrapper as its MCP command. Pin the
+session there rather than deriving it from Codex: Codex starts MCP servers before its thread exists, so the thread id is
+not known yet. The proxy reads the token from `~/.config/axos/token` itself.
+
+```sh
+#!/bin/sh
+# ~/.config/axos/codex-mcp.sh, in ~/.codex/config.toml as: [mcp_servers.axos] command = "<this file>"
+export CLAUDE_CODE_SESSION_ID=codex-<machine>-<repo>   # fixed; the first 8 characters are the hub's session key
+export AXOS_SESSION_NAME=codex-<repo>                  # how the session shows in presence
+export CLAUDE_PROJECT_DIR="$PWD"
+exec bun <plugin>/bin/axos.ts mcp
+```
+
+The thread id for `codex-bell` is then `$CODEX_THREAD_ID`, which Codex sets in the shell of its own tools.
+
 When a message arrives for that session, the bridge runs `codex queue`, which starts a turn in the idle Codex with a
 fixed line telling it to read its inbox; Codex then reads the message through its AXOS tools. Messages in quick
 succession make one nudge. No message text passes through the bridge. Stop it with Ctrl-C when you close Codex.

@@ -552,6 +552,27 @@ test("axos codex-bell: a message to the Codex session queues one nudge into Code
   }
 }, 20_000);
 
+test("the stdio proxy outside Claude Code: a wrapper's fixed session id and AXOS_SESSION_NAME name the session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "axos-proxy-"));
+  writeFileSync(join(dir, "token"), `${tokens.dev3}\n`);
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ url: base, token_file: join(dir, "token"), folders: [{ path: dir, project: "alice/shop" }] }));
+  const proxy = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), "mcp"], {
+    cwd: dir, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, AXOS_CONFIG: join(dir, "config.json"), CLAUDE_CODE_SESSION_ID: "codexsep-shop", CLAUDE_PROJECT_DIR: dir, AXOS_SESSION_NAME: "codex-shop" },
+  });
+  try {
+    proxy.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "presence", arguments: {} } })}\n`);
+    proxy.stdin.flush();
+    const reader = proxy.stdout.getReader();
+    let out = "";
+    while (!out.includes("\n")) out += new TextDecoder().decode((await reader.read()).value);
+    expect(out).toContain("codex-shop (alice/dev3#codexsep, ");
+  } finally {
+    proxy.kill();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the landing route needs a token and a project the agent is in", async () => {
   const post = (body: unknown, token?: string) => fetch(`${base}/api/landed`, {
     method: "POST", body: JSON.stringify(body), headers: token ? { Authorization: `Bearer ${token}` } : {},
