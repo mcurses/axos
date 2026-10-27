@@ -121,18 +121,30 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
   if (raw.length > 65_536) return json({ error: "hook body too large" }, 413);
   let parsed: unknown = {};
   try { parsed = JSON.parse(raw || "{}") ?? {}; } catch { return json({ error: "hook body is not JSON" }, 400); }
-  const body = parsed as { event?: string; roles?: (string | { role: string; reason?: string; description?: string })[]; roles_managed?: boolean };
+  const body = parsed as { event?: string; stop?: boolean; roles?: (string | { role: string; reason?: string; description?: string })[]; roles_managed?: boolean };
   const session = conn.session;
   const actor = { id: agent.id, session };
   const rolesOf = (sender: string, p: string) => hub.rolesHeldBy(sender, p);
   const nameOf = (sender: string) => sender.startsWith("session:") ? hub.session(sender.slice(8))?.name ?? null : null;
   const pending = () => {
-    const items = hub.takeUnshown(hub.mailboxes(actor), 10);
+    let items = hub.inbox(hub.mailboxes(actor), { unshownOnly: true, limit: 10 });
+    // At the end of a turn, a message in a conversation the session has answered since does not hold it back; it is
+    // shown with the next prompt instead.
+    if (body.stop) {
+      const old = hub.superseded(session, items);
+      items = items.filter((m) => !old.has(m.id));
+    }
+    hub.markShown(hub.mailboxes(actor), items.map((m) => m.id));
     if (!items.length) return "";
     const left = hub.unreadCount(hub.mailboxes(actor)) - items.length;
     // Whole bodies up to a few KB, so a message is actionable without a second call. A long body from another
     // person's agent is not put into the session's context unasked; the session reads it deliberately, with thread.
+    // Repeats: of several messages from one sender in one thread, only the newest keeps its body.
+    const newest = new Map<string, number>();
+    for (const m of items) newest.set(`${m.sender}|${m.thread ?? m.id}`, m.id);
     const previews = items.map((m) => {
+      const last = newest.get(`${m.sender}|${m.thread ?? m.id}`)!;
+      if (last !== m.id && m.body) return { ...m, body: `[body left out: message ${last} from the same sender in this thread follows]` };
       const foreign = !!m.sender_human && m.sender_human !== agent.human && !m.sender.startsWith("human:");
       if (foreign && m.body.length > FOREIGN) {
         return { ...m, body: `[${m.body.length}-character body from ${m.sender_human}'s agent; another person's long text is read on request: axos thread ${m.id}]` };
@@ -316,7 +328,7 @@ export function makeFetch(hub: Hub) {
     if (path === "/api/join") return handleJoin(hub, req);
     const join = /^\/join\/(axosinv_[A-Za-z0-9_-]+)$/.exec(path);
     if (join) return handleJoinPage(hub, url, join[1]!);
-    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami") {
+    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/unshown") {
       const token = bearer(req);
       const agent = token ? hub.authenticateAgent(token) : null;
       if (!agent) return unauthorized();
@@ -331,6 +343,12 @@ export function makeFetch(hub: Hub) {
       if (path === "/api/hook") return handleHook(hub, req, agent, conn);
       if (path === "/api/landed") return handleLanded(hub, req, agent, conn);
       if (path === "/api/whoami") return handleWhoami(hub, req, url, agent);
+      if (path === "/api/unshown") {
+        // For a doorbell deciding whether a ring is still news: what waits that no hook has shown yet.
+        if (!conn.session) return json({ error: "x-axos-session header is required" }, 400);
+        const boxes = hub.mailboxes({ id: agent.id, session: conn.session });
+        return json({ unshown: hub.unshownCount(boxes), unread: hub.unreadCount(boxes) });
+      }
       return handleMcp(hub, req, agent, conn);
     }
     if (path.startsWith("/a/")) return handleAnswerLink(hub, req, path);

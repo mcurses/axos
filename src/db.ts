@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
   via           TEXT NOT NULL,                 -- the address that matched
   acked_at      INTEGER,
   shown_at      INTEGER,                       -- put into a session's context by a hook
+  outcome       TEXT,                          -- what the reader said when acking: done | declined | forwarded | noted
   PRIMARY KEY (message_id, recipient)
 );
 CREATE INDEX IF NOT EXISTS deliveries_unread ON deliveries(recipient, acked_at);
@@ -230,6 +231,7 @@ function migrate(db: Database): void {
   }
   const deliveries = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'deliveries'").get() as { sql: string } | null;
   if (deliveries && !deliveries.sql.includes("shown_at")) db.exec("ALTER TABLE deliveries ADD COLUMN shown_at INTEGER");
+  if (deliveries && !deliveries.sql.includes("outcome")) db.exec("ALTER TABLE deliveries ADD COLUMN outcome TEXT");
   const messages = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get() as { sql: string } | null;
   if (messages && !messages.sql.includes("sender_human")) db.exec("ALTER TABLE messages ADD COLUMN sender_human TEXT");
   const leases = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'leases'").get() as { sql: string } | null;

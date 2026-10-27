@@ -25,7 +25,7 @@ export type RolesOf = (sender: string, project: string) => string[];
 // nameOf: the harness's name for a sending session (e.g. shop-5c), so a reader can tell sessions apart.
 export type NameOf = (sender: string) => string | null;
 
-export function renderMessage(m: MessageRow | InboxItem, rolesOf?: RolesOf, nameOf?: NameOf): string {
+export function renderMessage(m: (MessageRow | InboxItem) & { receipts?: string }, rolesOf?: RolesOf, nameOf?: NameOf): string {
   const roles = rolesOf?.(m.sender, m.project) ?? [];
   const name = nameOf?.(m.sender) ?? null;
   const attrs = [
@@ -42,12 +42,13 @@ export function renderMessage(m: MessageRow | InboxItem, rolesOf?: RolesOf, name
     m.thread !== null ? `thread="${m.thread}"` : "",
     m.as_of ? `as-of="${attr(m.as_of)}"` : "",
     `sent="${iso(m.created_at)}"`,
+    m.receipts ? `receipts="${attr(m.receipts)}"` : "",
   ].filter(Boolean).join(" ");
   const body = m.body ? `\n${defang(m.body)}` : "";
   return `<axos-message ${attrs}>\nsummary: ${defang(m.summary)}${body}\n</axos-message>`;
 }
 
-export function renderMessages(items: (MessageRow | InboxItem)[], header: string, rolesOf?: RolesOf, nameOf?: NameOf, note = FRAME_NOTE): string {
+export function renderMessages(items: ((MessageRow | InboxItem) & { receipts?: string })[], header: string, rolesOf?: RolesOf, nameOf?: NameOf, note = FRAME_NOTE): string {
   if (!items.length) return header;
   return `${header}\n${note}\n\n${items.map((m) => renderMessage(m, rolesOf, nameOf)).join("\n\n")}`;
 }

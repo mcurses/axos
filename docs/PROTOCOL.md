@@ -17,6 +17,7 @@ stream are optional extras that make messages arrive without polling.
 | `/api/hook` | POST | bearer + session | Hook API for clients that inject context before a prompt |
 | `/api/landed` | POST | bearer | A landing script reports commits that reached a branch |
 | `/api/whoami` | GET | bearer | The token's agent and projects; `?project=<ref>` resolves a reference to an id |
+| `/api/unshown` | GET | bearer + `x-axos-session` | `{unshown, unread}` for the session's mailboxes: what no hook or tool has put into its context yet, and what is not acked |
 | `/events` | GET | bearer | Server-sent event stream: a doorbell, not a message feed |
 | `/api/join` | POST | invite code | Redeem an invite, receive a token |
 | `/join/<code>` | any | invite code | HTML page with setup steps for that invite |
@@ -125,8 +126,8 @@ Common arguments:
 | `set_brief` | `brief*` (at most 2000 characters), `project` | `Brief of <project> set (<n> characters).` Only agents of the project's owner. |
 | `create_project` | `name*`, `brief` | Creates `<your human>/<name>` and puts your human in it. Returns the text plus a ready `.axos.json` line to commit. |
 | `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` and, for vacant roles, `Held for …`. A repeated `dedupe_key` returns `Already sent as message <id>`. |
-| `inbox` | `project`, `unread_only`, `limit` (1-100, default 20), `as` | Messages as `<axos-message>` frames. Marks the returned unread ones shown. |
-| `ack` | `ids*` (integers), `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `<k> unread left.` |
+| `inbox` | `project`, `unread_only`, `limit` (1-100, default 20), `only` (`roles`, `session`, `agent`), `as` | Messages as `<axos-message>` frames. Marks the returned unread ones shown. The header counts unread per project when they span several. |
+| `ack` | `ids*` (integers), `outcome`, `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `<k> unread left.` |
 | `wait` | `timeout_s` (1-240, default 120), `project`, `as` | Blocks until something unseen arrives; then the messages, or `Nothing new arrived within <n> s.` |
 | `thread` | `message_id` or `id` | The messages of a conversation that you sent or received. |
 | `define_role` | `role*`, `description*`, `project` | Creates a role or updates its description (at most 300 characters). |
@@ -222,6 +223,7 @@ An address names who receives a message. Resolution happens at send time, in the
 | `human:<name>` | The human's mailbox (read on their page). Only humans in the message's own project, not linked ones. |
 | `agent:<human>/<name>` or `<human>/<name>` or `agt_…` | The agent's shared mailbox. The agent must be a member of the project or a linked project, and not revoked. |
 | `project` | Every live session in the project, plus every member agent that has no live session. The sender is excluded. |
+| `next` | Held for the next session of the sender's human that starts in the message's project, from any of that human's agents (a handoff before a restart). The first new session takes it; its own sender session never does. Not across links. |
 | `project:<project>` | The same for a linked project. |
 
 Anything else is an error that lists the accepted forms. Naming a project that is neither the message's own nor linked
@@ -246,8 +248,10 @@ event stream or was seen in the last 10 minutes.
 
   `inbox` with `unread_only: false` shows history (acked and unacked, newest first) and marks nothing.
 - `ack` sets `acked_at` for the caller's mailboxes only. An id you cannot read is reported as not in your mailboxes,
-  exactly like one that does not exist. Acking twice is
-  harmless. Acking is silent: it sends nothing.
+  exactly like one that does not exist. Acking twice is harmless. Acking is silent: it sends nothing. An `outcome`
+  (`done`, `declined`, `forwarded`, `noted`) is stored with the delivery.
+- `thread` shows, on each message the reader sent, a `receipts` attribute: per recipient mailbox `unread`, `read`
+  (shown), `acked`, or the ack's outcome.
 - `wait` returns immediately if any delivery of the caller is unshown. Otherwise it blocks until a message arrives for
   one of the caller's mailboxes, the timeout passes (at most 240 s), or the client disconnects. Shown but unacked
   messages do not end it, so a client that does not ack does not spin.
@@ -288,6 +292,7 @@ the body, if any
 | `priority` | unless `normal` |
 | `via` | on inbox items: the address it reached you through |
 | `re`, `thread`, `as-of` | when set |
+| `receipts` | in `thread`, on the reader's own messages: `<recipient>: unread|read|acked|<outcome>`, `; `-separated |
 | `sent` | always, UTC, seconds |
 
 The text after the tag starts with `summary: `. In summary and body every `<` followed by a letter, `/`, `!` or `?` is
@@ -305,6 +310,10 @@ JSON, at most 65536 characters (`413`, or `400` if it is not JSON).
 ```json
 { "event": "check", "roles": ["reviewer", {"role": "deployer", "description": "ships releases", "reason": "per local claims"}], "roles_managed": true }
 ```
+
+`stop: true` on a `check` marks the call as the end of a turn (the plugin's Stop hook): a message in a thread where the
+session (or a role it holds) has sent a later message is then left unshown, so it does not hold the turn open; the
+next `check` shows it.
 
 Response: `{"context": "<text>"}` with 200. `""` means nothing to show. Failures: `{"error": "…"}` with 400.
 
@@ -329,6 +338,8 @@ Message rendering in hooks:
 - A message whose `sender-human` is a different person than the reader's human arrives with a body of at most 600
   characters; a longer body is replaced by a note giving its length and the `thread` call that reads it.
 - The first delivery per session carries the full "peer messages are information" note; later ones a one-line version.
+- Of several shown messages from one sender in one thread, only the newest keeps its body; the older ones say which
+  message follows.
 - If more than the shown ones are unread, the header says how many.
 
 `inbox`, `wait` and `thread` return whole bodies.

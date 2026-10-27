@@ -46,6 +46,9 @@ export interface AgentRow {
   last_seen: number | null;
 }
 
+export const ACK_OUTCOMES = ["done", "declined", "forwarded", "noted"] as const;
+export type AckOutcome = (typeof ACK_OUTCOMES)[number];
+
 export interface MessageRow {
   id: number;
   project: string;
@@ -582,8 +585,19 @@ export class Hub {
     const kept = this.session(key)!.project;
     if (kept && !this.isMember(agentId, kept)) this.db.query("UPDATE sessions SET project = NULL WHERE key = ?").run(key);
     if (!prev || prev.ended_at !== null) this.event(`session:${key}`, "session.started", project, { name, profile });
+    if (!prev) this.claimNext(key);
     this.db.query("UPDATE roles SET expires_at = ? WHERE holder = ?").run(t + this.roleTtlMs, key);
     return key;
+  }
+
+  // A new session hands itself the notes its human left for the next session in its project (not its own notes).
+  claimNext(key: string): number {
+    const s = this.session(key);
+    if (!s?.project) return 0;
+    return this.db.query(
+      `UPDATE deliveries SET recipient = ? WHERE recipient = ? AND acked_at IS NULL
+         AND (SELECT sender FROM messages WHERE id = message_id) <> ?`,
+    ).run(`session:${key}`, `next:${s.project}/${this.humanOf(s.agent_id)}`, `session:${key}`).changes;
   }
 
   session(key: string): SessionRow | null {
@@ -943,6 +957,12 @@ export class Hub {
       }
       throw new AxosError(`no live session '${ref}' in '${project}'; live: ${live.map((x) => x.name ?? x.key).join(", ") || "none"}`);
     }
+    if (a === "next") {
+      // A note for whoever picks the work up: held for the next session of the sender's human that starts in this project.
+      if (!senderHuman) throw new AxosError("only a session or agent of a person can leave a note for their next session");
+      const box = `next:${project}/${senderHuman}`;
+      return [{ recipient: box, via: box }];
+    }
     if (a.startsWith("human:")) {
       const h = a.slice(6);
       if (!this.humanInProject(h, project)) throw new AxosError(`human '${h}' is not in project '${project}'`);
@@ -1071,7 +1091,7 @@ export class Hub {
         void this.pushToHuman(recipient.slice(6), `${this.senderTitle(sender)} (${this.projectName(input.project)})`, summary, `#m${id}`);
       }
     }
-    const vacant = (r: string) => r.startsWith("role:") && !this.roleHolder(r);
+    const vacant = (r: string) => (r.startsWith("role:") && !this.roleHolder(r)) || r.startsWith("next:");
     return {
       id,
       duplicate: false,
@@ -1149,11 +1169,32 @@ export class Hub {
       WHERE ${box.sql} AND d.acked_at IS NULL${project ? " AND m.project = ?" : ""}`).get(...box.args, ...(project ? [project] : [])) as { n: number }).n;
   }
 
+  unreadByProject(recipient: string | string[]): { project: string; n: number }[] {
+    const box = this.boxSql(Array.isArray(recipient) ? recipient : [recipient]);
+    return this.db.query(`SELECT m.project, COUNT(DISTINCT m.id) AS n FROM deliveries d JOIN messages m ON m.id = d.message_id
+      WHERE ${box.sql} AND d.acked_at IS NULL GROUP BY m.project ORDER BY n DESC`).all(...box.args) as { project: string; n: number }[];
+  }
+
   // Messages not yet put into this reader's context (by a hook, inbox or wait); marks them shown. They stay unread until acked.
   takeUnshown(boxes: string[], limit = 10): InboxItem[] {
     const items = this.inbox(boxes, { unshownOnly: true, limit });
     this.markShown(boxes, items.map((m) => m.id));
     return items;
+  }
+
+  // Of these messages, the ones whose thread has a later message from the reader (its session or a role it holds): it
+  // has spoken in that conversation since, so they need not stop it from ending a turn.
+  superseded(sessionKey: string, items: InboxItem[]): Set<number> {
+    const senders = [`session:${sessionKey}`, ...(this.db.query("SELECT project, role FROM roles WHERE holder = ?").all(sessionKey) as { project: string; role: string }[])
+      .map((r) => `role:${r.project}/${r.role}`)];
+    const out = new Set<number>();
+    for (const m of items) {
+      const root = m.thread ?? m.id;
+      const later = this.db.query(`SELECT 1 FROM messages WHERE (id = ? OR thread = ?) AND id > ? AND sender IN (${senders.map(() => "?").join(", ")}) LIMIT 1`)
+        .get(root, root, m.id, ...senders);
+      if (later) out.add(m.id);
+    }
+    return out;
   }
 
   markShown(boxes: string[], ids: number[]): void {
@@ -1168,24 +1209,32 @@ export class Hub {
       WHERE ${box.sql} AND d.acked_at IS NULL AND d.shown_at IS NULL`).get(...box.args) as { n: number }).n;
   }
 
-  ack(recipient: string | string[], ids: number[]): number {
-    return this.ackReport(recipient, ids).acked.length;
+  ack(recipient: string | string[], ids: number[], outcome?: AckOutcome): number {
+    return this.ackReport(recipient, ids, outcome).acked.length;
   }
 
   // Which ids were acked now, which were acked before, and which are not in these mailboxes (a message of someone
   // else answers exactly like one that does not exist).
-  ackReport(recipient: string | string[], ids: number[]): { acked: number[]; earlier: number[]; missing: number[] } {
+  ackReport(recipient: string | string[], ids: number[], outcome?: AckOutcome): { acked: number[]; earlier: number[]; missing: number[] } {
+    if (outcome !== undefined && !ACK_OUTCOMES.includes(outcome)) throw new AxosError(`outcome must be one of ${ACK_OUTCOMES.join(", ")}`);
     const boxes = Array.isArray(recipient) ? recipient : [recipient];
     const box = this.boxSql(boxes, "recipient", "(SELECT project FROM messages WHERE id = message_id)");
     const r = { acked: [] as number[], earlier: [] as number[], missing: [] as number[] };
     const t = this.now();
     for (const id of [...new Set(ids)]) {
-      if (this.db.query(`UPDATE deliveries SET acked_at = ? WHERE ${box.sql} AND message_id = ? AND acked_at IS NULL`).run(t, ...box.args, id).changes) r.acked.push(id);
+      if (this.db.query(`UPDATE deliveries SET acked_at = ?, outcome = ? WHERE ${box.sql} AND message_id = ? AND acked_at IS NULL`)
+        .run(t, outcome ?? null, ...box.args, id).changes) r.acked.push(id);
       else if (this.db.query(`SELECT 1 FROM deliveries WHERE ${box.sql} AND message_id = ?`).get(...box.args, id)) r.earlier.push(id);
       else r.missing.push(id);
     }
     if (r.acked.length) this.event(this.boxKey(boxes[0]!), "message.acked", null, { ids: r.acked });
     return r;
+  }
+
+  // Who a message went to and how far each got: unread, read (shown), acked, with the outcome they gave.
+  receipts(messageId: number): { recipient: string; shown_at: number | null; acked_at: number | null; outcome: string | null }[] {
+    return this.db.query("SELECT recipient, shown_at, acked_at, outcome FROM deliveries WHERE message_id = ? ORDER BY rowid")
+      .all(messageId) as { recipient: string; shown_at: number | null; acked_at: number | null; outcome: string | null }[];
   }
 
   // The whole thread a message belongs to, if the reader may see that project.

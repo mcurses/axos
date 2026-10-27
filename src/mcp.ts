@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { addr, AxosError, Hub, iso, MESSAGE_TYPES, PRIORITIES, type Actor, type AgentRow } from "./hub.ts";
+import { ACK_OUTCOMES, addr, AxosError, Hub, iso, MESSAGE_TYPES, PRIORITIES, type Actor, type AgentRow } from "./hub.ts";
 import { ago, defang, renderMessages } from "./render.ts";
 import { VERSION } from "./version.ts";
 
@@ -152,7 +152,8 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }));
 
   server.registerTool("send", {
-    description: "Send a message. Addresses: role:<role>, session:<session name>, human:<name>, or project (every live session in the project). " +
+    description: "Send a message. Addresses: role:<role>, session:<session name>, human:<name>, project (every live session in the project), " +
+      "or next (held for the next session of your human that starts in this project: a handoff before a restart). " +
       "A linked project (see join) is reached with role:<project>/<role>, session:<name> or project:<project>. " +
       "A vacant role keeps the message until someone takes it.",
     inputSchema: strict({
@@ -180,7 +181,9 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     if (r.duplicate) return `Already sent as message ${r.id}; not sent again.`;
     const parts = [`Sent message ${r.id} (${body ? `summary and a ${body.length}-character body` : "summary only, no body"}).`];
     if (r.delivered_to.length) parts.push(`Delivered to ${r.delivered_to.map((d) => d.startsWith("session:") ? hub.label(d) : d).join(", ")}.`);
-    if (r.waiting_for_role.length) parts.push(`Held for ${r.waiting_for_role.join(", ")} until someone takes the role.`);
+    const roles = r.waiting_for_role.filter((w) => w.startsWith("role:"));
+    if (roles.length) parts.push(`Held for ${roles.join(", ")} until someone takes the role.`);
+    if (r.waiting_for_role.some((w) => w.startsWith("next:"))) parts.push(`Held for the next session of ${agent.human} that starts in this project.`);
     return parts.join(" ");
   }));
 
@@ -190,17 +193,23 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       project: z.string().optional().describe("Only this project"),
       unread_only: z.boolean().optional().describe("Default true; false shows recent history, newest first"),
       limit: z.number().int().min(1).max(100).optional(),
+      only: z.enum(["roles", "session", "agent"]).optional().describe("Only one kind of mailbox: the roles you hold, this session's own, or your agent's shared one"),
       as: asArg,
     }),
-  }, tool(({ project: name, unread_only, limit, as }) => {
-    const mb = boxes(name, as);
+  }, tool(({ project: name, unread_only, limit, only, as }) => {
+    const all = boxes(name, as);
+    const mb = only ? all.filter((b) => b.startsWith(only === "roles" ? "role:" : `${only}:`)) : all;
+    if (!mb.length) return only === "roles" ? "This session holds no role, so it has no role mail." : `No ${only} mailbox here.`;
     const p = name ? ref(name) : undefined;
     const items = hub.inbox(mb, { project: p, unreadOnly: unread_only, limit });
     if (unread_only ?? true) hub.markShown(mb, items.map((m) => m.id)); // read here, so the next hook does not repeat them
     const unread = hub.unreadCount(mb, p);
     const elsewhere = p ? hub.unreadCount(mb) - unread : 0;
+    // Where the unread mail is, when it spans projects.
+    const spread = !p && unread ? hub.unreadByProject(mb) : [];
     const header = (unread_only ?? true)
-      ? `${unread} unread${p ? ` in ${p}` : ""}${items.length < unread ? `, showing the oldest ${items.length}` : ""}.` +
+      ? `${unread} unread${p ? ` in ${p}` : ""}${spread.length > 1 ? ` (${spread.map((x) => `${x.project}: ${x.n}`).join(", ")})` : ""}` +
+        `${items.length < unread ? `, showing the oldest ${items.length}` : ""}.` +
         `${elsewhere ? ` ${elsewhere} more in other projects.` : ""}${items.length ? " Ack ids when handled." : ""}`
       : `Last ${items.length} messages.`;
     return render(items, header);
@@ -208,10 +217,14 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
 
   server.registerTool("ack", {
     description: "Mark messages as handled so they leave your inbox. Acking is silent; do not send a reply just to confirm receipt.",
-    inputSchema: strict({ ids: z.array(z.number().int()).min(1), project: projectArg, as: asArg }),
-  }, tool(({ ids, project: p, as }) => {
+    inputSchema: strict({
+      ids: z.array(z.number().int()).min(1),
+      outcome: z.enum(ACK_OUTCOMES).optional().describe("What became of it, shown to the sender in thread: done | declined | forwarded | noted"),
+      project: projectArg, as: asArg,
+    }),
+  }, tool(({ ids, outcome, project: p, as }) => {
     const mb = boxes(p, as);
-    const r = hub.ackReport(mb, ids);
+    const r = hub.ackReport(mb, ids, outcome);
     const n = r.acked.length + r.earlier.length + r.missing.length;
     return [
       `Acked ${r.acked.length} of ${n}.`,
@@ -238,7 +251,11 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }, tool(({ message_id, id }) => {
     const m = message_id ?? id;
     if (m === undefined) throw new AxosError("say which message: message_id");
-    return render(hub.thread(actor, m), `Thread of message ${m}:`);
+    // On the reader's own messages: how far each recipient got.
+    const mine = new Set([me, ...boxes().map((b) => hub.boxKey(b)), ...hub.projectsOf(agent.id).flatMap((p) => conn.session ? hub.rolesHeldBy(me, p).map((r) => `role:${p}/${r}`) : [])]);
+    const rows = hub.thread(actor, m).map((row) => mine.has(row.sender) ? { ...row, receipts: hub.receipts(row.id).map((d) =>
+      `${d.recipient.startsWith("session:") ? hub.label(d.recipient) : d.recipient}: ${d.acked_at ? d.outcome ?? "acked" : d.shown_at ? "read" : "unread"}`).join("; ") } : row);
+    return render(rows, `Thread of message ${m}:`);
   }));
 
   server.registerTool("define_role", {

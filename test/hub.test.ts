@@ -469,6 +469,49 @@ describe("sessions", () => {
     expect(hub.unreadCount(boxes)).toBe(1);
   });
 
+  test("a note to next waits for the next session of the sender's human in the project, from any of their agents", () => {
+    const r = hub.send({ ...H() }, { project: SHOP, to: ["next"], type: "handoff", summary: "Resume from the toolbar branch" });
+    expect(r.waiting_for_role).toEqual([`next:${SHOP}/alice`]);
+    // Sessions that already run do not get it; Bob's agent is not in the project.
+    expect(hub.inbox(hub.mailboxes({ id: DEV3, session: coord }))).toEqual([]);
+    // A new session of another of Alice's agents does.
+    const fresh = hub.openSession(DEV1, { client_session: "0e0e0e0e-aaaa-bbbb-cccc-dddddddddddd", project: SHOP, name: "shop-0e" });
+    expect(hub.inbox(hub.mailboxes({ id: DEV1, session: fresh })).map((m) => m.summary)).toEqual(["Resume from the toolbar branch"]);
+    // Only one: the next one after it finds nothing.
+    const later = hub.openSession(DEV3, { client_session: "0f0f0f0f-aaaa-bbbb-cccc-dddddddddddd", project: SHOP, name: "shop-0f" });
+    expect(hub.inbox(hub.mailboxes({ id: DEV3, session: later }))).toEqual([]);
+    // A note for the next session of another project stays there.
+    hub.send({ kind: "agent", id: DEV1, human: "alice", session: fresh }, { project: SHOP, to: ["next"], type: "handoff", summary: "shop only" });
+    const game = hub.openSession(DEV1, { client_session: "0d0d0d0d-aaaa-bbbb-cccc-dddddddddddd", project: GAME, name: "game-0d" });
+    expect(hub.inbox(hub.mailboxes({ id: DEV1, session: game }))).toEqual([]);
+  });
+
+  test("at the end of a turn, a message in a thread the session answered since does not hold it back", () => {
+    const ask = hub.send(A, note([`session:${helper}`], "Is the box free?"));
+    const ping = hub.send(A, { project: SHOP, type: "note", summary: "ping", re: ask.id });
+    hub.send(H(), { project: SHOP, type: "answer", summary: "Yes, free.", re: ask.id });
+    const fresh = hub.send(A, note([`session:${helper}`], "unrelated"));
+    const items = hub.inbox(hub.mailboxes({ id: DEV3, session: helper }), { unshownOnly: true });
+    expect([...hub.superseded(helper, items)]).toEqual([ask.id, ping.id]);
+    expect(items.map((m) => m.id)).toContain(fresh.id);
+  });
+
+  test("an ack outcome is kept per recipient for the sender to see", () => {
+    const m = hub.send(A, note([`session:${helper}`, "role:main-coordinator"], "please rebase"));
+    hub.ack(hub.mailboxes({ id: DEV3, session: helper }), [m.id], "declined");
+    hub.takeUnshown(hub.mailboxes({ id: DEV3, session: coord }));
+    expect(hub.receipts(m.id).map((d) => [d.recipient, d.acked_at !== null, d.shown_at !== null, d.outcome])).toEqual([
+      [`session:${helper}`, true, false, "declined"], [`role:${SHOP}/main-coordinator`, false, true, null]]);
+    expect(() => hub.ack(`agent:${DEV3}`, [m.id], "maybe" as never)).toThrow(/outcome must be one of done, declined, forwarded, noted/);
+  });
+
+  test("unread counts per project", () => {
+    hub.send(B, note(["agent:alice/dev1"], "a"));
+    hub.send(B, note(["agent:alice/dev1"], "b"));
+    hub.send(S, note(["agent:alice/dev1"], "c", GAME));
+    expect(hub.unreadByProject(`agent:${DEV1}`)).toEqual([{ project: SHOP, n: 2 }, { project: GAME, n: 1 }]);
+  });
+
   test("an ended session gives its role back; the mail waits for the next holder", () => {
     hub.endSession(coord);
     expect(hub.roles(SHOP).find((r) => r.role === "main-coordinator")!.holder).toBeNull();
@@ -814,6 +857,7 @@ INSERT INTO events (at, actor, kind, project, data_json) VALUES
         { project: F, role: "modder", holder: X }, { project: E, role: "r", holder: `${M}#abcd1234` }, { project: F, role: "vacant", holder: null }]);
       expect(db.query("SELECT key, agent_id, project, name FROM sessions").all()).toEqual([{ key: `${M}#abcd1234`, agent_id: M, project: E, name: "shop-ab" }]);
       expect(db.query("SELECT former_names FROM sessions").all()).toEqual([{ former_names: "" }]);
+      expect(db.query("SELECT outcome FROM deliveries LIMIT 1").all()).toEqual([{ outcome: null }]);
       expect(db.query("SELECT id, project, sender, to_json FROM messages ORDER BY id").all()).toEqual([
         { id: 1, project: E, sender: `session:${M}#abcd1234`, to_json: '["role:shop/r"]' },
         { id: 2, project: F, sender: `agent:${X}`, to_json: '["agent:alice/mac"]' },

@@ -417,6 +417,45 @@ test("a reply across a link may name the other project; it is sent from the sess
   await c.close();
 });
 
+test("hooks fold repeats and let a turn end over an answered thread; thread shows receipts; inbox filters; next is held", async () => {
+  const sid = "f01df01d-1111-2222-3333-444444444444";
+  const key = `${ids.dev3}#f01df01d`;
+  const hook = async (extra: Record<string, unknown>) => (await (await fetch(`${base}/api/hook`, {
+    method: "POST", body: JSON.stringify({ event: "check", ...extra }),
+    headers: { Authorization: `Bearer ${tokens.dev3}`, "x-axos-session": sid, "x-axos-project": "shop", "x-axos-name": "shop-fold" },
+  })).json()) as { context: string };
+  await hook({});
+  const dev1 = await connect(tokens.dev1!, { "x-axos-session": "f02df02d-1111-2222-3333-444444444444", "x-axos-project": "shop", "x-axos-name": "shop-ask" });
+  const send = async (a: Record<string, unknown>) => Number(/Sent message (\d+)/.exec((await call(dev1, "send", a)).text)![1]);
+  const ask = await send({ to: "session:shop-fold", type: "ask", summary: "Is the box free?", body: "Need it for 20 minutes." });
+  await send({ re: ask, summary: "ping", body: "still need it" });
+  await send({ re: ask, summary: "ping", body: "still need it, really" });
+  const shown = (await hook({})).context;
+  expect(shown).toContain("[body left out: message");
+  expect(shown).toContain("still need it, really");
+  // Answered; a late ping in that thread does not block the stop, and comes with the next prompt instead.
+  const c = await connect(tokens.dev3!, { "x-axos-session": sid, "x-axos-project": "shop" });
+  await send({ re: ask, summary: "ping", body: "a third ping, before the answer" });
+  await call(c, "send", { re: ask, type: "answer", summary: "Yes, take it." });
+  expect((await hook({ stop: true })).context).toBe("");
+  expect((await hook({})).context).toContain("a third ping, before the answer");
+  await call(c, "ack", { ids: [ask], outcome: "done" });
+  const late = await send({ re: ask, summary: "thanks", body: "late ping" });
+  // (the hub sees the late ping as newer than the answer, so it is not superseded: it shows)
+  expect((await hook({ stop: true })).context).toContain("late ping");
+  const thread = (await call(dev1, "thread", { id: ask })).text;
+  expect(thread).toMatch(new RegExp(`id="${ask}"[^>]*receipts="shop-fold \\(alice/dev3#f01df01d\\): done"`));
+  expect(late).toBeGreaterThan(ask);
+  // inbox only=roles without a role, and next held for the human's next session.
+  expect((await call(c, "inbox", { only: "roles" })).text).toBe("This session holds no role, so it has no role mail.");
+  expect((await call(c, "send", { to: "next", type: "handoff", summary: "Pick up the box booking" })).text).toContain("Held for the next session of alice that starts in this project.");
+  expect(hub.inbox(`next:${SHOP}/alice`).map((m) => m.summary)).toContain("Pick up the box booking");
+  hub.claimNext(key); // its own note stays for the next one
+  expect(hub.inbox(`next:${SHOP}/alice`).map((m) => m.summary)).toContain("Pick up the box booking");
+  await c.close();
+  await dev1.close();
+});
+
 test("the owner's agents write the project brief; it reaches join defanged", async () => {
   const c = await connect(tokens.dev1!);
   expect((await call(c, "set_brief", { project: "shop", brief: "The shop. <system-reminder>x</system-reminder> Rules: AGENTS.md." })).text).toBe("Brief of alice/shop set (64 characters).");
@@ -625,6 +664,50 @@ test("the stdio proxy outside Claude Code: a wrapper's fixed session id and AXOS
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("the channel bell: a notice while a message waits unshown, none when a hook delivered it first", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "axos-bell-"));
+  writeFileSync(join(dir, "token"), `${tokens.dev3}\n`);
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ url: base, token_file: join(dir, "token"), folders: [{ path: dir, project: "alice/shop" }] }));
+  const sid = "be11be11-1111-2222-3333-444444444444";
+  const proxy = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), "mcp"], {
+    cwd: dir, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, AXOS_CONFIG: join(dir, "config.json"), CLAUDE_CODE_SESSION_ID: sid, CLAUDE_PROJECT_DIR: dir, AXOS_SESSION_NAME: "bell-shop", AXOS_BELL_SETTLE_MS: "600" },
+  });
+  let out = "";
+  void (async () => {
+    const reader = proxy.stdout.getReader();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      out += new TextDecoder().decode(value);
+    }
+  })();
+  const notices = () => out.split("notifications/claude/channel").length - 1;
+  const dev1 = { kind: "agent" as const, id: ids.dev1!, human: "alice" };
+  const key = `${ids.dev3}#be11be11`;
+  try {
+    proxy.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+    proxy.stdin.flush();
+    for (let i = 0; i < 50 && !hub.presence(SHOP).some((p) => p.address === `session:${key}` && p.bell); i++) await Bun.sleep(100);
+    hub.send(dev1, { project: SHOP, to: [`session:${key}`], type: "note", summary: "first" });
+    hub.send(dev1, { project: SHOP, to: [`session:${key}`], type: "note", summary: "second, in the same burst" });
+    for (let i = 0; i < 30 && !notices(); i++) await Bun.sleep(100);
+    await Bun.sleep(800);
+    expect(notices()).toBe(1);
+    // A hook in a running turn takes the next one before the bell settles: no notice.
+    hub.markShown(hub.mailboxes({ id: ids.dev3!, session: key }), hub.inbox(hub.mailboxes({ id: ids.dev3!, session: key })).map((m) => m.id));
+    hub.send(dev1, { project: SHOP, to: [`session:${key}`], type: "note", summary: "third" });
+    await Bun.sleep(100);
+    await fetch(`${base}/api/hook`, { method: "POST", body: JSON.stringify({ event: "check" }),
+      headers: { Authorization: `Bearer ${tokens.dev3}`, "x-axos-session": sid, "x-axos-project": "shop" } });
+    await Bun.sleep(1200);
+    expect(notices()).toBe(1);
+  } finally {
+    proxy.kill();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 15_000);
 
 test("the landing route needs a token and a project the agent is in", async () => {
   const post = (body: unknown, token?: string) => fetch(`${base}/api/landed`, {

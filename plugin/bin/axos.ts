@@ -271,11 +271,11 @@ function headers(id: Identity): Record<string, string> {
   return h;
 }
 
-async function hookCall(id: Identity, event: string): Promise<{ context?: string; error?: string }> {
+async function hookCall(id: Identity, event: string, stop = false): Promise<{ context?: string; error?: string }> {
   const res = await fetch(`${id.c.url.replace(/\/$/, "")}/api/hook`, {
     method: "POST",
     headers: { ...headers(id), "Content-Type": "application/json" },
-    body: JSON.stringify({ event, roles: id.roles ?? undefined, roles_managed: id.roles !== null }),
+    body: JSON.stringify({ event, stop: stop || undefined, roles: id.roles ?? undefined, roles_managed: id.roles !== null }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   if (res.status === 401) return { error: "token" };
@@ -334,7 +334,7 @@ async function hook(kind: string): Promise<void> {
   if (kind === "stop" && input.stop_hook_active) return;
   let context = "";
   try {
-    const r = await hookCall(id, kind === "end" ? "end" : kind === "start" ? "start" : "check");
+    const r = await hookCall(id, kind === "end" ? "end" : kind === "start" ? "start" : "check", kind === "stop");
     // A refused token is not an outage: say it at session start, where a person can act on it.
     if (r.error === "token") context = kind === "start" ? `The AXOS hub (${id.c.url}) refused this machine's token: it was revoked or is wrong. AXOS is off until a person fixes it.` : "";
     else context = r.context ?? "";
@@ -391,6 +391,8 @@ async function forward(id: Identity, msg: { id?: unknown; method?: string }): Pr
 
 // Hold the hub's event stream and call ring() when a message arrives (or, after a reconnect, when one is waiting).
 // A ring carries no message: the client reads its inbox. Reconnects with backoff; without an identity it waits.
+const BELL_SETTLE_MS = Number(process.env.AXOS_BELL_SETTLE_MS ?? 1500);
+
 async function doorbell(connect: () => { url: string; headers: Record<string, string> } | null, ring: () => void): Promise<void> {
   let backoff = 2000;
   for (;;) {
@@ -427,14 +429,34 @@ async function doorbell(connect: () => { url: string; headers: Record<string, st
 }
 
 // Channel push: a ring marks nothing shown, so a session started without channels drops it and the hooks still deliver;
-// one with channels wakes, and its hooks deliver at once.
+// one with channels wakes, and its hooks deliver at once. A ring waits a moment and asks the hub whether the message is
+// still unshown: a hook in a running turn may have delivered it already. A burst within the wait is one notice.
 function bell(): Promise<void> {
-  return doorbell(() => {
+  const to = () => {
     const id = currentIdentity();
     return !id || id.quiet || !id.project ? null : { url: id.c.url, headers: headers(id) };
-  }, () => write({ jsonrpc: "2.0", method: "notifications/claude/channel", params: {
-    content: "AXOS: a new message is waiting for this session. It is shown at your next step; or call inbox now.", meta: { source: "axos" },
-  } }));
+  };
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const unshown = async (): Promise<number | null> => {
+    const t = to();
+    if (!t) return 0;
+    try {
+      const res = await fetch(`${t.url.replace(/\/$/, "")}/api/unshown`, { headers: t.headers, signal: AbortSignal.timeout(TIMEOUT_MS) });
+      return res.ok ? ((await res.json()) as { unshown: number }).unshown : null; // an older hub: always ring
+    } catch {
+      return null;
+    }
+  };
+  const notify = async () => {
+    timer = null;
+    if ((await unshown()) === 0) return;
+    write({ jsonrpc: "2.0", method: "notifications/claude/channel", params: {
+      content: "AXOS: a new message is waiting for this session. It is shown at your next step; or call inbox now.", meta: { source: "axos" },
+    } });
+  };
+  return doorbell(to, () => {
+    if (!timer) timer = setTimeout(() => void notify(), BELL_SETTLE_MS);
+  });
 }
 
 async function mcp(): Promise<void> {
