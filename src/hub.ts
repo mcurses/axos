@@ -34,6 +34,7 @@ export interface SessionRow {
   last_seen: number;
   ended_at: number | null;
   framed_at: number | null;
+  former_names: string;
 }
 
 export interface AgentRow {
@@ -145,6 +146,7 @@ export interface HubOptions {
 const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,47}$/;
 const MAX_SUMMARY = 300;
 const MAX_BODY = 64_000;
+const MAX_BRIEF = 2_000;
 const MAX_WAIT_S = 240;
 const MAX_LEASE_TTL_S = 86_400;
 const MAX_SUBSCRIPTION_TTL_S = 30 * 86_400;
@@ -344,6 +346,19 @@ export class Hub {
   setProjectBrief(project: string, brief: string): void {
     const r = this.db.query("UPDATE projects SET brief = ? WHERE id = ?").run(brief, project);
     if (r.changes === 0) throw new AxosError(`no project '${project}'`);
+  }
+
+  // A brief written by an agent: only the owner's agents, as it reaches everyone in the project.
+  setBriefAsAgent(agentId: string, project: string, brief: string): void {
+    const p = this.db.query("SELECT owner FROM projects WHERE id = ?").get(project) as { owner: string } | null;
+    if (!p || !this.isMember(agentId, project)) throw new AxosError(`you are not in project '${project}'`);
+    if (this.humanOf(agentId) !== p.owner) throw new AxosError(`only ${p.owner}'s agents may write the brief of '${project}'; ask them`);
+    const text = brief.trim();
+    if (text.length > MAX_BRIEF) throw new AxosError(`brief is ${text.length} characters, ${text.length - MAX_BRIEF} over the limit of ${MAX_BRIEF}; link to a file in the repo instead`);
+    const secret = findSecret(text);
+    if (secret) throw new AxosError(`brief rejected: it looks like it contains a ${secret}`);
+    this.setProjectBrief(project, text);
+    this.event(`agent:${agentId}`, "project.brief", project, { length: text.length });
   }
 
   // ---------------------------------------------------------------- names and ids
@@ -550,7 +565,13 @@ export class Hub {
     const name = s.name ? oneLine(s.name, 48) || null : null;
     const profile = s.profile ? oneLine(s.profile, 32) || null : null;
     const t = this.now();
-    const prev = this.db.query("SELECT key, ended_at FROM sessions WHERE key = ?").get(key) as { key: string; ended_at: number | null } | null;
+    const prev = this.db.query("SELECT key, ended_at, name, former_names FROM sessions WHERE key = ?").get(key) as
+      { key: string; ended_at: number | null; name: string | null; former_names: string } | null;
+    // A renamed session keeps answering to its last few names, so an address handed out before a restart still works.
+    if (prev?.name && name && prev.name !== name) {
+      const former = [...prev.former_names.split("\n").filter((n) => n && n !== name && n !== prev.name), prev.name].slice(-5).join("\n");
+      this.db.query("UPDATE sessions SET former_names = ? WHERE key = ?").run(former, key);
+    }
     this.db.query(
       `INSERT INTO sessions (key, agent_id, client_session, project, name, profile, cwd, started_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (key) DO UPDATE SET last_seen = excluded.last_seen, ended_at = NULL,
@@ -795,7 +816,8 @@ export class Hub {
     const row = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(project, role) as { holder: string | null } | null;
     if (!row) throw new AxosError(`no role '${role}' in '${project}'`);
     if (row.holder !== me) {
-      throw new AxosError(`you do not hold the role '${role}' in '${project}'${row.holder ? ` (${row.holder} does)` : ""}; claim_role it first`);
+      throw new AxosError(`you do not hold the role '${role}' in '${project}'${row.holder ? ` (${this.label(`session:${row.holder}`)} does)` : ""}; claim_role it first ` +
+        "(a role taken in a repo's own role system or by a hook is not an AXOS claim unless the hook reports it)");
     }
     return `role:${project}/${role}`;
   }
@@ -900,6 +922,12 @@ export class Hub {
         if (there.length) live = there;
       }
       let hit = live.filter((x) => x.key === ref || x.name === ref);
+      if (!hit.length) {
+        // A name it had before a restart renamed it.
+        const before = [project, ...this.linkedProjects(project)].flatMap((p) => this.liveSessions(p))
+          .filter((x) => x.former_names.split("\n").includes(ref));
+        if (before.length) hit = live = before;
+      }
       if (senderHuman && !hit.some((x) => x.key === ref)) {
         const own = hit.filter((x) => this.humanOfHolder(x.key) === senderHuman);
         const ownEver = this.db.query("SELECT 1 FROM sessions s JOIN agents g ON g.id = s.agent_id WHERE s.project = ? AND s.name = ? AND g.human = ?")
@@ -964,7 +992,7 @@ export class Hub {
     const summary = input.summary.trim();
     const body = input.body ?? "";
     if (!summary) throw new AxosError("summary is required: one sentence saying what this means, readable without knowing any ids");
-    if (summary.length > MAX_SUMMARY) throw new AxosError(`summary is ${summary.length} characters; keep it under ${MAX_SUMMARY} and put detail in body`);
+    if (summary.length > MAX_SUMMARY) throw new AxosError(`summary is ${summary.length} characters, ${summary.length - MAX_SUMMARY} over the limit of ${MAX_SUMMARY}; shorten it and put detail in body`);
     if (body.length > MAX_BODY) throw new AxosError(`body is ${body.length} characters; the limit is ${MAX_BODY}, link to a git file instead`);
     const secret = findSecret(`${summary}\n${body}`);
     if (secret) throw new AxosError(`message rejected: it looks like it contains a ${secret}. Never send secrets through AXOS.`);
@@ -1002,6 +1030,11 @@ export class Hub {
         if (parent.sender === SYSTEM_SENDER) throw new AxosError("messages from the hub take no reply; say who it is for with to");
         const back = this.liveBox(parent.sender);
         if (back !== sender) recipients.set(back, back);
+        // A follow-up to one's own message goes to whoever that message went to.
+        else for (const d of this.db.query("SELECT recipient, via FROM deliveries WHERE message_id = ?").all(parent.id) as { recipient: string; via: string }[]) {
+          const box = this.liveBox(d.recipient);
+          if (box !== sender && !recipients.has(box)) recipients.set(box, d.via);
+        }
       }
     }
     if (thread !== null && !inScope(thread)) throw new AxosError(`no thread ${thread} in '${input.project}'`);
@@ -1136,15 +1169,23 @@ export class Hub {
   }
 
   ack(recipient: string | string[], ids: number[]): number {
+    return this.ackReport(recipient, ids).acked.length;
+  }
+
+  // Which ids were acked now, which were acked before, and which are not in these mailboxes (a message of someone
+  // else answers exactly like one that does not exist).
+  ackReport(recipient: string | string[], ids: number[]): { acked: number[]; earlier: number[]; missing: number[] } {
     const boxes = Array.isArray(recipient) ? recipient : [recipient];
     const box = this.boxSql(boxes, "recipient", "(SELECT project FROM messages WHERE id = message_id)");
-    let n = 0;
+    const r = { acked: [] as number[], earlier: [] as number[], missing: [] as number[] };
     const t = this.now();
-    for (const id of ids) {
-      n += this.db.query(`UPDATE deliveries SET acked_at = ? WHERE ${box.sql} AND message_id = ? AND acked_at IS NULL`).run(t, ...box.args, id).changes;
+    for (const id of [...new Set(ids)]) {
+      if (this.db.query(`UPDATE deliveries SET acked_at = ? WHERE ${box.sql} AND message_id = ? AND acked_at IS NULL`).run(t, ...box.args, id).changes) r.acked.push(id);
+      else if (this.db.query(`SELECT 1 FROM deliveries WHERE ${box.sql} AND message_id = ?`).get(...box.args, id)) r.earlier.push(id);
+      else r.missing.push(id);
     }
-    if (n) this.event(this.boxKey(boxes[0]!), "message.acked", null, { ids });
-    return n;
+    if (r.acked.length) this.event(this.boxKey(boxes[0]!), "message.acked", null, { ids: r.acked });
+    return r;
   }
 
   // The whole thread a message belongs to, if the reader may see that project.

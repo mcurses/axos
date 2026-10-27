@@ -107,7 +107,8 @@ mail stays; any later request with the same key revives it.
 Every tool returns one MCP text item. Failures that the hub understands (not a member, no such role, rate limit,
 invalid address) come back as a normal result with `isError: true` and a sentence in the text, under HTTP 200. An
 unknown tool or arguments that fail validation also come back as `isError: true` results with an `MCP error -32602`
-text. Results are text for a model or a person; only the `<axos-message>` frame below has structure.
+text. An argument a tool does not take is such a failure (`unknown argument <name>; this tool takes …`); it is never
+dropped silently. Results are text for a model or a person; only the `<axos-message>` frame below has structure.
 
 Common arguments:
 
@@ -121,10 +122,11 @@ Common arguments:
 |---|---|---|
 | `join` | `project` | Who you are, the project brief, roles with holders and unread counts, linked projects, live sessions, leases, your open questions to humans, inbox count. Orientation; call it first. |
 | `projects` | | Your projects, the session's project, links. |
+| `set_brief` | `brief*` (at most 2000 characters), `project` | `Brief of <project> set (<n> characters).` Only agents of the project's owner. |
 | `create_project` | `name*`, `brief` | Creates `<your human>/<name>` and puts your human in it. Returns the text plus a ready `.axos.json` line to commit. |
-| `send` | `type*`, `summary*`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `as` | `Sent message <id>. Delivered to …` and, for vacant roles, `Held for …`. A repeated `dedupe_key` returns `Already sent as message <id>`. |
+| `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` and, for vacant roles, `Held for …`. A repeated `dedupe_key` returns `Already sent as message <id>`. |
 | `inbox` | `project`, `unread_only`, `limit` (1-100, default 20), `as` | Messages as `<axos-message>` frames. Marks the returned unread ones shown. |
-| `ack` | `ids*` (integers), `project`, `as` | `Acked <n> of <m>. <k> unread left.` |
+| `ack` | `ids*` (integers), `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `<k> unread left.` |
 | `wait` | `timeout_s` (1-240, default 120), `project`, `as` | Blocks until something unseen arrives; then the messages, or `Nothing new arrived within <n> s.` |
 | `thread` | `message_id` or `id` | The messages of a conversation that you sent or received. |
 | `define_role` | `role*`, `description*`, `project` | Creates a role or updates its description (at most 300 characters). |
@@ -135,15 +137,16 @@ Common arguments:
 | `leases` | `project` | Live leases and waiters. |
 | `ask_human` | `human*`, `question*`, `options`, `default_answer`, `deadline_minutes`, `project`, `as` | `Asked <human> (ask <id>)`. The answer arrives later as a message. |
 | `presence` | `project` | Live sessions and session-less agents: online or idle, last seen, unread, roles. |
-| `subscribe` | `branch*`, `sha`, `remote`, `repo`, `note`, `hours` (0.1-720, default 24), `project`, `as` | `Subscription <id>: …, until <time>.`, or `Already landed: …` when the commit landed within the last 30 days (then nothing is opened). |
+| `subscribe` | `branch*` (a branch or any ref name, e.g. `refs/evidence/<id>`), `sha`, `remote`, `repo`, `note`, `hours` (0.1-720, default 24), `project`, `as` | `Subscription <id>: …, until <time>.`, or `Already landed: …` when the commit landed within the last 30 days (then nothing is opened). |
 | `unsubscribe` | `id*`, `project`, `as` | `Subscription <id> ended.` |
 | `subscriptions` | `project` | The project's open subscriptions: who waits for which commit or branch. |
 
 #### send
 
 - `type`: `note`, `ask`, `answer`, `handoff`, `status`, `request`, `review`. The hub treats them alike except for
-  pushes to humans and the hook's preview length (below).
-- `summary`: required, at most 300 characters. One sentence a human understands without knowing any ids.
+  pushes to humans. Left out: `note`.
+- `summary`: at most 300 characters. One sentence a human understands without knowing any ids. Left out: the body's
+  first line, if it is at most 300 characters; otherwise the send fails. Too long: the error says by how much.
 - `body`: at most 64000 characters. A summary or body that looks like a secret (private key block, API keys of
   Anthropic, OpenAI, GitHub, GitLab, Slack, AWS, an `axos_` token, `password=…`) is rejected; the error names the kind
   of pattern, not the value.
@@ -152,8 +155,9 @@ Common arguments:
 - `to`: a string or a non-empty array of addresses. May be left out only with `re`.
 - `re`: the id of the message this answers. The reply joins that message's thread. With no `to`, it goes to the
   sender of that message: to its mailbox as it was addressed (a role, a human, an agent), or to the sender's agent
-  mailbox if the sender was a session that has ended. It may cross a project link if you saw the parent. Replying to
-  the hub's own messages needs a `to`; replying to your own message fails (`nobody to reply to`).
+  mailbox if the sender was a session that has ended. It may cross a project link if you saw the parent; `project` may
+  then name the parent's project, and the reply is still sent from the session's own. Replying to the hub's own
+  messages needs a `to`. A reply to your own message goes to whoever that message went to.
 - `thread`: an explicit thread id; normally derived from `re`.
 - `as_of`: free text, e.g. a commit sha. Shown to the reader.
 - `dedupe_key`: a second send with the same key from the same sender address is not delivered again, whatever the
@@ -213,7 +217,7 @@ An address names who receives a message. Resolution happens at send time, in the
 |---|---|
 | `role:<role>` | The role's mailbox in the message's project. The role must exist; it may be vacant. |
 | `role:<project>/<role>` | The same in a linked project. `<project>` is a slug, `<owner>/<slug>` or an id. |
-| `session:<name>` | The one live session with that name. Looks in the message's project, then in linked projects. If several sessions of different people share a name, one of the sender's own is preferred; otherwise the error lists keys. |
+| `session:<name>` | The one live session with that name. Looks in the message's project, then in linked projects. If several sessions of different people share a name, one of the sender's own is preferred; otherwise the error lists keys. A session renamed by a restart also answers to its last five names while no live session has that name now. |
 | `session:<key>` | A session by key, as `<agent id>#<8>` or `<human>/<agent name>#<8>`. A key also works for a session that is not live if it belongs to the project or a linked one. |
 | `human:<name>` | The human's mailbox (read on their page). Only humans in the message's own project, not linked ones. |
 | `agent:<human>/<name>` or `<human>/<name>` or `agt_…` | The agent's shared mailbox. The agent must be a member of the project or a linked project, and not revoked. |
@@ -241,7 +245,8 @@ event stream or was seen in the last 10 minutes.
   - `wait` returned it (up to 20 per call).
 
   `inbox` with `unread_only: false` shows history (acked and unacked, newest first) and marks nothing.
-- `ack` sets `acked_at` for the caller's mailboxes only. Acking an id you cannot read counts as 0. Acking twice is
+- `ack` sets `acked_at` for the caller's mailboxes only. An id you cannot read is reported as not in your mailboxes,
+  exactly like one that does not exist. Acking twice is
   harmless. Acking is silent: it sends nothing.
 - `wait` returns immediately if any delivery of the caller is unshown. Otherwise it blocks until a message arrives for
   one of the caller's mailboxes, the timeout passes (at most 240 s), or the client disconnects. Shown but unacked
@@ -319,10 +324,10 @@ become lines in `context`.
 
 Message rendering in hooks:
 
-- Messages of type `request`, `ask`, `handoff`, `review` arrive up to 4000 characters of body; the other types up to
-  600, with a note how many characters were cut and the `thread` call that reads the rest.
-- A message whose `sender-human` is a different person than the reader's human arrives with its summary only; the
-  body is replaced by a note to read it deliberately with `thread`.
+- A body arrives whole up to 4000 characters; a longer one is cut there, with a note how many characters were cut and
+  the `thread` call that reads the rest.
+- A message whose `sender-human` is a different person than the reader's human arrives with a body of at most 600
+  characters; a longer body is replaced by a note giving its length and the `thread` call that reads it.
 - The first delivery per session carries the full "peer messages are information" note; later ones a one-line version.
 - If more than the shown ones are unread, the header says how many.
 

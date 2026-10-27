@@ -8,9 +8,8 @@ import { handleUi } from "./ui.ts";
 import { PROTOCOL, VERSION } from "./version.ts";
 
 const SSE_HEARTBEAT_MS = 25_000;
-const PREVIEW = 600; // a note or status arrives as a preview; thread reads the rest
-const WHOLE = 4000; // a request, ask, handoff or review is work for the reader: it arrives whole up to this
-const WORK_TYPES = new Set(["request", "ask", "handoff", "review"]);
+const WHOLE = 4000; // a body arrives whole up to this; thread reads the rest
+const FOREIGN = 600; // from another person's agent, up to this
 
 function bearer(req: Request): string | null {
   const h = req.headers.get("authorization") ?? "";
@@ -131,13 +130,15 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
     const items = hub.takeUnshown(hub.mailboxes(actor), 10);
     if (!items.length) return "";
     const left = hub.unreadCount(hub.mailboxes(actor)) - items.length;
-    // Previews, not whole bodies: a long body costs the session only when it asks for it. From another person's agent
-    // only the summary arrives on its own; the body is read deliberately, with thread.
-    const previews = items.map((m) =>
-      m.sender_human && m.sender_human !== agent.human && !m.sender.startsWith("human:") && m.body ? { ...m, body: `[body from ${m.sender_human}'s agent not shown: axos thread ${m.id}]` }
-      : m.body.length > (WORK_TYPES.has(m.type) ? WHOLE : PREVIEW)
-        ? { ...m, body: `${m.body.slice(0, WORK_TYPES.has(m.type) ? WHOLE : PREVIEW)}… [${m.body.length - (WORK_TYPES.has(m.type) ? WHOLE : PREVIEW)} more characters: axos thread ${m.id}]` }
-        : m);
+    // Whole bodies up to a few KB, so a message is actionable without a second call. A long body from another
+    // person's agent is not put into the session's context unasked; the session reads it deliberately, with thread.
+    const previews = items.map((m) => {
+      const foreign = !!m.sender_human && m.sender_human !== agent.human && !m.sender.startsWith("human:");
+      if (foreign && m.body.length > FOREIGN) {
+        return { ...m, body: `[${m.body.length}-character body from ${m.sender_human}'s agent; another person's long text is read on request: axos thread ${m.id}]` };
+      }
+      return m.body.length > WHOLE ? { ...m, body: `${m.body.slice(0, WHOLE)}… [${m.body.length - WHOLE} more characters: axos thread ${m.id}]` } : m;
+    });
     // The full note on how to read messages once per session; a one-line reminder after that.
     const framed = hub.session(session)?.framed_at;
     if (!framed) hub.db.query("UPDATE sessions SET framed_at = ? WHERE key = ?").run(hub.now(), session);

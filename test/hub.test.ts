@@ -128,7 +128,7 @@ describe("messages", () => {
 
   test("summary is required and bounded", () => {
     expect(() => hub.send(A, note(["alice/dev3"], "  "))).toThrow(/summary is required/);
-    expect(() => hub.send(A, note(["alice/dev3"], "x".repeat(301)))).toThrow(/under 300/);
+    expect(() => hub.send(A, note(["alice/dev3"], "x".repeat(301)))).toThrow(/1 over the limit of 300/);
   });
 
   test("secrets are rejected without echoing them", () => {
@@ -148,6 +148,20 @@ describe("messages", () => {
     const b = hub.send(A, { ...note(["alice/dev3"]), dedupe_key: "lane-report-7" });
     expect(b).toMatchObject({ id: a.id, duplicate: true });
     expect(hub.unreadCount(`agent:${DEV3}`)).toBe(1);
+  });
+
+  test("a follow-up to one's own message goes to whoever it went to", () => {
+    const first = hub.send(A, note(["agent:alice/dev3"], "the box is free"));
+    const again = hub.send(A, { project: SHOP, type: "note", summary: "and the key is back", re: first.id });
+    expect(again.delivered_to).toEqual([`agent:${DEV3}`]);
+    expect(hub.getMessage(again.id)!.thread).toBe(first.id);
+  });
+
+  test("ack reports what it acked, what was acked before, and what is not in the reader's mailboxes", () => {
+    const m = hub.send(A, note(["agent:alice/dev3"]));
+    const other = hub.send(B, note(["agent:alice/dev1"]));
+    expect(hub.ackReport(`agent:${DEV3}`, [m.id, other.id, 999, m.id])).toEqual({ acked: [m.id], earlier: [], missing: [other.id, 999] });
+    expect(hub.ackReport(`agent:${DEV3}`, [m.id])).toEqual({ acked: [], earlier: [m.id], missing: [] });
   });
 
   test("replies join the thread", () => {
@@ -411,6 +425,18 @@ describe("sessions", () => {
     for (const to of ["session:shop-e9", "session:alice/dev3#7b9f51e0", `session:${helper}`]) {
       expect(hub.send(A, note([to], `via ${to}`)).delivered_to).toEqual([`session:${helper}`]);
     }
+  });
+
+  test("a session renamed by a restart still answers to its last names", () => {
+    hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-77" });
+    expect(hub.send(A, note(["session:shop-5c"])).delivered_to).toEqual([`session:${coord}`]);
+    expect(shown(hub.label(`session:${coord}`))).toBe("shop-77 (alice/dev3#35dabd9e, dev3)");
+    for (const n of ["a1", "a2", "a3", "a4", "a5", "a6"]) hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: n });
+    expect(hub.session(coord)!.former_names.split("\n")).toEqual(["a1", "a2", "a3", "a4", "a5"]);
+    expect(() => hub.send(A, note(["session:shop-5c"]))).toThrow(/no live session 'shop-5c'/);
+    // A current name wins over a former one.
+    hub.openSession(DEV3, { client_session: "7b9f51e0-d08b-4394-a93e-7327567c712c", project: SHOP, name: "a1" });
+    expect(hub.send(A, note(["session:a1"])).delivered_to).toEqual([`session:${helper}`]);
   });
 
   test("the role belongs to one session: another session of the same token needs force", () => {
@@ -787,6 +813,7 @@ INSERT INTO events (at, actor, kind, project, data_json) VALUES
       expect(db.query("SELECT project, role, holder FROM roles ORDER BY role").all()).toEqual([
         { project: F, role: "modder", holder: X }, { project: E, role: "r", holder: `${M}#abcd1234` }, { project: F, role: "vacant", holder: null }]);
       expect(db.query("SELECT key, agent_id, project, name FROM sessions").all()).toEqual([{ key: `${M}#abcd1234`, agent_id: M, project: E, name: "shop-ab" }]);
+      expect(db.query("SELECT former_names FROM sessions").all()).toEqual([{ former_names: "" }]);
       expect(db.query("SELECT id, project, sender, to_json FROM messages ORDER BY id").all()).toEqual([
         { id: 1, project: E, sender: `session:${M}#abcd1234`, to_json: '["role:shop/r"]' },
         { id: 2, project: F, sender: `agent:${X}`, to_json: '["agent:alice/mac"]' },

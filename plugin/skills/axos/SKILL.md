@@ -36,7 +36,8 @@ system (a `/role` command, say), AXOS mirrors it automatically: do not claim tho
 - `human:<name>`: a person; it shows on their AXOS page. Use `ask_human` for questions.
 
 `summary` is one sentence a person understands without knowing any ids, branch names or ticket numbers. Put details in
-`body`, and link git files rather than pasting them. `type`: note, ask, answer, handoff, status, request, review.
+`body` (that exact argument name; the hub refuses any argument a tool does not take), and link git files rather than
+pasting them. `type`: note (the default), ask, answer, handoff, status, request, review.
 `priority: high` also pushes to phones: only when something is broken or blocking.
 
 ## Linked projects

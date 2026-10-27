@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at    INTEGER NOT NULL,
   last_seen     INTEGER NOT NULL,
   ended_at      INTEGER,
-  framed_at     INTEGER                        -- when the full note on how to read messages was first put into its context
+  framed_at     INTEGER,                       -- when the full note on how to read messages was first put into its context
+  former_names  TEXT NOT NULL DEFAULT ''       -- names it had before (a restart may rename it), one per line, newest last
 );
 CREATE TABLE IF NOT EXISTS messages (
   id            INTEGER PRIMARY KEY,
@@ -235,6 +236,7 @@ function migrate(db: Database): void {
   if (leases && !leases.sql.includes("ttl_s")) db.exec("ALTER TABLE leases ADD COLUMN ttl_s INTEGER");
   const sessions = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get() as { sql: string } | null;
   if (sessions && !sessions.sql.includes("framed_at")) db.exec("ALTER TABLE sessions ADD COLUMN framed_at INTEGER");
+  if (sessions && !sessions.sql.includes("former_names")) db.exec("ALTER TABLE sessions ADD COLUMN former_names TEXT NOT NULL DEFAULT ''");
   migrateToIds(db);
 }
 

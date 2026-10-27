@@ -292,6 +292,28 @@ function stateFile(sessionId: string): string {
   return join(dir, `${sessionId}.json`);
 }
 
+// Whether the Claude Code process this hook runs under was started without the AXOS channel, so an idle session is
+// not woken by a message. null: no Claude Code process found among the ancestors (another client, or ps failed).
+function wakeupOff(argsOf = (pid: number) => Bun.spawnSync(["ps", "-o", "ppid=,args=", "-p", String(pid)], { stderr: "ignore" }).stdout.toString()): boolean | null {
+  let pid = process.ppid;
+  for (let i = 0; i < 6 && pid > 1; i++) {
+    const m = /^\s*(\d+)\s+(.*)$/s.exec(argsOf(pid).trim());
+    if (!m) return null;
+    const args = m[2]!;
+    // The executable is claude, or an interpreter running it (node, a wrapper script).
+    const [a0 = "", a1 = ""] = args.split(/\s+/);
+    if (basename(a0) === "claude" || (/^(node|bun|bash|sh|zsh)$/.test(basename(a0)) && (basename(a1) === "claude" || a1.includes("@anthropic-ai/claude-code")))) {
+      return !/--(dangerously-load-development-channels|channels)[ =]\S*plugin:axos@/.test(args);
+    }
+    pid = Number(m[1]);
+  }
+  return null;
+}
+
+const WAKEUP_OFF = "Idle wake-up is off for this session: Claude Code was started without " +
+  "`--dangerously-load-development-channels plugin:axos@axos`, so a message reaches it only with the next prompt or tool call. " +
+  "Tell your user if they expect messages while you are idle.";
+
 async function hook(kind: string): Promise<void> {
   const input = (await Bun.stdin.json().catch(() => ({}))) as { session_id?: string; cwd?: string; stop_hook_active?: boolean; session_title?: string };
   const id = identity(input.session_id, input.cwd, input.session_title);
@@ -323,6 +345,7 @@ async function hook(kind: string): Promise<void> {
     if (!state.unreachable && kind !== "end") context = `AXOS hub (${id.c.url}) is unreachable; messages from other sessions will not arrive until it is back.`;
     state.unreachable = true;
   }
+  if (kind === "start" && context && !state.unreachable && wakeupOff() === true) context = `${context}\n${WAKEUP_OFF}`;
   state.last_check = Date.now();
   writeFileSync(stateFile(id.sessionId), JSON.stringify(state));
   if (!context || kind === "end") return;
