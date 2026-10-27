@@ -65,7 +65,8 @@ function handleEvents(hub: Hub, req: Request, agent: AgentRow, conn: Connection)
   try {
     const as = q.get("as") ?? undefined;
     const named = q.get("project");
-    const project = named ? hub.projectId(named, hub.projectsOf(agent.id)) ?? named : conn.project;
+    const project = (named ? hub.projectId(named, hub.projectsOf(agent.id)) : conn.project) ?? undefined;
+    if (named && !project) throw new AxosError(`you are not in a project '${named}'`);
     hub.mailboxes(actor, project, as);
     mailboxes = () => hub.mailboxes(actor, project, as);
   } catch (e) {
@@ -81,9 +82,9 @@ function handleEvents(hub: Hub, req: Request, agent: AgentRow, conn: Connection)
         try { controller.enqueue(enc.encode(s)); } catch { cleanup(); }
       };
       hub.streamOpened(who);
-      write(`event: hello\ndata: ${JSON.stringify({ protocol: PROTOCOL, agent: agent.id, session: conn.session ?? null, mailboxes: mailboxes(), unread: hub.unreadCount(mailboxes()), unshown: hub.unshownCount(mailboxes()) })}\n\n`);
+      write(`event: hello\ndata: ${JSON.stringify({ protocol: PROTOCOL, agent: agent.id, session: conn.session ?? null, mailboxes: mailboxes().map((b) => hub.boxKey(b)), unread: hub.unreadCount(mailboxes()), unshown: hub.unshownCount(mailboxes()) })}\n\n`);
       const unsubscribe = hub.subscribe("*", (e) => {
-        if (!e.recipient || !mailboxes().includes(e.recipient)) return;
+        if (!hub.boxSees(mailboxes(), e)) return;
         write(`event: ${e.kind}\ndata: ${JSON.stringify({ ...e, unread: hub.unreadCount(mailboxes()) })}\n\n`);
       });
       const beat = setInterval(() => {

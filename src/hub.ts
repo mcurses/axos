@@ -810,6 +810,9 @@ export class Hub {
   }
 
   // Every mailbox an actor reads: its session, the roles the session holds (in projects it is still in), and the agent's shared one.
+  // A session reads the agent's shared mailbox only for its own project and the projects linked to it: an agent that is in
+  // several projects must not carry one project's messages into a session working in another. The scope rides on the
+  // address (agent:<id>@<project>+<project>); boxSql(), boxKey() and boxSees() read it.
   mailboxes(actor: { id: string; session?: string }, project?: string, as?: string): string[] {
     const boxes: string[] = [];
     if (actor.session) {
@@ -822,8 +825,41 @@ export class Hub {
       const box = addr(this.seat(actor.id, project, as, actor.session));
       if (!boxes.includes(box)) boxes.push(box);
     }
-    boxes.push(`agent:${actor.id}`);
+    if (actor.session) {
+      const own = this.session(actor.session)?.project;
+      boxes.push(`agent:${actor.id}@${own ? [own, ...this.linkedProjects(own)].join("+") : ""}`);
+    } else boxes.push(`agent:${actor.id}`);
     return boxes;
+  }
+
+  // A mailbox's address without its project scope, as deliveries and events name it.
+  boxKey(box: string): string {
+    const at = box.indexOf("@");
+    return at < 0 ? box : box.slice(0, at);
+  }
+
+  // SQL matching deliveries to these mailboxes; a scoped one only for messages of its projects.
+  private boxSql(boxes: string[], recipient = "d.recipient", project = "m.project"): { sql: string; args: string[] } {
+    const plain = boxes.filter((b) => !b.includes("@"));
+    const parts = plain.length ? [`${recipient} IN (${plain.map(() => "?").join(", ")})`] : [];
+    const args = [...plain];
+    for (const b of boxes.filter((x) => x.includes("@"))) {
+      const scope = b.slice(b.indexOf("@") + 1).split("+").filter(Boolean);
+      if (!scope.length) continue;
+      parts.push(`(${recipient} = ? AND ${project} IN (${scope.map(() => "?").join(", ")}))`);
+      args.push(this.boxKey(b), ...scope);
+    }
+    return { sql: parts.length ? `(${parts.join(" OR ")})` : "0", args };
+  }
+
+  // Whether an event belongs to one of these mailboxes (a message to a scoped one only if it is of its projects).
+  boxSees(boxes: string[], e: HubEvent): boolean {
+    return boxes.some((b) => {
+      if (!e.recipient || this.boxKey(b) !== e.recipient) return false;
+      if (!b.includes("@") || e.message_id === undefined) return true;
+      const m = this.db.query("SELECT project FROM messages WHERE id = ?").get(e.message_id) as { project: string } | null;
+      return !!m && b.slice(b.indexOf("@") + 1).split("+").includes(m.project);
+    });
   }
 
   releaseRole(agentId: string, project: string, role: string, session?: string): void {
@@ -946,11 +982,13 @@ export class Hub {
       if (m.project === input.project) return true;
       if (!this.linkedProjects(input.project).includes(m.project)) return false;
       const boxes = actor.kind === "agent" ? [sender, ...this.mailboxes(actor)] : [sender];
-      const inList = boxes.map(() => "?").join(", ");
+      const senders = boxes.map((b) => this.boxKey(b));
+      const inList = senders.map(() => "?").join(", ");
+      const box = this.boxSql(boxes);
       return !!this.db.query(
         `SELECT 1 FROM messages m WHERE (m.id = ? OR m.thread = ?) AND (m.sender IN (${inList})
-           OR EXISTS (SELECT 1 FROM deliveries d WHERE d.message_id = m.id AND d.recipient IN (${inList}))) LIMIT 1`,
-      ).get(id, id, ...boxes, ...boxes);
+           OR EXISTS (SELECT 1 FROM deliveries d WHERE d.message_id = m.id AND ${box.sql})) LIMIT 1`,
+      ).get(id, id, ...senders, ...box.args);
     };
     let thread = input.thread ?? null;
     const recipients = new Map<string, string>();
@@ -1058,8 +1096,9 @@ export class Hub {
     this.sweep();
     const boxes = Array.isArray(recipient) ? recipient : [recipient];
     const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
-    const where = [`d.recipient IN (${boxes.map(() => "?").join(", ")})`];
-    const args: (string | number)[] = [...boxes];
+    const box = this.boxSql(boxes);
+    const where = [box.sql];
+    const args: (string | number)[] = [...box.args];
     if (opts.unreadOnly ?? true) where.push("d.acked_at IS NULL");
     if (opts.unshownOnly) where.push("d.shown_at IS NULL");
     if (opts.project) { where.push("m.project = ?"); args.push(opts.project); }
@@ -1072,13 +1111,9 @@ export class Hub {
   }
 
   unreadCount(recipient: string | string[], project?: string): number {
-    const boxes = Array.isArray(recipient) ? recipient : [recipient];
-    const inList = boxes.map(() => "?").join(", ");
-    if (project) {
-      return (this.db.query(`SELECT COUNT(*) AS n FROM deliveries d JOIN messages m ON m.id = d.message_id
-        WHERE d.recipient IN (${inList}) AND d.acked_at IS NULL AND m.project = ?`).get(...boxes, project) as { n: number }).n;
-    }
-    return (this.db.query(`SELECT COUNT(*) AS n FROM deliveries WHERE recipient IN (${inList}) AND acked_at IS NULL`).get(...boxes) as { n: number }).n;
+    const box = this.boxSql(Array.isArray(recipient) ? recipient : [recipient]);
+    return (this.db.query(`SELECT COUNT(*) AS n FROM deliveries d JOIN messages m ON m.id = d.message_id
+      WHERE ${box.sql} AND d.acked_at IS NULL${project ? " AND m.project = ?" : ""}`).get(...box.args, ...(project ? [project] : [])) as { n: number }).n;
   }
 
   // Messages not yet put into this reader's context (by a hook, inbox or wait); marks them shown. They stay unread until acked.
@@ -1090,24 +1125,25 @@ export class Hub {
 
   markShown(boxes: string[], ids: number[]): void {
     const t = this.now();
-    const inList = boxes.map(() => "?").join(", ");
-    for (const id of ids) this.db.query(`UPDATE deliveries SET shown_at = ? WHERE message_id = ? AND recipient IN (${inList}) AND shown_at IS NULL`).run(t, id, ...boxes);
+    const box = this.boxSql(boxes, "recipient", "(SELECT project FROM messages WHERE id = message_id)");
+    for (const id of ids) this.db.query(`UPDATE deliveries SET shown_at = ? WHERE message_id = ? AND ${box.sql} AND shown_at IS NULL`).run(t, id, ...box.args);
   }
 
   unshownCount(boxes: string[]): number {
-    const inList = boxes.map(() => "?").join(", ");
-    return (this.db.query(`SELECT COUNT(*) AS n FROM deliveries WHERE recipient IN (${inList}) AND acked_at IS NULL AND shown_at IS NULL`).get(...boxes) as { n: number }).n;
+    const box = this.boxSql(boxes);
+    return (this.db.query(`SELECT COUNT(*) AS n FROM deliveries d JOIN messages m ON m.id = d.message_id
+      WHERE ${box.sql} AND d.acked_at IS NULL AND d.shown_at IS NULL`).get(...box.args) as { n: number }).n;
   }
 
   ack(recipient: string | string[], ids: number[]): number {
     const boxes = Array.isArray(recipient) ? recipient : [recipient];
-    const inList = boxes.map(() => "?").join(", ");
+    const box = this.boxSql(boxes, "recipient", "(SELECT project FROM messages WHERE id = message_id)");
     let n = 0;
     const t = this.now();
     for (const id of ids) {
-      n += this.db.query(`UPDATE deliveries SET acked_at = ? WHERE recipient IN (${inList}) AND message_id = ? AND acked_at IS NULL`).run(t, ...boxes, id).changes;
+      n += this.db.query(`UPDATE deliveries SET acked_at = ? WHERE ${box.sql} AND message_id = ? AND acked_at IS NULL`).run(t, ...box.args, id).changes;
     }
-    if (n) this.event(boxes[0]!, "message.acked", null, { ids });
+    if (n) this.event(this.boxKey(boxes[0]!), "message.acked", null, { ids });
     return n;
   }
 
@@ -1118,17 +1154,22 @@ export class Hub {
     const none = new AxosError(`no message ${messageId} for you`);
     const m = this.db.query("SELECT id, project, thread FROM messages WHERE id = ?").get(messageId) as { id: number; project: string; thread: number | null } | null;
     if (!m) throw none;
-    const member = [m.project, ...this.linkedProjects(m.project)]
-      .some((p) => reader.kind === "agent" ? this.isMember(reader.id, p) : this.humanInProject(reader.name, p));
+    // A session sees threads of its own project and the linked ones only, as with its agent's mailbox.
+    const own = reader.kind === "agent" && reader.session ? this.session(reader.session)?.project ?? null : undefined;
+    const member = own !== undefined
+      ? own !== null && [own, ...this.linkedProjects(own)].includes(m.project)
+      : [m.project, ...this.linkedProjects(m.project)]
+        .some((p) => reader.kind === "agent" ? this.isMember(reader.id, p) : this.humanInProject(reader.name, p));
     if (!member) throw none;
     const boxes = reader.kind === "agent" ? this.mailboxes(reader) : [`human:${reader.name}`];
-    const inList = boxes.map(() => "?").join(", ");
+    const senders = boxes.map((b) => this.boxKey(b));
+    const box = this.boxSql(boxes, "d.recipient", "m.project");
     const root = m.thread ?? m.id;
     const rows = this.db.query(
       `SELECT m.* FROM messages m WHERE (m.id = ? OR m.thread = ?)
-         AND (m.sender IN (${inList}) OR EXISTS (SELECT 1 FROM deliveries d WHERE d.message_id = m.id AND d.recipient IN (${inList})))
+         AND (m.sender IN (${senders.map(() => "?").join(", ")}) OR EXISTS (SELECT 1 FROM deliveries d WHERE d.message_id = m.id AND ${box.sql}))
        ORDER BY m.id`,
-    ).all(root, root, ...boxes, ...boxes) as MessageRow[];
+    ).all(root, root, ...senders, ...box.args) as MessageRow[];
     if (!rows.some((r) => r.id === messageId)) throw none;
     return rows;
   }
@@ -1170,7 +1211,7 @@ export class Hub {
         signal?.removeEventListener("abort", done);
         resolve(this.unshownCount(boxes));
       };
-      const offs = boxes.map((b) => this.subscribe(b, (e) => { if (e.kind === "message") done(); }));
+      const offs = boxes.map((b) => this.subscribe(this.boxKey(b), (e) => { if (e.kind === "message" && this.boxSees([b], e)) done(); }));
       const unsubscribe = () => offs.forEach((off) => off());
       const timer = setTimeout(done, ms);
       signal?.addEventListener("abort", done);
@@ -1325,7 +1366,7 @@ export class Hub {
     this.requireScope(agentId, project, session);
     const s = this.db.query("SELECT * FROM subscriptions WHERE id = ? AND project = ? AND ended_at IS NULL").get(id, project) as SubscriptionRow | null;
     // Its subscriber may cancel it: the session or the agent behind it (also from a later session), or the role's holder.
-    const mine = s && (this.mailboxes({ id: agentId, session }, project, as).includes(s.subscriber) ||
+    const mine = s && (this.mailboxes({ id: agentId, session }, project, as).map((b) => this.boxKey(b)).includes(s.subscriber) ||
       (!s.subscriber.startsWith("role:") && holderOf(s.subscriber).split("#")[0] === agentId));
     if (!mine) throw new AxosError(`you have no open subscription ${id} in '${project}'`);
     this.db.query("UPDATE subscriptions SET ended_at = ?, end_reason = 'cancelled' WHERE id = ?").run(this.now(), id);

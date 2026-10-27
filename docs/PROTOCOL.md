@@ -253,6 +253,9 @@ event stream or was seen in the last 10 minutes.
     that answer, the message is not shown again by hooks or `wait`, but `inbox` still returns it.
   - Wake-ups (the event stream, `wait`) are in-memory and not replayed. After a restart or a reconnect, read the counts
     (`hello` frame, `inbox`).
+- A session reads its agent's shared mailbox only for messages of its own project and the projects linked to it; the
+  agent without a session (and its sessions in those other projects) reads the rest. An agent that is in several
+  projects so carries no project's mail into a session working in another.
 - Mailboxes are evaluated when read. A session that takes a role afterwards reads the role's earlier mail. A message
   to a role is not copied to anyone.
 - A message to a human is not read through MCP; the human reads it on `/ui`.
@@ -331,7 +334,8 @@ Message rendering in hooks:
 client that something is waiting; the client then calls `inbox` or the hook.
 
 Query parameters, for clients without sessions: `project=<p>&as=<role>` also rings for that role's mailbox (the agent
-must hold the role).
+must hold the role). A `project` the agent is not in is refused with `400 you are not in a project '<p>'`, alike for one
+that does not exist.
 
 Frames:
 

@@ -255,6 +255,14 @@ test("an outsider sees nothing of a project they are not in", async () => {
   // The bell and the hooks refuse the foreign project too.
   const auth = { Authorization: `Bearer ${bob}` };
   expect((await fetch(`${base}/events?project=shop&as=main-coordinator`, { headers: auth })).status).toBe(400);
+  // Also without a role, and in words that do not tell a foreign project from one that does not exist.
+  const events = async (p: string) => {
+    const r = await fetch(`${base}/events?project=${encodeURIComponent(p)}`, { headers: auth });
+    return { status: r.status, text: (await r.text()).replace(p, "X") };
+  };
+  expect(await events("shop")).toEqual({ status: 400, text: "you are not in a project 'X'\n" });
+  expect(await events("alice/shop")).toEqual(await events("alice/nope"));
+  expect(await events(SHOP)).toEqual(await events("prj_0000000000"));
   const hook = await fetch(`${base}/api/hook`, {
     method: "POST", body: JSON.stringify({ event: "start", roles: ["main-coordinator"] }),
     headers: { ...auth, "x-axos-session": "11111111-2222", "x-axos-project": "shop" },
