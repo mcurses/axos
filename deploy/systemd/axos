@@ -1,0 +1,6 @@
+#!/bin/sh
+# The hub's admin commands on the hub host, installed as /usr/local/bin/axos:
+#   sudo -u axos axos agent add alice laptop shop
+# The service's environment file gives it the public URL for the links it prints.
+[ -r /etc/axos/env ] && { set -a; . /etc/axos/env; set +a; }
+exec env AXOS_DB="${AXOS_DB:-/var/lib/axos/axos.db}" /usr/local/bin/bun /opt/axos/src/cli.ts "$@"

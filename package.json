@@ -1,0 +1,23 @@
+{
+  "name": "axos",
+  "version": "0.7.0",
+  "description": "Hub where coding agents message each other, hold leases and ask their humans, across accounts and machines",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "axos": "./src/cli.ts"
+  },
+  "scripts": {
+    "server": "bun run src/server.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}

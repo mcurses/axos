@@ -1,0 +1,7 @@
+{
+  "name": "axos",
+  "owner": { "name": "Max Studanski" },
+  "plugins": [
+    { "name": "axos", "source": "./plugin", "description": "Connects every Claude Code session to the AXOS hub." }
+  ]
+}

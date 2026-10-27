@@ -1,0 +1,534 @@
+#!/usr/bin/env bun
+// The AXOS plugin's one local program, no dependencies.
+//   axos.ts mcp          stdio MCP server for Claude Code: forwards to the hub with this session's identity, and pushes new
+//                        messages into the session as channel events (when the session was started with channels on)
+//   axos.ts hook <event> Claude Code hooks: start (SessionStart), prompt (UserPromptSubmit), tool (PostToolUse),
+//                        stop (Stop), end (SessionEnd). Prints nothing when nothing is waiting, so a session pays nothing.
+//   axos join <link>     for a person: set this machine up with an invite link (writes the config and the token)
+//   axos trust           for a person at a terminal: accept the .axos.json of this folder, once per machine
+//   axos whoami          what this folder and this machine look like to AXOS
+//   axos landed <remote>/<branch> [<commit>] [--since <old head>]
+//                        for a landing script, after a successful push: tells AXOS what is now on the branch, so every
+//                        session subscribed to one of those commits (or to the branch) gets a message
+//
+// Configuration: ~/.config/axos/config.json (see plugin README). A folder belongs to a project through a "folders" entry
+// in the config, or through a committed .axos.json ({"hub": "<url>", "project": "<owner>/<name>", "id": "prj_…"}) at or
+// above it, once the person on this machine has trusted that file: a cloned repo must not steer sessions into a project.
+
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { homedir, hostname, tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
+
+interface FolderRule {
+  path: string;
+  project: string;
+  // A local role system to mirror into AXOS: a directory of JSON claim files {"role", "session_id"} (for example a repo's roles/claims).
+  roles_dir?: string;
+  roles_ignore?: string[]; // roles not mirrored (e.g. adhoc, which many sessions hold at once)
+  quiet_roles?: string[]; // sessions holding one of these get no AXOS at all (e.g. elevated, which runs without permission checks)
+}
+
+interface Config {
+  url: string;
+  token_file?: string;
+  profiles?: Record<string, string>; // profile name -> token file
+  folders?: FolderRule[];
+  check_every_s?: number; // how often PostToolUse looks for new messages during a long turn
+}
+
+const HOME = homedir();
+const CONFIG_PATH = process.env.AXOS_CONFIG ?? join(HOME, ".config", "axos", "config.json");
+const TRUST_PATH = join(dirname(CONFIG_PATH), "trusted.json"); // { "<folder of an .axos.json>": "<its id or project>" }
+const TIMEOUT_MS = 4000;
+const PLUGIN_VERSION = readJson<{ version?: string }>(join(dirname(import.meta.dir), ".claude-plugin", "plugin.json"))?.version ?? "unknown";
+
+function readJson<T>(path: string): T | null {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+function config(): Config | null {
+  const c = readJson<Config>(CONFIG_PATH);
+  return c?.url ? c : null;
+}
+
+const expand = (p: string) => p.replace(/^~(?=\/|$)/, HOME);
+
+function configDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude");
+}
+
+// ~/.claude -> main, ~/.claude-work -> work
+function profile(): string {
+  const b = basename(configDir());
+  return b === ".claude" ? "main" : b.replace(/^\.claude-?/, "") || "main";
+}
+
+// The one place that decides which file holds this profile's token: reading it and `axos join` writing it.
+function tokenPath(c: Partial<Config>): string {
+  return expand(process.env.AXOS_TOKEN_FILE ?? c.profiles?.[profile()] ?? c.token_file ?? join(HOME, ".config", "axos", "token"));
+}
+
+function token(c: Config): string | null {
+  const file = tokenPath(c);
+  try {
+    return readFileSync(expand(file), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// The harness's own record of a running session: name ("shop-e9"), current session id, cwd.
+interface SessionFile { pid: number; sessionId: string; cwd?: string; name?: string }
+
+function sessionFiles(): SessionFile[] {
+  const dir = join(configDir(), "sessions");
+  try {
+    return readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => readJson<SessionFile>(join(dir, f))).filter((x): x is SessionFile => !!x?.sessionId);
+  } catch {
+    return [];
+  }
+}
+
+function sessionById(id: string): SessionFile | null {
+  return sessionFiles().find((s) => s.sessionId === id) ?? null;
+}
+
+// The MCP server is a child of the Claude Code process; its session file follows /clear and resume.
+function sessionOfParent(): SessionFile | null {
+  return readJson<SessionFile>(join(configDir(), "sessions", `${process.ppid}.json`));
+}
+
+function folderRule(c: Config, cwd: string): FolderRule | null {
+  const rules = (c.folders ?? []).map((r) => ({ ...r, path: resolve(expand(r.path)) }))
+    .filter((r) => cwd === r.path || cwd.startsWith(`${r.path}/`))
+    .sort((a, b) => b.path.length - a.path.length);
+  return rules[0] ?? null;
+}
+
+interface RepoFile { hub?: string; project?: string; id?: string }
+
+const hostOf = (url: string) => { try { return new URL(url).host; } catch { return url.replace(/^https?:\/\//, "").replace(/\/.*$/, ""); } };
+
+// The repo's file is someone else's text: only a well-formed id and name are taken from it, and only they are ever
+// quoted to a model or a person.
+const PROJECT_ID_RE = /^prj_[0-9a-z]{10}$/;
+const PROJECT_NAME_RE = /^([a-z0-9][a-z0-9._-]{0,47}\/)?[a-z0-9][a-z0-9._-]{0,47}$/;
+
+// The nearest .axos.json at or above the folder, if it is meant for this machine's hub and well formed.
+function repoFile(c: Config, cwd: string): { dir: string; file: RepoFile; ref: string } | null {
+  for (let d = resolve(cwd); ; d = dirname(d)) {
+    const raw = readJson<RepoFile>(join(d, ".axos.json"));
+    if (raw) {
+      const file: RepoFile = {
+        hub: typeof raw.hub === "string" ? raw.hub : undefined,
+        project: typeof raw.project === "string" && PROJECT_NAME_RE.test(raw.project) ? raw.project : undefined,
+        id: typeof raw.id === "string" && PROJECT_ID_RE.test(raw.id) ? raw.id : undefined,
+      };
+      if (!file.project && !file.id) return null; // nothing usable in it
+      if (file.hub && hostOf(file.hub) !== hostOf(c.url)) return null; // another hub's project
+      return { dir: d, file, ref: file.id ?? file.project! };
+    }
+    if (d === dirname(d) || d === HOME) return null;
+  }
+}
+
+function trusted(dir: string, ref: string): boolean {
+  return readJson<Record<string, string>>(TRUST_PATH)?.[dir] === ref;
+}
+
+// A committed .axos.json the person on this machine trusted wins over the personal config, so a repo shared with
+// teammates names its project once. One nobody trusted yet gives no project, and says so (untrusted).
+function projectOf(c: Config, cwd: string): { project: string | null; rule: FolderRule | null; untrusted?: { dir: string; file: RepoFile } } {
+  const rule = folderRule(c, cwd);
+  const repo = repoFile(c, cwd);
+  if (repo && trusted(repo.dir, repo.ref)) return { project: repo.ref, rule };
+  return { project: rule?.project ?? null, rule, ...(repo ? { untrusted: { dir: repo.dir, file: repo.file } } : {}) };
+}
+
+// Roles a local role system gives this session. null = no local role system for this folder.
+function localRoles(rule: FolderRule | null, sessionId: string): string[] | null {
+  if (!rule?.roles_dir) return null;
+  const dir = expand(rule.roles_dir);
+  const roles: string[] = [];
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith(".json")) continue;
+      const claim = readJson<{ role?: string; session_id?: string }>(join(dir, f));
+      if (claim?.role && claim.session_id === sessionId) roles.push(claim.role);
+    }
+  } catch {
+    return null;
+  }
+  return roles;
+}
+
+interface Identity {
+  c: Config;
+  token: string;
+  sessionId: string;
+  name: string | null;
+  cwd: string;
+  project: string | null;
+  untrusted?: { dir: string; file: RepoFile };
+  rule: FolderRule | null;
+  quiet: boolean;
+  roles: string[] | null; // mirrored from the local role system
+}
+
+function identity(sessionId: string | undefined, cwd: string | undefined, name?: string | null): Identity | null {
+  const c = config();
+  if (!c || !sessionId) return null;
+  const t = token(c);
+  if (!t) return null;
+  const sf = sessionById(sessionId);
+  const dir = cwd ?? sf?.cwd ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+  const { project, rule, untrusted } = projectOf(c, dir);
+  const roles = localRoles(rule, sessionId);
+  const quiet = !!roles?.some((r) => rule?.quiet_roles?.includes(r));
+  const mirrored = roles?.filter((r) => !rule?.roles_ignore?.includes(r) && !rule?.quiet_roles?.includes(r)) ?? null;
+  return { c, token: t, sessionId, name: name ?? sf?.name ?? null, cwd: dir, project, untrusted, rule, quiet, roles: mirrored };
+}
+
+function headers(id: Identity): Record<string, string> {
+  const h: Record<string, string> = {
+    Authorization: `Bearer ${id.token}`,
+    "x-axos-session": id.sessionId,
+    "x-axos-profile": encodeURIComponent(profile()),
+  };
+  if (id.project) h["x-axos-project"] = encodeURIComponent(id.project);
+  if (id.name) h["x-axos-name"] = encodeURIComponent(id.name);
+  return h;
+}
+
+async function hookCall(id: Identity, event: string): Promise<{ context?: string; error?: string }> {
+  const res = await fetch(`${id.c.url.replace(/\/$/, "")}/api/hook`, {
+    method: "POST",
+    headers: { ...headers(id), "Content-Type": "application/json" },
+    body: JSON.stringify({ event, roles: id.roles ?? undefined, roles_managed: id.roles !== null }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  if (res.status === 401) return { error: "token" };
+  return (await res.json()) as { context?: string; error?: string };
+}
+
+// ---------------------------------------------------------------- hooks
+
+const HOOK_EVENT: Record<string, string> = { start: "SessionStart", prompt: "UserPromptSubmit", tool: "PostToolUse" };
+
+function stateFile(sessionId: string): string {
+  const dir = join(process.env.CLAUDE_PLUGIN_DATA ?? join(tmpdir(), "axos-plugin"), "state");
+  mkdirSync(dir, { recursive: true });
+  return join(dir, `${sessionId}.json`);
+}
+
+async function hook(kind: string): Promise<void> {
+  const input = (await Bun.stdin.json().catch(() => ({}))) as { session_id?: string; cwd?: string; stop_hook_active?: boolean; session_title?: string };
+  const id = identity(input.session_id, input.cwd, input.session_title);
+  if (id && !id.quiet && !id.project && id.untrusted && kind === "start") {
+    // Said once per session, and only in a folder whose repo asks to join a project.
+    const f = id.untrusted.file; // validated: only a project name or id
+    const context = `This repo's .axos.json names the AXOS project ${f.project ?? f.id}. This machine has not trusted that file, ` +
+      "so AXOS is off in this session. Tell your user; if they want it, they run `axos trust` themselves. Do not run it for them.";
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } }));
+    return;
+  }
+  if (!id || id.quiet || !id.project) return; // not configured, a quiet role, or a folder outside every project: no cost
+  const state = readJson<{ last_check?: number; unreachable?: boolean }>(stateFile(id.sessionId)) ?? {};
+  if (kind === "tool") {
+    const every = (id.c.check_every_s ?? 30) * 1000;
+    if (state.last_check && Date.now() - state.last_check < every) return;
+  }
+  if (kind === "stop" && input.stop_hook_active) return;
+  let context = "";
+  try {
+    const r = await hookCall(id, kind === "end" ? "end" : kind === "start" ? "start" : "check");
+    // A refused token is not an outage: say it at session start, where a person can act on it.
+    if (r.error === "token") context = kind === "start" ? `The AXOS hub (${id.c.url}) refused this machine's token: it was revoked or is wrong. AXOS is off until a person fixes it.` : "";
+    else context = r.context ?? "";
+    if (state.unreachable && kind !== "end") context = ["AXOS hub is reachable again.", context].filter(Boolean).join("\n\n");
+    state.unreachable = false;
+  } catch {
+    // Say it once, not on every prompt.
+    if (!state.unreachable && kind !== "end") context = `AXOS hub (${id.c.url}) is unreachable; messages from other sessions will not arrive until it is back.`;
+    state.unreachable = true;
+  }
+  state.last_check = Date.now();
+  writeFileSync(stateFile(id.sessionId), JSON.stringify(state));
+  if (!context || kind === "end") return;
+  if (kind === "stop") {
+    // New messages arrived during the turn: let the session look at them before it stops.
+    process.stdout.write(JSON.stringify({ decision: "block", reason: context }));
+    return;
+  }
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: HOOK_EVENT[kind], additionalContext: context } }));
+}
+
+// ---------------------------------------------------------------- stdio MCP server
+
+function write(msg: unknown): void {
+  process.stdout.write(`${JSON.stringify(msg)}\n`);
+}
+
+function currentIdentity(): Identity | null {
+  const sf = sessionOfParent();
+  return identity(sf?.sessionId ?? process.env.CLAUDE_CODE_SESSION_ID, sf?.cwd ?? process.env.CLAUDE_PROJECT_DIR, sf?.name);
+}
+
+async function forward(id: Identity, msg: { id?: unknown; method?: string }): Promise<void> {
+  try {
+    const res = await fetch(`${id.c.url.replace(/\/$/, "")}/mcp`, {
+      method: "POST",
+      headers: { ...headers(id), "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify(msg),
+    });
+    if (res.status === 202 || msg.id === undefined) return;
+    const body = (await res.json()) as { result?: { capabilities?: Record<string, unknown>; instructions?: string } };
+    if (msg.method === "initialize" && body.result) {
+      // Offer the channel; Claude Code only uses it when the session was started with channels on.
+      const caps = (body.result.capabilities ??= {}) as { experimental?: Record<string, unknown> };
+      caps.experimental = { ...(caps.experimental ?? {}), "claude/channel": {} };
+    }
+    write(body);
+  } catch (e) {
+    write({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: `AXOS hub unreachable: ${(e as Error).message}` } });
+  }
+}
+
+// Channel push: hold the hub's event stream and ring the session when a message arrives (or, after a reconnect, when
+// one is waiting). The ring carries no message and marks nothing shown: a session started without channels drops it,
+// and the hooks still deliver; one with channels wakes, and its hooks deliver at once. Reconnects with backoff.
+async function bell(): Promise<void> {
+  let backoff = 2000;
+  for (;;) {
+    const id = currentIdentity();
+    if (!id || id.quiet || !id.project) {
+      await Bun.sleep(60_000);
+      continue;
+    }
+    try {
+      const res = await fetch(`${id.c.url.replace(/\/$/, "")}/events`, { headers: headers(id) });
+      if (!res.ok || !res.body) throw new Error(`events ${res.status}`);
+      backoff = 2000;
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i: number;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const frame = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          const hello = /^event: hello$/m.test(frame) && Number(/"unshown":(\d+)/.exec(frame)?.[1] ?? 0) > 0;
+          if (!hello && !/^event: message$/m.test(frame)) continue;
+          write({ jsonrpc: "2.0", method: "notifications/claude/channel", params: {
+            content: "AXOS: a new message is waiting for this session. It is shown at your next step; or call inbox now.", meta: { source: "axos" },
+          } });
+        }
+      }
+    } catch {
+      /* hub away or stream dropped */
+    }
+    await Bun.sleep(backoff);
+    backoff = Math.min(backoff * 2, 60_000);
+  }
+}
+
+async function mcp(): Promise<void> {
+  let bellStarted = false;
+  const quietTools = (msg: { id?: unknown; method?: string }) => {
+    if (msg.method === "tools/list") write({ jsonrpc: "2.0", id: msg.id, result: { tools: [] } });
+    else if (msg.method === "initialize") {
+      write({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "axos", version: PLUGIN_VERSION } } });
+    } else if (msg.id !== undefined) write({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "AXOS is off in this session" } });
+  };
+  const dec = new TextDecoder();
+  let buf = "";
+  for await (const chunk of Bun.stdin.stream()) {
+    buf += dec.decode(chunk, { stream: true });
+    let i: number;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (!line) continue;
+      let msg: { id?: unknown; method?: string };
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const id = currentIdentity();
+      if (!id) {
+        if (msg.id !== undefined) write({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: `AXOS is not configured: ${CONFIG_PATH} or the token is missing` } });
+        continue;
+      }
+      if (id.quiet) {
+        quietTools(msg);
+        continue;
+      }
+      void forward(id, msg); // concurrently: wait may block for minutes
+      if (msg.method === "notifications/initialized" && !bellStarted) {
+        bellStarted = true;
+        void bell();
+      }
+    }
+  }
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------- for people at a terminal
+
+// The yes must come from a person. On macOS it is a system dialog an agent cannot click; elsewhere a terminal prompt,
+// which keeps out accidents and careless agents but not one determined to fake a terminal (it could also write
+// trusted.json itself): a speed bump, not a wall.
+async function confirm(question: string): Promise<boolean> {
+  if (process.platform === "darwin") {
+    const script = `display dialog ${JSON.stringify(question)} with title "AXOS" buttons {"Not now", "Trust"} default button "Not now" with icon caution giving up after 120`;
+    const r = Bun.spawnSync(["osascript", "-e", script], { stderr: "ignore" });
+    return r.exitCode === 0 && r.stdout.toString().includes("Trust");
+  }
+  if (!process.stdin.isTTY) throw new Error("axos trust asks a person to confirm: run it in your own terminal, not through an agent.");
+  process.stdout.write(`${question} [y/N] `);
+  for await (const line of console) return /^y(es)?$/i.test(line.trim());
+  return false;
+}
+
+async function trust(): Promise<void> {
+  const c = config();
+  if (!c) throw new Error(`AXOS is not configured: no ${CONFIG_PATH}`);
+  const repo = repoFile(c, process.cwd());
+  if (!repo) return console.log(`No usable .axos.json for ${hostOf(c.url)} at or above this folder.`);
+  if (trusted(repo.dir, repo.ref)) return console.log(`${repo.dir}/.axos.json is already trusted.`);
+  const f = repo.file;
+  const question = `Connect Claude Code sessions in ${repo.dir} to the AXOS project ${f.project ?? f.id}${f.id && f.project ? ` (${f.id})` : ""} ` +
+    `on ${hostOf(c.url)}? Their messages, roles and leases are then shared with that project's members.`;
+  if (!(await confirm(question))) return console.log("Not trusted.");
+  const all = readJson<Record<string, string>>(TRUST_PATH) ?? {};
+  all[repo.dir] = repo.ref;
+  mkdirSync(dirname(TRUST_PATH), { recursive: true });
+  writeFileSync(TRUST_PATH, `${JSON.stringify(all, null, 2)}\n`, { mode: 0o600 });
+  console.log("Trusted. New sessions in this folder connect; running ones at their next prompt.");
+}
+
+// The invite link's hub answers with this machine's token; it is written to a file only this user can read, and never
+// printed. A machine set up for another hub is not changed without --force.
+async function joinHub(args: string[]): Promise<void> {
+  const force = args.includes("--force");
+  const ni = args.indexOf("--name");
+  const name = ni >= 0 ? args[ni + 1] : undefined;
+  const link = args.find((a, i) => !a.startsWith("--") && args[i - 1] !== "--name");
+  const m = link ? /^(https?:\/\/[^/]+)\/join\/(axosinv_[A-Za-z0-9_-]+)\/?$/.exec(link) : null;
+  if (!m) throw new Error("usage: axos join <invite link> [--name <this machine>] [--force]");
+  const [, hubUrl, code] = m;
+  const existing = readJson<Config>(CONFIG_PATH);
+  if (existing?.url && hostOf(existing.url) !== hostOf(hubUrl!) && !force) {
+    throw new Error(`this machine is set up for ${existing.url}; axos join --force switches it to ${hubUrl}`);
+  }
+  const tokenFile = tokenPath(existing ?? {});
+  // A token already here belongs to a working setup: replacing it needs a deliberate --force.
+  if (existsSync(tokenFile) && !force) throw new Error(`this machine already has an AXOS token in ${tokenFile}; axos join --force replaces it`);
+  const machine = name ?? hostname().split(".")[0]!;
+  const res = await fetch(`${hubUrl}/api/join`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, machine }) });
+  const r = (await res.json().catch(() => ({ error: `the hub answered ${res.status}` }))) as { error?: string; hub?: string; agent?: string; token?: string; page?: string | null; projects?: string[] };
+  if (r.error || !r.token) throw new Error(r.error ?? "the hub sent no token");
+  mkdirSync(dirname(CONFIG_PATH), { recursive: true });
+  writeFileSync(CONFIG_PATH, `${JSON.stringify({ ...(existing ?? {}), url: r.hub ?? hubUrl }, null, 2)}\n`, { mode: 0o600 });
+  mkdirSync(dirname(tokenFile), { recursive: true });
+  writeFileSync(tokenFile, `${r.token}\n`, { mode: 0o600 });
+  console.log(`This machine is ${r.agent} on ${r.hub ?? hubUrl}${r.projects?.length ? `, in ${r.projects.join(", ")}` : ""}.`);
+  if (r.page) console.log(`Your page, shown once (open it on each device; it remembers you):\n  ${r.page}`);
+  console.log("Claude Code sessions started from now on connect. A repo with an .axos.json needs `axos trust` once in its folder.");
+}
+
+// For a landing script, run in the repository after the push succeeded. The hub never sees the repository: this reads
+// the new head and the commits it brought (since --since, else the last 300 on the branch) and sends their shas.
+async function landed(args: string[]): Promise<void> {
+  const opt = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    if (i < 0) return undefined;
+    const v = args[i + 1];
+    args.splice(i, 2);
+    return v;
+  };
+  const since = opt("--since"), repoName = opt("--repo"), subjectArg = opt("--subject"), projectArg = opt("--project");
+  const [where, commitArg] = args;
+  if (!where || args.length > 2 || args.some((a) => a.startsWith("--"))) {
+    throw new Error("usage: axos landed <remote>/<branch> [<commit>] [--since <old head>] [--repo <name>] [--subject <s>] [--project <p>]");
+  }
+  const git = (...a: string[]): string => {
+    const r = Bun.spawnSync(["git", ...a], { stderr: "pipe" });
+    if (r.exitCode !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr.toString().trim()}`);
+    return r.stdout.toString().trim();
+  };
+  const remotes = git("remote").split("\n").filter(Boolean);
+  const slash = where.indexOf("/");
+  const remote = slash > 0 && remotes.includes(where.slice(0, slash)) ? where.slice(0, slash) : undefined;
+  const branch = remote ? where.slice(slash + 1) : where;
+  const head = git("rev-parse", "--verify", `${commitArg ?? where}^{commit}`);
+  const commits = since
+    ? git("rev-list", "--max-count=1000", `${git("rev-parse", "--verify", `${since}^{commit}`)}..${head}`).split("\n").filter(Boolean)
+    : git("rev-list", "--max-count=300", head).split("\n").filter(Boolean);
+  const url = remote ? git("remote", "get-url", remote) : git("rev-parse", "--show-toplevel");
+  const repo = repoName ?? basename(url.replace(/\/+$/, "")).replace(/\.git$/, "");
+  const subject = subjectArg ?? git("log", "-1", "--format=%s", head);
+
+  const c = config();
+  const t = c && token(c);
+  if (!c || !t) throw new Error(`AXOS is not configured: ${CONFIG_PATH} or the token is missing`);
+  const project = projectArg ?? projectOf(c, process.cwd()).project;
+  if (!project) throw new Error("this folder belongs to no AXOS project (or its .axos.json is not trusted yet); say --project <p>");
+  const res = await fetch(`${c.url.replace(/\/$/, "")}/api/landed`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ project, repo, remote, branch, head, commits, subject }),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (res.status === 401) throw new Error("the hub refused this machine's token");
+  const r = (await res.json().catch(() => ({ error: `the hub answered ${res.status}` }))) as { error?: string; project?: string; commits?: number; told?: number };
+  if (r.error) throw new Error(r.error);
+  console.log(`Reported to ${r.project}: ${head.slice(0, 10)} on ${where} (${repo}), ${r.commits} commit(s); ${r.told} subscription(s) told.`);
+}
+
+function whoami(): void {
+  const c = config();
+  if (!c || !token(c)) return console.log(`not configured (${c ? "token missing" : `no ${CONFIG_PATH}`})`);
+  const sid = process.env.CLAUDE_CODE_SESSION_ID;
+  const id = identity(sid ?? "terminal", sid ? undefined : process.cwd());
+  console.log(JSON.stringify({
+    hub: c.url, project: id?.project ?? null, untrusted: id?.untrusted ? `${id.untrusted.dir}/.axos.json (run axos trust there)` : undefined,
+    profile: profile(), session: sid ?? null, name: id?.name ?? null, quiet: id?.quiet, roles: id?.roles,
+  }, null, 2));
+}
+
+// ---------------------------------------------------------------- main
+
+const [cmd, arg] = process.argv.slice(2);
+if (cmd === "mcp") await mcp();
+else if (cmd === "hook" && arg) await hook(arg).catch(() => {});
+else if (cmd === "whoami") whoami();
+else if (cmd === "join") {
+  await joinHub(process.argv.slice(3)).catch((e: Error) => {
+    console.error(e.message);
+    process.exit(1);
+  });
+}
+else if (cmd === "landed") {
+  await landed(process.argv.slice(3)).catch((e: Error) => {
+    console.error(e.message);
+    process.exit(1);
+  });
+}
+else if (cmd === "trust") {
+  await trust().catch((e: Error) => {
+    console.error(e.message);
+    process.exit(1);
+  });
+} else {
+  console.error("usage: axos join <invite link> | trust | whoami | landed <remote>/<branch>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
+  process.exit(2);
+}

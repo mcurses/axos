@@ -1,0 +1,5 @@
+# Caddy streams the hub's event stream (text/event-stream) without buffering, and keeps long-polls open.
+{$AXOS_DOMAIN} {
+	encode gzip
+	reverse_proxy axos:18900
+}

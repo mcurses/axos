@@ -1,0 +1,11 @@
+node_modules
+.git
+.github
+*.db
+*.db-*
+.env
+docs
+test
+plugin
+deploy
+scripts

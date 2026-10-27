@@ -1,0 +1,10 @@
+#!/bin/sh
+# `axos` for people: Claude Code puts the plugin's bin/ on its sessions' PATH; in your own terminal, link it once:
+#   ln -s <plugin>/bin/axos ~/.local/bin/axos
+# The program is axos.ts next to this file.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in /*) self=$link ;; *) self=$(dirname "$self")/$link ;; esac
+done
+exec bun "$(dirname "$self")/axos.ts" "$@"

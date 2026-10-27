@@ -1,0 +1,30 @@
+# The hub behind Caddy, which gets and renews the TLS certificate for AXOS_DOMAIN on its own.
+#   cp .env.example .env   # set AXOS_DOMAIN; the domain's DNS must point here, ports 80 and 443 open
+#   docker compose up -d
+#   docker compose exec axos axos init <your name>
+services:
+  axos:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      AXOS_PUBLIC_URL: https://${AXOS_DOMAIN:?set AXOS_DOMAIN in .env}
+    volumes:
+      - axos-data:/data
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      AXOS_DOMAIN: ${AXOS_DOMAIN}
+    volumes:
+      - ./deploy/docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [axos]
+volumes:
+  axos-data:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,22 @@
+# Example unit: the hub checked out in /opt/axos, run by a user "axos", its database in /var/lib/axos.
+# Install: sudo install -m 644 deploy/systemd/axos.service /etc/systemd/system/ && sudo systemctl enable --now axos
+[Unit]
+Description=AXOS agent hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=axos
+WorkingDirectory=/opt/axos
+Environment=AXOS_DB=/var/lib/axos/axos.db
+Environment=AXOS_PORT=18900
+Environment=AXOS_HOST=127.0.0.1
+EnvironmentFile=-/etc/axos/env
+ExecStart=/usr/local/bin/bun run src/server.ts
+Restart=always
+RestartSec=3
+Nice=5
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
