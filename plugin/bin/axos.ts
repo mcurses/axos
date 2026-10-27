@@ -5,6 +5,9 @@
 //   axos.ts hook <event> Claude Code hooks: start (SessionStart), prompt (UserPromptSubmit), tool (PostToolUse),
 //                        stop (Stop), end (SessionEnd). Prints nothing when nothing is waiting, so a session pays nothing.
 //   axos join <link>     for a person: set this machine up with an invite link (writes the config and the token)
+//   axos link [<project>] connect this repo to a project on this machine only (matched by its git remote, so every clone
+//                        and worktree of it); nothing is written into the repo
+//   axos unlink          undo that
 //   axos trust           for a person at a terminal: accept the .axos.json of this folder, once per machine
 //   axos whoami          what this folder and this machine look like to AXOS
 //   axos landed <remote>/<branch> [<commit>] [--since <old head>]
@@ -12,7 +15,7 @@
 //                        session subscribed to one of those commits (or to the branch) gets a message
 //
 // Configuration: ~/.config/axos/config.json (see plugin README). A folder belongs to a project through a "folders" entry
-// in the config, or through a committed .axos.json ({"hub": "<url>", "project": "<owner>/<name>", "id": "prj_…"}) at or
+// in the config (a folder path, or a git remote that `axos link` wrote), or through a committed .axos.json ({"hub": "<url>", "project": "<owner>/<name>", "id": "prj_…"}) at or
 // above it, once the person on this machine has trusted that file: a cloned repo must not steer sessions into a project.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -20,8 +23,10 @@ import { homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 interface FolderRule {
-  path: string;
-  project: string;
+  path?: string; // this folder and everything below it
+  remote?: string; // or: every checkout whose git remotes include this one (as remoteKey() writes it)
+  project: string; // an id (prj_…) or a name
+  name?: string; // the project's name when project is an id, for people reading the file
   // A local role system to mirror into AXOS: a directory of JSON claim files {"role", "session_id"} (for example a repo's roles/claims).
   roles_dir?: string;
   roles_ignore?: string[]; // roles not mirrored (e.g. adhoc, which many sessions hold at once)
@@ -102,11 +107,71 @@ function sessionOfParent(): SessionFile | null {
   return readJson<SessionFile>(join(configDir(), "sessions", `${process.ppid}.json`));
 }
 
+// A path rule wins (the longest); otherwise a remote rule naming one of the checkout's remotes.
 function folderRule(c: Config, cwd: string): FolderRule | null {
-  const rules = (c.folders ?? []).map((r) => ({ ...r, path: resolve(expand(r.path)) }))
+  const byPath = (c.folders ?? []).filter((r) => r.path).map((r) => ({ ...r, path: resolve(expand(r.path!)) }))
     .filter((r) => cwd === r.path || cwd.startsWith(`${r.path}/`))
     .sort((a, b) => b.path.length - a.path.length);
-  return rules[0] ?? null;
+  if (byPath[0]) return byPath[0];
+  const byRemote = (c.folders ?? []).filter((r) => r.remote);
+  if (!byRemote.length) return null;
+  const keys = new Set(gitRemotes(cwd)?.remotes.map((r) => r.key));
+  return byRemote.find((r) => keys.has(r.remote!)) ?? null;
+}
+
+// ---------------------------------------------------------------- git, read from files (hooks run on every prompt)
+
+// The checkout around cwd: its top folder and its remotes. A worktree's .git is a file pointing into the main
+// repository, whose config holds the remotes.
+function gitRemotes(cwd: string): { root: string; remotes: { name: string; url: string; key: string }[] } | null {
+  for (let d = resolve(cwd); ; d = dirname(d)) {
+    const dotgit = join(d, ".git");
+    let gitdir: string | null = null;
+    try {
+      const text = readFileSync(dotgit, "utf8");
+      const m = /^gitdir:\s*(.+)$/m.exec(text);
+      if (m) gitdir = resolve(d, m[1]!.trim());
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EISDIR") gitdir = dotgit;
+    }
+    if (gitdir) {
+      let common = gitdir;
+      try { common = resolve(gitdir, readFileSync(join(gitdir, "commondir"), "utf8").trim()); } catch { /* not a worktree */ }
+      let config = "";
+      try { config = readFileSync(join(common, "config"), "utf8"); } catch { /* no config */ }
+      const remotes: { name: string; url: string; key: string }[] = [];
+      let section: string | null = null;
+      for (const line of config.split("\n")) {
+        const head = /^\s*\[remote\s+"([^"]+)"\]/.exec(line);
+        if (head) { section = head[1]!; continue; }
+        if (/^\s*\[/.test(line)) { section = null; continue; }
+        const url = section ? /^\s*url\s*=\s*(.+?)\s*$/.exec(line) : null;
+        if (url && section) remotes.push({ name: section, url: url[1]!, key: remoteKey(url[1]!, d) });
+      }
+      return { root: d, remotes };
+    }
+    if (d === dirname(d)) return null;
+  }
+}
+
+// One spelling per repository: 'git@github.com:a/b.git', 'https://user@github.com/a/b' and 'ssh://git@github.com:22/a/b'
+// all become 'github.com/a/b'. No user, password or port is kept, so a token in a URL never reaches the config.
+function remoteKey(url: string, base: string): string {
+  let host = "", path = "";
+  const scp = /^(?:[^@/]+@)?([^:/]+):(?!\/)(.+)$/.exec(url);
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) {
+    try {
+      const u = new URL(url);
+      if (u.protocol === "file:") return `file:${resolve(decodeURIComponent(u.pathname)).replace(/\.git$/, "")}`;
+      host = u.hostname; path = decodeURIComponent(u.pathname);
+    } catch { return url; }
+  } else if (scp && !url.startsWith("/") && !url.startsWith(".")) {
+    host = scp[1]!; path = scp[2]!;
+  } else {
+    return `file:${resolve(base, url).replace(/\/+$/, "").replace(/\.git$/, "")}`;
+  }
+  path = path.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
+  return `${host}/${path}`.toLowerCase();
 }
 
 interface RepoFile { hub?: string; project?: string; id?: string }
@@ -392,7 +457,7 @@ async function confirm(question: string): Promise<boolean> {
     const r = Bun.spawnSync(["osascript", "-e", script], { stderr: "ignore" });
     return r.exitCode === 0 && r.stdout.toString().includes("Trust");
   }
-  if (!process.stdin.isTTY) throw new Error("axos trust asks a person to confirm: run it in your own terminal, not through an agent.");
+  if (!process.stdin.isTTY) throw new Error("this asks a person to confirm: run it in your own terminal, not through an agent.");
   process.stdout.write(`${question} [y/N] `);
   for await (const line of console) return /^y(es)?$/i.test(line.trim());
   return false;
@@ -442,7 +507,7 @@ async function joinHub(args: string[]): Promise<void> {
   writeFileSync(tokenFile, `${r.token}\n`, { mode: 0o600 });
   console.log(`This machine is ${r.agent} on ${r.hub ?? hubUrl}${r.projects?.length ? `, in ${r.projects.join(", ")}` : ""}.`);
   if (r.page) console.log(`Your page, shown once (open it on each device; it remembers you):\n  ${r.page}`);
-  console.log("Claude Code sessions started from now on connect. A repo with an .axos.json needs `axos trust` once in its folder.");
+  console.log("Connect a repo once, in its folder: axos link <project> (or axos trust, if it commits an .axos.json).");
 }
 
 // For a landing script, run in the repository after the push succeeded. The hub never sees the repository: this reads
@@ -494,13 +559,108 @@ async function landed(args: string[]): Promise<void> {
   console.log(`Reported to ${r.project}: ${head.slice(0, 10)} on ${where} (${repo}), ${r.commits} commit(s); ${r.told} subscription(s) told.`);
 }
 
+// The hub says which project a reference means for this machine's agent; the link stores its id, so a rename or a second
+// project of the same name elsewhere changes nothing. A hub without /api/whoami (before 0.8) gets the reference as typed.
+async function resolveProject(c: Config, t: string, ref: string): Promise<{ id: string; name?: string }> {
+  const res = await fetch(`${c.url.replace(/\/$/, "")}/api/whoami?project=${encodeURIComponent(ref)}`, {
+    headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(10_000),
+  });
+  if (res.status === 401) throw new Error("the hub refused this machine's token");
+  const r = (await res.json().catch(() => null)) as { error?: string; project?: { id: string; name: string }; projects?: { name: string }[] } | null;
+  if (!r) return { id: ref }; // an older hub
+  if (r.error || !r.project) {
+    const yours = r.projects?.map((p) => p.name).join(", ");
+    throw new Error(`${r.error ?? "the hub named no project"}${yours ? `; yours: ${yours}` : ""}`);
+  }
+  return { id: r.project.id, name: r.project.name };
+}
+
+function writeConfig(c: Config): void {
+  mkdirSync(dirname(CONFIG_PATH), { recursive: true });
+  writeFileSync(CONFIG_PATH, `${JSON.stringify(c, null, 2)}\n`, { mode: 0o600 });
+}
+
+// Connects a checkout on this machine only. In a git checkout with a remote the rule names the remote (origin, or
+// --remote <name>), so every clone and worktree of that repository connects; --here, or no remote, names the folder.
+async function link(args: string[]): Promise<void> {
+  const c = config();
+  const t = c && token(c);
+  if (!c || !t) throw new Error(`AXOS is not set up on this machine: axos join <invite link> first`);
+  const opt = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    if (i < 0) return undefined;
+    const v = args[i + 1];
+    args.splice(i, 2);
+    return v;
+  };
+  const here = args.includes("--here");
+  const remoteName = opt("--remote");
+  const rest = args.filter((a) => a !== "--here");
+  if (rest.length > 1 || rest.some((a) => a.startsWith("--"))) throw new Error("usage: axos link [<project>] [--remote <name>] [--here]");
+  const cwd = process.cwd();
+  const file = repoFile(c, cwd);
+  const ref = rest[0] ?? file?.ref;
+  if (!ref) throw new Error("say which project: axos link <owner>/<name>");
+  const project = await resolveProject(c, t, ref);
+  // Taking the project from the repo's own file is trusting that file: a person confirms it, as with axos trust.
+  if (!rest[0]) {
+    const question = `Connect Claude Code sessions in this repo to the AXOS project ${project.name ?? project.id}, as its .axos.json asks, ` +
+      `on ${hostOf(c.url)}? Their messages, roles and leases are then shared with that project's members.`;
+    if (!(await confirm(question))) return console.log("Not linked.");
+  }
+
+  const git = gitRemotes(cwd);
+  let rule: FolderRule;
+  if (!here && git?.remotes.length) {
+    const pick = remoteName ? git.remotes.find((r) => r.name === remoteName)
+      : git.remotes.find((r) => r.name === "origin") ?? (git.remotes.length === 1 ? git.remotes[0] : undefined);
+    if (!pick) throw new Error(remoteName ? `no remote '${remoteName}' here` : `say which remote: --remote ${git.remotes.map((r) => r.name).join(" or --remote ")}`);
+    rule = { remote: pick.key, project: project.id, ...(project.name ? { name: project.name } : {}) };
+  } else {
+    if (remoteName) throw new Error("--remote needs a git checkout with that remote");
+    rule = { path: git?.root ?? cwd, project: project.id, ...(project.name ? { name: project.name } : {}) };
+  }
+  const same = (r: FolderRule) => rule.remote ? r.remote === rule.remote : !!r.path && resolve(expand(r.path)) === rule.path;
+  const folders = c.folders ?? [];
+  const old = folders.find(same);
+  if (old) Object.assign(old, { project: rule.project, name: rule.name }); // keeps roles_dir and the like
+  else folders.push(rule);
+  writeConfig({ ...c, folders });
+
+  const label = project.name ?? project.id;
+  console.log(rule.remote
+    ? `Linked on this machine: every checkout of ${rule.remote} -> ${label}.`
+    : `Linked on this machine: ${rule.path} and everything below it -> ${label}.`);
+  const now = projectOf({ ...c, folders }, cwd).project;
+  if (now !== project.id) console.log(`Note: here ${now} still wins (a folder rule or a trusted .axos.json); axos whoami shows which.`);
+  else console.log("Nothing was written into the repo. New sessions here connect; running ones at their next prompt.");
+}
+
+function unlink(): void {
+  const c = config();
+  if (!c) throw new Error(`AXOS is not configured: no ${CONFIG_PATH}`);
+  const cwd = process.cwd();
+  const git = gitRemotes(cwd);
+  const keys = new Set(git?.remotes.map((r) => r.key));
+  const root = git?.root ?? cwd;
+  const gone = (c.folders ?? []).filter((r) => (r.remote && keys.has(r.remote)) || (r.path && resolve(expand(r.path)) === root));
+  if (!gone.length) return console.log("No link for this checkout.");
+  writeConfig({ ...c, folders: (c.folders ?? []).filter((r) => !gone.includes(r)) });
+  for (const r of gone) console.log(`Unlinked ${r.remote ?? r.path} (was ${r.name ?? r.project}).`);
+}
+
 function whoami(): void {
   const c = config();
   if (!c || !token(c)) return console.log(`not configured (${c ? "token missing" : `no ${CONFIG_PATH}`})`);
   const sid = process.env.CLAUDE_CODE_SESSION_ID;
   const id = identity(sid ?? "terminal", sid ? undefined : process.cwd());
+  const repo = id ? repoFile(c, id.cwd) : null;
+  const via = !id?.project ? undefined
+    : repo && trusted(repo.dir, repo.ref) ? `${repo.dir}/.axos.json`
+    : id.rule?.remote ? `linked remote ${id.rule.remote}` : id.rule?.path ? `folder rule ${id.rule.path}` : undefined;
   console.log(JSON.stringify({
-    hub: c.url, project: id?.project ?? null, untrusted: id?.untrusted ? `${id.untrusted.dir}/.axos.json (run axos trust there)` : undefined,
+    hub: c.url, project: id?.project ?? null, project_name: id?.rule?.project === id?.project ? id?.rule?.name : undefined, via,
+    untrusted: id?.untrusted && !id.project ? `${id.untrusted.dir}/.axos.json (run axos trust there, or axos link)` : undefined,
     profile: profile(), session: sid ?? null, name: id?.name ?? null, quiet: id?.quiet, roles: id?.roles,
   }, null, 2));
 }
@@ -523,12 +683,18 @@ else if (cmd === "landed") {
     process.exit(1);
   });
 }
+else if (cmd === "link" || cmd === "unlink") {
+  await (cmd === "link" ? link(process.argv.slice(3)) : Promise.resolve(unlink())).catch((e: Error) => {
+    console.error(e.message);
+    process.exit(1);
+  });
+}
 else if (cmd === "trust") {
   await trust().catch((e: Error) => {
     console.error(e.message);
     process.exit(1);
   });
 } else {
-  console.error("usage: axos join <invite link> | trust | whoami | landed <remote>/<branch>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
+  console.error("usage: axos join <invite link> | link [<project>] | unlink | trust | whoami | landed <remote>/<branch>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
   process.exit(2);
 }

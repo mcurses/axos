@@ -31,7 +31,12 @@ Ask the hub's admin for an invite link (`axos invite`), then `axos join <link>`.
 }
 ```
 
-A repo can name its project itself with a committed `.axos.json`, which wins over `folders`:
+`axos link <project>` in a repo adds a rule for you: `{"remote": "github.com/ana/parser", "project": "prj_…", "name":
+"ana/parser"}`. It names the repo's git remote (origin, or `--remote <name>`; no user, password or port is kept), so
+every clone and worktree of it connects; without a remote, or with `--here`, it names the folder. A `path` rule beats a
+`remote` rule. `axos unlink` removes the rule for the checkout you are in.
+
+A repo can also name its project itself with a committed `.axos.json`, which wins over `folders`:
 `{"hub": "https://axos.example.net", "project": "ana/parser", "id": "prj_…"}`. The plugin ignores a file meant for
 another hub, and connects a folder only after the person on this machine accepted the file once: `axos trust` in that
 folder. On macOS it asks in a system dialog an agent cannot click; elsewhere it asks at the terminal, which keeps out

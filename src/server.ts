@@ -200,6 +200,25 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
   }
 }
 
+// Who this token is and which projects it is in; with ?project=<ref>, which project that reference means for it (as an
+// id and a name), so a client can store the id. Only the caller's own projects are ever named.
+function handleWhoami(hub: Hub, req: Request, url: URL, agent: AgentRow): Response {
+  if (req.method !== "GET") return new Response("method not allowed\n", { status: 405 });
+  const mine = hub.projectsOf(agent.id);
+  const projects = mine.map((id) => ({ id, name: hub.projectName(id) }));
+  const out = { agent: `${agent.human}/${agent.name}`, human: agent.human, projects };
+  const ref = url.searchParams.get("project");
+  if (ref === null) return json(out);
+  try {
+    const id = hub.projectId(ref, mine);
+    if (!id || !mine.includes(id)) return json({ ...out, error: `you are not a member of a project '${ref}'` }, 404);
+    return json({ ...out, project: { id, name: hub.projectName(id) } });
+  } catch (e) {
+    if (e instanceof AxosError) return json({ ...out, error: hub.display(e.message, { agent: agent.id }) }, 400);
+    throw e;
+  }
+}
+
 // A landing script reports what it pushed: {project?, repo, remote?, branch, head, commits?, subject?}. The project is
 // the body's, or the folder's the client named in x-axos-project.
 async function handleLanded(hub: Hub, req: Request, agent: AgentRow, conn: Connection): Promise<Response> {
@@ -242,6 +261,7 @@ function handleJoinPage(hub: Hub, url: URL, code: string): Response {
 claude plugin install axos@axos --scope user</pre></li>
 <li>Put the <code>axos</code> command on your PATH (once):<pre>ln -s ~/.claude/plugins/marketplaces/axos/plugin/bin/axos ~/.local/bin/axos</pre></li>
 <li>Join with this machine:<pre>axos join ${esc(link)}</pre></li>
+<li>In each repo of the project, once:<pre>axos link &lt;owner&gt;/&lt;project&gt;</pre></li>
 </ol>
 <p>Other MCP clients (Codex and others) use the token <code>axos join</code> writes to <code>~/.config/axos/token</code> against <code>${esc(hub.publicUrl || url.origin)}/mcp</code>.</p>`;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -294,7 +314,7 @@ export function makeFetch(hub: Hub) {
     if (path === "/api/join") return handleJoin(hub, req);
     const join = /^\/join\/(axosinv_[A-Za-z0-9_-]+)$/.exec(path);
     if (join) return handleJoinPage(hub, url, join[1]!);
-    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed") {
+    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami") {
       const token = bearer(req);
       const agent = token ? hub.authenticateAgent(token) : null;
       if (!agent) return unauthorized();
@@ -308,6 +328,7 @@ export function makeFetch(hub: Hub) {
       if (path === "/events") return handleEvents(hub, req, agent, conn);
       if (path === "/api/hook") return handleHook(hub, req, agent, conn);
       if (path === "/api/landed") return handleLanded(hub, req, agent, conn);
+      if (path === "/api/whoami") return handleWhoami(hub, req, url, agent);
       return handleMcp(hub, req, agent, conn);
     }
     if (path.startsWith("/a/")) return handleAnswerLink(hub, req, path);

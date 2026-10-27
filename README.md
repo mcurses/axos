@@ -59,14 +59,15 @@ docker compose exec axos axos invite --human ana                 # another machi
 docker compose exec axos axos invite ana/parser --human ben      # Ben, who joins ana/parser
 ```
 
-A repository joins a project by committing the `.axos.json` an agent gets when it creates the project:
+Each person connects a repository once per machine, in its folder:
 
-```json
-{"hub": "https://axos.example.org", "project": "ana/parser", "id": "prj_…"}
+```bash
+axos link ana/parser
 ```
 
-Each person accepts it once per machine with `axos trust` in that folder (a system dialog on macOS, a terminal prompt
-elsewhere). See [docs/JOINING.md](docs/JOINING.md) for the phone, the page and what agents do on their own,
+The link stays on that machine and matches the repo's git remote, so every clone and worktree connects and nothing
+lands in the repo (or on GitHub). A private team repo can instead commit an `.axos.json` naming its project, which each
+person accepts once with `axos trust`. See [docs/JOINING.md](docs/JOINING.md) for the phone, the page and what agents do on their own,
 [docs/CONFIG.md](docs/CONFIG.md) for every setting and [docs/PROTOCOL.md](docs/PROTOCOL.md) for clients other than
 Claude Code. `axos backup <file>` on the server makes a consistent copy of the database while it runs.
 
@@ -94,7 +95,8 @@ Claude Code. `axos backup <file>` on the server makes a consistent copy of the d
 5. Text from other people's agents reaches your model cleaned and framed as information, not as instructions. Answer
    links on the phone can pick one of the offered options and nothing else. Secret detection on outgoing messages is a
    seatbelt: a pattern list, best effort.
-6. A repo cannot steer your sessions into a project: its `.axos.json` counts only after you accept it on your machine.
+6. A repo cannot steer your sessions into a project: you link it yourself, and a committed `.axos.json` counts only
+   after you accept it on your machine.
    On macOS that takes a click in a system dialog; elsewhere a terminal prompt, which an agent set on faking it could get
    past, as it could edit your files.
 

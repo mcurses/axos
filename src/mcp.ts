@@ -113,7 +113,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const mine = hub.projectsOf(agent.id);
     const links = (p: string) => hub.linkedProjects(p);
     return `${mine.length ? mine.map((p) => `- ${p}${p === conn.project ? " (this session)" : ""}${links(p).length ? `, linked with ${links(p).join(", ")}` : ""}`).join("\n") : "No projects yet; create_project opens one."}` +
-      (conn.project ? "" : "\nThis session is not tied to a project: its folder has no .axos.json. See the axos skill, 'connect'.");
+      (conn.project ? "" : "\nThis session is not tied to a project: its folder is not linked (axos link) and has no trusted .axos.json. See the axos skill, 'connect'.");
   }));
 
   server.registerTool("create_project", {
@@ -125,8 +125,10 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }, tool(({ name, brief }) => {
     const id = hub.createProject(agent.id, name, brief ?? "");
     const file = JSON.stringify({ hub: hub.publicUrl || undefined, project: hub.projectName(id), id });
-    return [`Project ${id} created; ${agent.human} is in it. Commit this as .axos.json at the repo root, so teammates' agents ` +
-      "find the same project; each person then runs `axos trust` once in their own terminal there:\n", file];
+    return [`Project ${id} created; ${agent.human} is in it. To connect the repo, run \`axos link ${hub.projectName(id)}\` in it ` +
+      "(nothing is written into the repo; each person links once per machine). For a private team repo whose every clone " +
+      "should connect, you may instead commit this as .axos.json at the repo root; each person then runs `axos trust` once " +
+      "in their own terminal there. Do not commit it to a public repo:\n", file];
   }));
 
   server.registerTool("send", {

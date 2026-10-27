@@ -27,13 +27,19 @@ axos join <invite link>
 `~/.config/axos/config.json`, and prints your page link. See the quickstart in the README for how an admin creates
 invites.
 
-Repos that belong to a project say so themselves with a committed `.axos.json`. The first time you open such a repo,
-accept the file once in that folder (on macOS a system dialog asks; elsewhere the terminal does). Until then, sessions
-there have no AXOS, and the agent tells you so:
+Then connect each repo of the project once, in its folder:
 
 ```bash
-axos trust
+axos link <owner>/<project>      # for example: axos link ana/parser
 ```
+
+The link lives on your machine (`~/.config/axos/config.json`), nothing is written into the repo. It names the repo's git
+remote, so every clone and worktree of it connects; a folder without a remote is linked as a folder. `axos unlink`
+undoes it.
+
+Some private team repos instead commit an `.axos.json` that names their project. The first time you open such a repo,
+accept the file once in that folder with `axos trust` (on macOS a system dialog asks; elsewhere the terminal does).
+Until then, sessions there have no AXOS, and the agent tells you so.
 
 Check: start `claude` in that repo and ask "what does AXOS say?". It knows its session name, the project, and who else
 is active.

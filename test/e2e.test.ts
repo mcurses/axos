@@ -4,7 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { openDb } from "../src/db.ts";
 import { Hub } from "../src/hub.ts";
 import { makeFetch } from "../src/server.ts";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -513,4 +513,101 @@ test("the landing route needs a token and a project the agent is in", async () =
   expect(((await r.json()) as { error: string }).error).toBe(`you are not a member of project '${other}'`);
   const ok = await post({ project: "alice/shop", repo: "x", branch: "main", head: "a".repeat(40) }, tokens.dev1);
   expect(await ok.json()).toMatchObject({ told: 0, commits: 1, project: "alice/shop" });
+});
+
+test("/api/whoami names the caller's projects and resolves a reference only among them", async () => {
+  const who = (q: string, t?: string) => fetch(`${base}/api/whoami${q}`, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
+  expect((await who("")).status).toBe(401);
+  const mine = (await (await who("", tokens.dev1)).json()) as { agent: string; projects: { id: string; name: string }[] };
+  expect(mine.agent).toBe("alice/dev1");
+  expect(mine.projects).toContainEqual({ id: SHOP, name: "alice/shop" });
+  expect(await (await who("?project=shop", tokens.dev1)).json()).toMatchObject({ project: { id: SHOP, name: "alice/shop" } });
+  // An outsider naming alice's project learns nothing about it, not even its id.
+  const outsider = hub.addAgent("bob", "whoami-box", []).token;
+  const r = await who("?project=alice%2Fshop", outsider);
+  expect(r.status).toBe(404);
+  const text = await r.text();
+  expect(text).not.toContain(SHOP);
+  expect(JSON.parse(text).error).toBe("you are not a member of a project 'alice/shop'");
+});
+
+test("axos link connects every checkout of a remote on this machine, writes nothing into the repo, and unlinks", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "axos-link-"));
+  const sh = (cwd: string, ...a: string[]) => {
+    const r = Bun.spawnSync(a, { cwd, env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+  };
+  const axos = async (cwd: string, ...a: string[]) => {
+    const env: Record<string, string | undefined> = { ...process.env, AXOS_CONFIG: join(dir, "config.json") };
+    delete env.CLAUDE_CODE_SESSION_ID;
+    const p = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), ...a], { cwd, env, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+    const [out, err] = [await new Response(p.stdout).text(), await new Response(p.stderr).text()];
+    return { out, err, code: await p.exited };
+  };
+  const config = () => JSON.parse(readFileSync(join(dir, "config.json"), "utf8")) as { url: string; folders?: Record<string, string>[] };
+  try {
+    writeFileSync(join(dir, "token"), `${tokens.dev1}\n`);
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ url: base, token_file: join(dir, "token") }));
+    const work = join(dir, "work");
+    sh(dir, "git", "init", "-q", "-b", "main", work);
+    sh(work, "git", "remote", "add", "origin", "git@github.com:Alice/Shop.git");
+    sh(work, "git", "remote", "add", "backup", "https://ci-bot:SECRET123@example.org/mirror/shop.git");
+    sh(work, "git", "commit", "-q", "--allow-empty", "-m", "base");
+    mkdirSync(join(work, "src"));
+
+    const linked = await axos(join(work, "src"), "link", "alice/shop");
+    expect(linked.err).toBe("");
+    expect(linked.code).toBe(0);
+    expect(linked.out).toContain("every checkout of github.com/alice/shop -> alice/shop");
+    expect(config().folders).toEqual([{ remote: "github.com/alice/shop", project: SHOP, name: "alice/shop" }]);
+    expect(JSON.stringify(config())).not.toContain("SECRET123");
+    expect(Bun.spawnSync(["git", "status", "--porcelain"], { cwd: work }).stdout.toString()).toBe("");
+
+    // A worktree and a second clone over https name the same repository.
+    sh(work, "git", "worktree", "add", "-q", join(dir, "wt"));
+    const clone = join(dir, "clone");
+    sh(dir, "git", "init", "-q", clone);
+    sh(clone, "git", "remote", "add", "origin", "https://github.com/alice/shop");
+    for (const where of [join(dir, "wt"), clone]) {
+      const w = JSON.parse((await axos(where, "whoami")).out) as { project: string; project_name: string; via: string };
+      expect(w).toMatchObject({ project: SHOP, project_name: "alice/shop", via: "linked remote github.com/alice/shop" });
+    }
+    const elsewhere = join(dir, "other");
+    sh(dir, "git", "init", "-q", elsewhere);
+    sh(elsewhere, "git", "remote", "add", "origin", "git@github.com:alice/other.git");
+    expect(JSON.parse((await axos(elsewhere, "whoami")).out).project).toBeNull();
+
+    const outsider = await axos(work, "link", "alice/secret-nope");
+    expect(outsider.code).toBe(1);
+    expect(outsider.err).toContain("you are not a member of a project 'alice/secret-nope'; yours: ");
+
+    expect((await axos(clone, "unlink")).out).toBe("Unlinked github.com/alice/shop (was alice/shop).\n");
+    expect(config().folders).toEqual([]);
+    expect(JSON.parse((await axos(work, "whoami")).out).project).toBeNull();
+
+    // No remote: the link names the folder.
+    const plain = join(dir, "plain");
+    mkdirSync(plain);
+    const bare = realpathSync(plain);
+    expect((await axos(bare, "link", "shop")).out).toContain(`${bare} and everything below it -> alice/shop`);
+    expect(JSON.parse((await axos(bare, "whoami")).out).via).toBe(`folder rule ${bare}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(process.platform === "darwin")("axos link without a project takes the repo's .axos.json only with a person's yes", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "axos-link-file-"));
+  try {
+    writeFileSync(join(dir, "token"), `${tokens.dev1}\n`);
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ url: base, token_file: join(dir, "token") }));
+    writeFileSync(join(dir, ".axos.json"), JSON.stringify({ project: "alice/shop" }));
+    const p = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), "link"],
+      { cwd: dir, env: { ...process.env, AXOS_CONFIG: join(dir, "config.json") }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    expect(await new Response(p.stderr).text()).toContain("asks a person to confirm");
+    expect(await p.exited).toBe(1);
+    expect(JSON.parse(readFileSync(join(dir, "config.json"), "utf8")).folders).toBeUndefined();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

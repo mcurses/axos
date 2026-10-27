@@ -106,10 +106,10 @@ The Claude Code plugin reads these; another client can ignore them or reuse the 
 
 | File | Written by | Purpose |
 |---|---|---|
-| `~/.config/axos/config.json` | `axos join`, or by hand | Hub URL, token locations, folder rules |
+| `~/.config/axos/config.json` | `axos join`, `axos link`, or by hand | Hub URL, token locations, folder rules |
 | `~/.config/axos/token` | `axos join` | The default token file, mode 0600 |
 | `~/.config/axos/trusted.json` | `axos trust` | Which `.axos.json` files this machine trusts, mode 0600 |
-| `<repo>/.axos.json` | `create_project` proposes it; committed | Names the repo's project |
+| `<repo>/.axos.json` | committed by a team that wants it (optional) | Names the repo's project for every clone |
 
 `trusted.json` sits next to the config file, so setting `AXOS_CONFIG` moves it too.
 
@@ -122,7 +122,8 @@ The Claude Code plugin reads these; another client can ignore them or reuse the 
   "profiles": { "main": "~/.config/axos/token", "work": "~/.config/axos/token-work" },
   "folders": [
     { "path": "~/code/shop", "project": "alice/shop",
-      "roles_dir": "~/code/shop/roles/claims", "roles_ignore": ["adhoc"], "quiet_roles": ["elevated"] }
+      "roles_dir": "~/code/shop/roles/claims", "roles_ignore": ["adhoc"], "quiet_roles": ["elevated"] },
+    { "remote": "github.com/alice/parser", "project": "prj_0a1b2c3d4e", "name": "alice/parser" }
   ],
   "check_every_s": 30
 }
@@ -133,7 +134,7 @@ The Claude Code plugin reads these; another client can ignore them or reuse the 
 | `url` | string, required | The hub's base URL. Without it the file counts as absent and AXOS is off. A trailing `/` is dropped. |
 | `token_file` | string | Token file for profiles without an entry of their own. Default `~/.config/axos/token`. |
 | `profiles` | object | Profile name to token file, for several Claude accounts on one machine (see below). |
-| `folders` | array | Folder rules: which folders belong to which project, without a committed `.axos.json`. |
+| `folders` | array | Folder rules: which folders or repositories belong to which project. `axos link` writes them. |
 | `check_every_s` | number | Minimum seconds between hub checks in the after-tool-call hook. Default 30. Prompt, start and stop hooks always check. |
 
 `folders` entries:
@@ -141,12 +142,14 @@ The Claude Code plugin reads these; another client can ignore them or reuse the 
 | Key | Meaning |
 |---|---|
 | `path` | Folder (`~` allowed). The rule covers it and everything below it. With several matches the longest path wins. |
+| `remote` | Instead of `path`: a repository, as `<host>/<path>` in lowercase without `.git`, user, password or port (`git@github.com:Ana/Parser.git` and `https://github.com/ana/parser` are both `github.com/ana/parser`; a local remote is `file:<absolute path>`). The rule covers every checkout that has it among its remotes. |
 | `project` | Project as an id, `<owner>/<slug>` or a slug. |
+| `name` | Optional. The project's name, for people reading the file; `axos link` writes it next to the id. |
 | `roles_dir` | Optional. A directory of `*.json` claim files `{"role": "...", "session_id": "..."}`. The session gets the roles whose `session_id` is its Claude session id, and they are mirrored to the hub on each check. Roles held on the hub that the directory does not name are released. If the directory cannot be read, nothing is mirrored and nothing released. |
 | `roles_ignore` | Roles in `roles_dir` that are not mirrored, e.g. one that many sessions hold at once. |
 | `quiet_roles` | A session holding one of these roles gets no AXOS at all: no hooks, no tools, no event stream. |
 
-`axos join` writes `url` and keeps every other key.
+`axos join` writes `url` and keeps every other key; `axos link` and `axos unlink` change only `folders`.
 
 ### Token
 
@@ -181,8 +184,10 @@ records in `<config dir>/sessions/*.json` for the session's name and folder.
 For the folder of a session, in this order:
 
 1. A `.axos.json` at or above the folder that this machine trusts.
-2. The best `folders` rule in `config.json`.
-3. None: the hooks stay silent and the session's AXOS tools refuse project work (the `projects` tool says how to
+2. The longest `path` rule in `folders` that contains the folder.
+3. A `remote` rule in `folders` naming one of the remotes of the git checkout around the folder (read from its
+   `.git/config`; a worktree's from the main repository).
+4. None: the hooks stay silent and the session's AXOS tools refuse project work (the `projects` tool says how to
    connect the folder).
 
 A trusted `.axos.json` beats a `folders` rule. An untrusted one does not count; if there is no `folders` rule either,
@@ -250,8 +255,10 @@ id>"}` in `trusted.json`.
 | Command | For | What it does |
 |---|---|---|
 | `axos join <link> [--name <machine>] [--force]` | a person | Redeems an invite. Writes `url` into the config and the token into the token file. Refuses without `--force` when the machine is set up for another hub, or already has a token file. `--name` replaces the host name as the machine name. |
+| `axos link [<project>] [--remote <name>] [--here]` | a person, or an agent asked to | Connects the checkout here on this machine: a `remote` rule for its `origin` (or the named remote), a `path` rule for its top folder when it has no remote or with `--here`. The hub resolves the project (`/api/whoami`) and the rule stores its id. Without a project it takes the repo's `.axos.json` and asks a person to confirm, like `axos trust`. |
+| `axos unlink` | anyone | Removes the rules that connect the checkout here (its remotes, or its top folder). |
 | `axos trust` | a person at a terminal | Trusts the `.axos.json` at or above the current folder. |
-| `axos whoami` | anyone | Prints hub, project, profile, session, roles; says if an `.axos.json` is untrusted. |
+| `axos whoami` | anyone | Prints hub, project (and `via`: the trusted file, linked remote or folder rule), profile, session, roles; says if an `.axos.json` is untrusted. |
 
 The hub's admin commands (`axos init`, `invite`, `agent …`, `project …`, `human …`, `role add`, `backup`, `events`) are
 listed by running `axos` with no arguments on the hub host. Tokens and page keys they print are shown once; pipe them

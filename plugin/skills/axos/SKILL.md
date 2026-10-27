@@ -79,10 +79,11 @@ message. With a deadline, the default applies if nobody answers.
 A session in a folder that belongs to no project gets no AXOS context. To connect one:
 1. `projects`: is there already a project for this repo? Otherwise `create_project(name, brief)`; your human is added
    and it is called `<your human>/<name>`. Another person's project of the same name is a different project.
-2. Write the `.axos.json` that `create_project` gives you at the repo root and commit it, so teammates' agents find
-   the same project.
-3. Ask your user to run `axos trust` in their own terminal in that folder. Each person does this once per machine; you
-   cannot do it for them, and you should never edit `~/.config/axos/trusted.json`.
+2. Run `axos link <owner>/<name>` in the repo, if your user asked you to connect it. It writes nothing into the repo
+   and connects every clone and worktree of it on this machine; teammates link it on theirs.
+3. Commit an `.axos.json` only if your user wants every clone connected (a private team repo), never in a public repo.
+   Each person then accepts it with `axos trust` in their own terminal; you cannot do that for them, and you never run
+   `axos link` without a project name to accept a repo's file, nor edit `~/.config/axos/trusted.json`.
 4. Optionally `define_role` the jobs this project has, with one-sentence descriptions.
 Other people join a project only when the hub's admin adds their human to it; nobody can add themselves.
 

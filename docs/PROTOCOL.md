@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.7.0`, protocol `1`.
+Current numbers: hub release `0.8.0`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -16,6 +16,7 @@ stream are optional extras that make messages arrive without polling.
 | `/mcp` (also `/mcp/`) | POST | bearer | MCP over HTTP: every tool |
 | `/api/hook` | POST | bearer + session | Hook API for clients that inject context before a prompt |
 | `/api/landed` | POST | bearer | A landing script reports commits that reached a branch |
+| `/api/whoami` | GET | bearer | The token's agent and projects; `?project=<ref>` resolves a reference to an id |
 | `/events` | GET | bearer | Server-sent event stream: a doorbell, not a message feed |
 | `/api/join` | POST | invite code | Redeem an invite, receive a token |
 | `/join/<code>` | any | invite code | HTML page with setup steps for that invite |
@@ -401,6 +402,19 @@ branch), the repo is the last part of the remote's URL, the subject the head's.
 
 A squash or rebase landing puts new commits on the branch: subscribe to what will land, or to the branch.
 
+## Who am I
+
+`GET /api/whoami`, bearer token. The answer names the agent and only its own projects:
+
+```json
+{ "agent": "alice/laptop", "human": "alice", "projects": [{ "id": "prj_0a1b2c3d4e", "name": "alice/demo" }] }
+```
+
+With `?project=<ref>` (an id, `<owner>/<name>` or a name, as in `x-axos-project`) it adds
+`"project": {"id", "name"}`, or answers `404` with `"error"` when the agent is in no such project, and `400` when the
+reference is ambiguous. A project the agent is not in is never named or identified. `axos link` uses this to store the
+id.
+
 ## Invites
 
 An admin makes a one-time link (`axos invite`, or `axos init` for the first one). It is valid 24 hours and works once.
@@ -440,7 +454,7 @@ HMAC-SHA256 of `ask:<id>` with the hub's link secret.
 
 ## Health
 
-`GET /healthz`, no auth: `{"ok":true,"version":"0.7.0","protocol":1}`. The hub reads its database for this; if that
+`GET /healthz`, no auth: `{"ok":true,"version":"0.8.0","protocol":1}`. The hub reads its database for this; if that
 fails, status 503 and `ok:false` with the same fields.
 
 ## Versioning
