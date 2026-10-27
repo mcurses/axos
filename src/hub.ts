@@ -1370,6 +1370,10 @@ export class Hub {
     for (const s of subs) {
       const matched = s.sha === null ? null : commits.find((c) => c.startsWith(s.sha!) || s.sha!.startsWith(c));
       if (matched === undefined) continue;
+      // A branch watched on any remote hears of a head once, not once per remote it is pushed to.
+      if (matched === null && s.remote === null && this.db.query(
+        "SELECT 1 FROM landings WHERE project = ? AND repo = ? AND branch = ? AND head = ? AND id <> ? AND at >= ? LIMIT 1",
+      ).get(input.project, w.repo, w.branch, head, landing.id, s.created_at)) continue;
       if (matched !== null) this.db.query("UPDATE subscriptions SET ended_at = ?, end_reason = 'landed' WHERE id = ?").run(t, s.id);
       this.tellLanded(s, landing, matched);
       told++;

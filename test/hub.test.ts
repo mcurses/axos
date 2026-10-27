@@ -998,6 +998,18 @@ describe("landings and subscriptions", () => {
     expect(land().told).toBe(0);
   });
 
+  test("one landing reported once per remote tells a commit's or a branch's subscription without a remote only once", () => {
+    sub({ remote: undefined });
+    sub({ sha: undefined, remote: undefined }, coord);
+    sub({ sha: undefined }, coord); // a gitlab one is told of gitlab's report only
+    expect(land().told).toBe(3);
+    expect(land({ remote: "backup" }).told).toBe(0);
+    expect(mail(verifier)).toHaveLength(1);
+    expect(mail(coord)).toHaveLength(2);
+    land({ head: "b".repeat(40), commits: [] });
+    expect(mail(coord)).toHaveLength(4);
+  });
+
   test("a commit that never lands: one message at expiry, with the note", () => {
     sub({ note: "keep review-545 until then" });
     t += 24 * 3600_000 + 1;

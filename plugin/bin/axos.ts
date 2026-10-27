@@ -13,6 +13,8 @@
 //   axos landed <remote>/<branch> [<commit>] [--since <old head>]
 //                        for a landing script, after a successful push: tells AXOS what is now on the branch, so every
 //                        session subscribed to one of those commits (or to the branch) gets a message
+//   axos codex-bell --thread <codex session> [--session <id>]
+//                        keep running beside an interactive Codex: when an AXOS message arrives, `codex queue` wakes it
 //
 // Configuration: ~/.config/axos/config.json (see plugin README). A folder belongs to a project through a "folders" entry
 // in the config (a folder path, or a git remote that `axos link` wrote), or through a committed .axos.json ({"hub": "<url>", "project": "<owner>/<name>", "id": "prj_…"}) at or
@@ -363,19 +365,18 @@ async function forward(id: Identity, msg: { id?: unknown; method?: string }): Pr
   }
 }
 
-// Channel push: hold the hub's event stream and ring the session when a message arrives (or, after a reconnect, when
-// one is waiting). The ring carries no message and marks nothing shown: a session started without channels drops it,
-// and the hooks still deliver; one with channels wakes, and its hooks deliver at once. Reconnects with backoff.
-async function bell(): Promise<void> {
+// Hold the hub's event stream and call ring() when a message arrives (or, after a reconnect, when one is waiting).
+// A ring carries no message: the client reads its inbox. Reconnects with backoff; without an identity it waits.
+async function doorbell(connect: () => { url: string; headers: Record<string, string> } | null, ring: () => void): Promise<void> {
   let backoff = 2000;
   for (;;) {
-    const id = currentIdentity();
-    if (!id || id.quiet || !id.project) {
+    const to = connect();
+    if (!to) {
       await Bun.sleep(60_000);
       continue;
     }
     try {
-      const res = await fetch(`${id.c.url.replace(/\/$/, "")}/events`, { headers: headers(id) });
+      const res = await fetch(`${to.url.replace(/\/$/, "")}/events`, { headers: to.headers });
       if (!res.ok || !res.body) throw new Error(`events ${res.status}`);
       backoff = 2000;
       const reader = res.body.getReader();
@@ -390,10 +391,7 @@ async function bell(): Promise<void> {
           const frame = buf.slice(0, i);
           buf = buf.slice(i + 2);
           const hello = /^event: hello$/m.test(frame) && Number(/"unshown":(\d+)/.exec(frame)?.[1] ?? 0) > 0;
-          if (!hello && !/^event: message$/m.test(frame)) continue;
-          write({ jsonrpc: "2.0", method: "notifications/claude/channel", params: {
-            content: "AXOS: a new message is waiting for this session. It is shown at your next step; or call inbox now.", meta: { source: "axos" },
-          } });
+          if (hello || /^event: message$/m.test(frame)) ring();
         }
       }
     } catch {
@@ -402,6 +400,17 @@ async function bell(): Promise<void> {
     await Bun.sleep(backoff);
     backoff = Math.min(backoff * 2, 60_000);
   }
+}
+
+// Channel push: a ring marks nothing shown, so a session started without channels drops it and the hooks still deliver;
+// one with channels wakes, and its hooks deliver at once.
+function bell(): Promise<void> {
+  return doorbell(() => {
+    const id = currentIdentity();
+    return !id || id.quiet || !id.project ? null : { url: id.c.url, headers: headers(id) };
+  }, () => write({ jsonrpc: "2.0", method: "notifications/claude/channel", params: {
+    content: "AXOS: a new message is waiting for this session. It is shown at your next step; or call inbox now.", meta: { source: "axos" },
+  } }));
 }
 
 async function mcp(): Promise<void> {
@@ -559,6 +568,59 @@ async function landed(args: string[]): Promise<void> {
   console.log(`Reported to ${r.project}: ${head.slice(0, 10)} on ${where} (${repo}), ${r.commits} commit(s); ${r.told} subscription(s) told.`);
 }
 
+// Wake an idle Codex: listen to the mailbox Codex reads (same token, same x-axos-session) and, when a message arrives,
+// queue a fixed line into the Codex session. Codex then reads the message itself through its AXOS tools; no message
+// text passes through here.
+const CODEX_NUDGE = "AXOS: a new message is waiting for you. Read it with the axos inbox tool, handle what concerns your work, " +
+  "reply with the axos send tool (re=<its id>) when there is something to say, and ack it.";
+
+async function codexBell(args: string[]): Promise<void> {
+  const opt = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    if (i < 0) return undefined;
+    const v = args[i + 1];
+    args.splice(i, 2);
+    return v;
+  };
+  const thread = opt("--thread"), session = opt("--session"), projectArg = opt("--project"), codex = opt("--codex") ?? "codex";
+  if (!thread || args.length) {
+    throw new Error("usage: axos codex-bell --thread <codex session id or name> [--session <the x-axos-session Codex sends>] [--project <p>] [--codex <path>]");
+  }
+  if (session !== undefined && !/^[A-Za-z0-9-]{8,80}$/.test(session)) throw new Error("--session must be 8-80 letters, digits or '-', as Codex sends it");
+  const c = config();
+  const t = c && token(c);
+  if (!c || !t) throw new Error(`AXOS is not configured: ${CONFIG_PATH} or the token is missing`);
+  const project = projectArg ?? projectOf(c, process.cwd()).project;
+  if (!project) throw new Error("this folder belongs to no AXOS project; run it in the repo Codex works in, or say --project <p>");
+  const h: Record<string, string> = { Authorization: `Bearer ${t}`, "x-axos-profile": encodeURIComponent(profile()), "x-axos-project": encodeURIComponent(project) };
+  if (session) h["x-axos-session"] = session;
+
+  // Rings within a few seconds become one nudge; a ring while a nudge is being queued is kept for after it.
+  let state: "idle" | "waiting" | "queueing" = "idle", again = false;
+  const nudge = async () => {
+    const r = Bun.spawn([codex, "queue", "--thread", thread, "--message", CODEX_NUDGE], { stdout: "pipe", stderr: "pipe" });
+    const code = await r.exited;
+    const out = (code === 0 ? await new Response(r.stdout).text() : await new Response(r.stderr).text()).trim().split("\n").at(-1);
+    console.error(`${new Date().toISOString()} ${code === 0 ? "nudged" : `codex queue failed (${code})`}: ${out}`);
+  };
+  const ring = () => {
+    if (state === "queueing") again = true;
+    if (state !== "idle") return;
+    state = "waiting";
+    setTimeout(async () => {
+      state = "queueing";
+      await nudge().catch((e: Error) => console.error(`${new Date().toISOString()} codex queue failed: ${e.message}`));
+      state = "idle";
+      if (again) {
+        again = false;
+        ring();
+      }
+    }, 2000);
+  };
+  console.error(`Listening for AXOS messages of ${session ? `session ${session}` : "this machine's agent"} in ${project}; nudging Codex session ${thread}.`);
+  await doorbell(() => ({ url: c.url, headers: h }), ring);
+}
+
 // The hub says which project a reference means for this machine's agent; the link stores its id, so a rename or a second
 // project of the same name elsewhere changes nothing. A hub without /api/whoami (before 0.8) gets the reference as typed.
 async function resolveProject(c: Config, t: string, ref: string): Promise<{ id: string; name?: string }> {
@@ -677,6 +739,12 @@ else if (cmd === "join") {
     process.exit(1);
   });
 }
+else if (cmd === "codex-bell") {
+  await codexBell(process.argv.slice(3)).catch((e: Error) => {
+    console.error(e.message);
+    process.exit(1);
+  });
+}
 else if (cmd === "landed") {
   await landed(process.argv.slice(3)).catch((e: Error) => {
     console.error(e.message);
@@ -695,6 +763,6 @@ else if (cmd === "trust") {
     process.exit(1);
   });
 } else {
-  console.error("usage: axos join <invite link> | link [<project>] | unlink | trust | whoami | landed <remote>/<branch>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
+  console.error("usage: axos join <invite link> | link [<project>] | unlink | trust | whoami | landed <remote>/<branch> | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
   process.exit(2);
 }

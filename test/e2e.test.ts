@@ -4,7 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { openDb } from "../src/db.ts";
 import { Hub } from "../src/hub.ts";
 import { makeFetch } from "../src/server.ts";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -501,6 +501,48 @@ test("a landing script reports with axos landed; the subscribed session gets one
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("axos codex-bell: a message to the Codex session queues one nudge into Codex, a burst too, a later one another", async () => {
+  const sid = "cdcdcdcd-1111-2222-3333-444444444444";
+  const thread = "01a17d0b-da0f-74d2-834d-f2b39dc0496d";
+  // Codex itself: an MCP client with fixed headers, as its config.toml gives them.
+  const codexMcp = await connect(tokens.dev3!, { "x-axos-session": sid, "x-axos-project": "shop", "x-axos-name": "codex-547" });
+  const dev1 = await connect(tokens.dev1!);
+  const dir = mkdtempSync(join(tmpdir(), "axos-codex-"));
+  writeFileSync(join(dir, "token"), `${tokens.dev3}\n`);
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ url: base, token_file: join(dir, "token") }));
+  // A stand-in for the codex binary that records each call.
+  writeFileSync(join(dir, "codex"), `#!/bin/sh\nprintf '%s\\n' "$@" >> "${join(dir, "calls")}"\necho "Queued message q1 for thread $3."\n`, { mode: 0o755 });
+  const calls = () => existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8").split("queue\n").filter(Boolean) : [];
+  const bell = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), "codex-bell", "--thread", thread, "--session", sid,
+    "--project", "alice/shop", "--codex", join(dir, "codex")], { cwd: dir, env: { ...process.env, AXOS_CONFIG: join(dir, "config.json") }, stdout: "pipe", stderr: "pipe" });
+  const until = async (ok: () => Promise<boolean> | boolean) => {
+    for (let i = 0; i < 100 && !(await ok()); i++) await Bun.sleep(100);
+  };
+  try {
+    await until(async () => /codex-547.*wakes on messages/.test((await call(dev1, "presence", { project: "alice/shop" })).text));
+    expect((await call(dev1, "presence", { project: "alice/shop" })).text).toMatch(/codex-547.*wakes on messages/);
+
+    await call(dev1, "send", { project: "alice/shop", to: "session:codex-547", type: "request", summary: "Please review the toolbar change." });
+    await call(dev1, "send", { project: "alice/shop", to: "session:codex-547", type: "note", summary: "And the canvas one after it." });
+    await until(() => calls().length > 0);
+    await Bun.sleep(2500);
+    expect(calls()).toHaveLength(1);
+    const [args] = calls();
+    expect(args).toStartWith(`--thread\n${thread}\n--message\nAXOS: a new message is waiting for you.`);
+    expect(args).not.toContain("toolbar"); // no message text passes through the bridge
+
+    await call(dev1, "send", { project: "alice/shop", to: "session:codex-547", type: "note", summary: "One more." });
+    await until(() => calls().length > 1);
+    expect(calls()).toHaveLength(2);
+    expect((await call(codexMcp, "inbox")).text).toContain("Please review the toolbar change.");
+  } finally {
+    bell.kill();
+    await codexMcp.close();
+    await dev1.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 20_000);
 
 test("the landing route needs a token and a project the agent is in", async () => {
   const post = (body: unknown, token?: string) => fetch(`${base}/api/landed`, {

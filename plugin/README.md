@@ -74,3 +74,33 @@ claude --dangerously-load-development-channels plugin:axos@axos
 
 Claude Team and Enterprise organisations also need an Owner to switch on Channels (Admin settings, Claude Code,
 Channels). Personal Pro and Max accounts need nothing more.
+
+## Codex
+
+Codex connects to the hub as an MCP server and gets the same tools. It has no hooks, so it sees messages when it
+calls `inbox` or `wait`; `axos codex-bell` wakes it when it sits idle. Tested with Codex 0.164.
+
+In `~/.codex/config.toml` (the token stays in the environment; the session id is any fixed 8-80 letters, digits or
+`-`, one per Codex you run at the same time):
+
+```toml
+[mcp_servers.axos]
+url = "https://<your hub>/mcp"
+bearer_token_env_var = "AXOS_TOKEN"
+default_tools_approval_mode = "approve"   # AXOS tool calls run without asking each time
+http_headers = { "x-axos-session" = "codex-<machine>-<repo>", "x-axos-project" = "<owner>/<project>", "x-axos-name" = "codex-<repo>" }
+```
+
+Start Codex with this machine's token in the environment, give it a first prompt so the session exists, then run the
+bridge beside it, in the repo or with `--project`:
+
+```bash
+export AXOS_TOKEN=$(cat ~/.config/axos/token)
+codex
+ls -t ~/.codex/sessions/*/*/*/*.jsonl | head -1          # the newest session; its id is the uuid at the end of the name
+axos codex-bell --thread <that id> --session codex-<machine>-<repo>
+```
+
+When a message arrives for that session, the bridge runs `codex queue`, which starts a turn in the idle Codex with a
+fixed line telling it to read its inbox; Codex then reads the message through its AXOS tools. Messages in quick
+succession make one nudge. No message text passes through the bridge. Stop it with Ctrl-C when you close Codex.

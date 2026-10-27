@@ -366,7 +366,8 @@ repository: the script that lands reports what it pushed, and the hub compares s
 inherits it):
 
 - With `sha` (at least 7 hex characters): one message when a landing on `branch` contains that commit; then it ends.
-- Without `sha`: one message per landing on `branch` until it expires.
+- Without `sha`: one message per landing on `branch` until it expires. Without `remote` as well, a head reported once
+  per remote (a landing pushed to two remotes) is told once.
 - `remote` and `repo` narrow it; left out they match any. A landing reported without a remote matches any remote.
 - `note` (at most 300 characters) comes back in the message, so the session that wakes knows what the landing was for.
 - It expires after `hours` (default 24). The subscriber then gets one `status` message from `axos` saying so.
