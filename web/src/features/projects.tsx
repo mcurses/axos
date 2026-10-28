@@ -2,20 +2,20 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ago, splitLabel, type Project } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { BellIcon, LinkIcon } from "lucide-react";
+import { BellIcon, LinkIcon, UserIcon } from "lucide-react";
 
 export function Dot({ on }: { on: boolean }) {
   return <span className={cn("inline-block size-2 shrink-0 rounded-full", on ? "bg-emerald-500" : "bg-muted-foreground/40")} />;
 }
 
-export function ProjectCard({ p, now }: { p: Project; now: number }) {
+export function ProjectCard({ p, now, me }: { p: Project; now: number; me: string }) {
   return (
     <Card>
       <CardHeader>
         <CardTitle>{p.id}</CardTitle>
         {p.brief && <CardDescription className="whitespace-pre-wrap">{p.brief}</CardDescription>}
         <div className="flex flex-wrap gap-1 pt-1">
-          {p.humans.map((h) => <Badge key={h} variant="secondary">{h}</Badge>)}
+          {p.humans.filter((h) => h !== me).map((h) => <Badge key={h} variant="secondary" className="rounded-full"><UserIcon />{h}</Badge>)}
           {p.links.map((l) => <Badge key={l} variant="outline"><LinkIcon /> {l}</Badge>)}
         </div>
       </CardHeader>

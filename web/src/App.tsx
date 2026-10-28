@@ -75,7 +75,7 @@ export default function App() {
           <Suspense fallback={<p className="text-muted-foreground text-sm">Loading the map…</p>}><LinkMap state={state} /></Suspense>
         </TabsContent>
         <TabsContent value="projects" className="flex flex-col gap-4 pt-2">
-          {state.projects.map((p) => <ProjectCard key={p.id} p={p} now={state.now} />)}
+          {state.projects.map((p) => <ProjectCard key={p.id} p={p} now={state.now} me={state.human} />)}
         </TabsContent>
         <TabsContent value="send" className="pt-2">
           <Composer state={state} onSent={refresh} />

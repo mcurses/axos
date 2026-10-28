@@ -134,3 +134,7 @@
     @apply font-sans;
     }
 }
+/* The map draws its own links between card borders; React Flow still needs the handles to exist. */
+.hidden-handles .react-flow__handle {
+    opacity: 0;
+}
