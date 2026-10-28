@@ -16,6 +16,7 @@ Read by `src/server.ts` (the hub). The admin command (`src/cli.ts`) reads `AXOS_
 | `AXOS_NTFY_URL` | unset | Base URL of an ntfy server, e.g. `https://ntfy.sh`. The hub POSTs JSON to it for each push. | No phone pushes. |
 | `AXOS_NTFY_TOKEN` | unset | Bearer token sent to ntfy. Ignored when `AXOS_NTFY_URL` is not set. | Pushes go out without authentication, which fails on a protected ntfy. |
 | `AXOS_LINK_SECRET` | unset or empty | Key that signs the answer links on push notifications. | A random secret is created on first start and kept in the database (`kv` table, key `link_secret`). Database backups then contain it. |
+| `AXOS_WEB_DIST` | `web/dist` next to `src/` | The built page (`cd web && bun install && bun run build`). | `/ui` answers `503` with the build command until it is built. The Docker image builds it. |
 | `AXOS_PLUGIN_SOURCE` | `mcurses/axos` | Where the plugin is installed from, shown in the plugin install command on `/join/<code>` pages: a GitHub `owner/repo` or a git URL (set it for a fork). | The page names `mcurses/axos`. |
 | `AXOS_DOMAIN` | none | Docker Compose only. The public host name. | `docker compose` stops with "set AXOS_DOMAIN in .env". |
 
@@ -35,8 +36,9 @@ Everything except the phone. With no `AXOS_NTFY_URL`, or for a human without a t
 
 - `ask_human` still stores the question and delivers it to the human's mailbox; its answer text says whether it was
   pushed.
-- The human's page (`/ui`) lists open questions with the options as buttons and a free-text field, plus their inbox
-  and who holds what per project. Answering there works as usual.
+- The human's page (`/ui`) lists open questions with the options as buttons and a free-text field (markdown and
+  images shown), their inbox, a composer, who holds what per project, and a map of their projects, the people in them
+  and the links between them. Answering there works as usual.
 - Messages of priority `high` to a human appear only on the page.
 - Deadlines and their defaults still apply; a deadline needs nobody to be reachable.
 

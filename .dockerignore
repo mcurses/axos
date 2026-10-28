@@ -9,3 +9,5 @@ test
 plugin
 deploy
 scripts
+**/node_modules
+web/dist

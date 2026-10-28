@@ -137,23 +137,49 @@ test("the bell's event stream announces a message without its body", async () =>
   expect(hub.presence(SHOP).find((a) => a.id === ids.dev3)!.bell).toBe(false);
 });
 
-test("the human page: key login, answering an ask", async () => {
+test("the human page: key login, the state document, answering an ask; the app shell from web/dist", async () => {
   const login = await fetch(`${base}/ui?key=${uiKey}`, { redirect: "manual" });
   expect(login.status).toBe(303);
   const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
   const ask = hub.askHuman(ids.dev1!, { project: SHOP, human: "alice", question: "Merge the hub branch?", options: ["merge", "wait"] });
-  const pageHtml = await (await fetch(`${base}/ui`, { headers: { cookie } })).text();
-  expect(pageHtml).toContain("<!doctype html>");
-  expect(pageHtml).toContain("Merge the hub branch?");
-  expect(pageHtml).toContain("Project alice/shop");
-  expect(pageHtml).not.toMatch(/prj_|agt_/);
-  const form = new FormData();
-  form.set("ask", String(ask.ask_id));
-  form.set("choice", "merge");
-  const post = await fetch(`${base}/ui/answer`, { method: "POST", body: form, headers: { cookie }, redirect: "manual" });
-  expect(post.status).toBe(303);
-  expect(hub.asks({ human: "alice" })[0]!.answer).toBe("merge");
-  expect((await fetch(`${base}/ui`)).status).toBe(401);
+  const raw = await (await fetch(`${base}/ui/api/state`, { headers: { cookie } })).text();
+  expect(raw).not.toMatch(/prj_|agt_/);
+  const state = JSON.parse(raw) as { human: string; asks: { id: number; question: string; options: string[] }[]; projects: { id: string; humans: string[] }[] };
+  expect(state.human).toBe("alice");
+  expect(state.asks.find((a) => a.id === ask.ask_id)).toMatchObject({ question: "Merge the hub branch?", options: ["merge", "wait"] });
+  expect(state.projects.map((p) => p.id)).toContain("alice/shop");
+  const answer = (body: unknown, headers: Record<string, string> = {}) =>
+    fetch(`${base}/ui/api/answer`, { method: "POST", body: JSON.stringify(body), headers: { cookie, "Content-Type": "application/json", ...headers } });
+  // Another site's page, or a form post, cannot answer.
+  expect((await answer({ ask: ask.ask_id, answer: "merge" }, { origin: "https://evil.example" })).status).toBe(403);
+  expect((await fetch(`${base}/ui/api/answer`, { method: "POST", body: new URLSearchParams({ ask: String(ask.ask_id), answer: "merge" }), headers: { cookie } })).status).toBe(415);
+  expect((await answer({ ask: ask.ask_id, answer: "merge" })).status).toBe(200);
+  expect(hub.asks({ human: "alice" }).find((a) => a.id === ask.ask_id)!.answer).toBe("merge");
+  expect(await (await answer({ ask: ask.ask_id, answer: "wait" })).json()).toEqual({ error: expect.stringContaining("already answered") });
+  expect((await fetch(`${base}/ui/api/state`)).status).toBe(401);
+
+  // The shell: index.html with a strict CSP for any page path, hashed assets cached, nothing outside the build.
+  const dist = mkdtempSync(join(tmpdir(), "axos-dist-"));
+  mkdirSync(join(dist, "assets"));
+  writeFileSync(join(dist, "index.html"), "<!doctype html><title>AXOS</title>");
+  writeFileSync(join(dist, "assets", "app-1.js"), "console.log(1)");
+  const before = process.env.AXOS_WEB_DIST;
+  process.env.AXOS_WEB_DIST = dist;
+  try {
+    const shell = await fetch(`${base}/ui`);
+    expect(await shell.text()).toBe("<!doctype html><title>AXOS</title>");
+    expect(shell.headers.get("content-security-policy")).toContain("script-src 'self'");
+    const js = await fetch(`${base}/ui/assets/app-1.js`);
+    expect(js.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+    expect(js.headers.get("cache-control")).toContain("immutable");
+    expect((await fetch(`${base}/ui/assets/missing.js`)).status).toBe(404);
+    expect(await (await fetch(`${base}/ui/..%2F..%2Fpackage.json`)).text()).toBe("<!doctype html><title>AXOS</title>");
+    process.env.AXOS_WEB_DIST = join(dist, "nothing-here");
+    expect((await fetch(`${base}/ui`)).status).toBe(503);
+  } finally {
+    if (before === undefined) delete process.env.AXOS_WEB_DIST; else process.env.AXOS_WEB_DIST = before;
+    rmSync(dist, { recursive: true, force: true });
+  }
 });
 
 test("the plugin's hooks: start orients in a few lines, check shows new messages once, end gives the role back", async () => {
@@ -355,13 +381,29 @@ test("the page lists what your agents sent to other people, and only that", asyn
   hub.send(dev1, { project: GAME, to: ["agent:bob/page"], type: "note", summary: "to bob directly", body: "the details" });
   hub.send(dev1, { project: GAME, to: ["agent:alice/dev3"], type: "note", summary: "between my own agents" });
   hub.send(dev1, { project: SHOP, to: ["agent:alice/dev3"], type: "note", summary: "shop internal" });
-  const html = await (await fetch(`${base}/ui`, { headers: { cookie: `axos_ui=${encodeURIComponent(uiKey)}` } })).text();
-  const section = html.split("Sent by your agents to other people")[1]!.split("<h2>")[0]!;
-  expect(section).toContain("to bob directly");
-  expect(section).toContain("bob");
-  expect(section).toContain("the details");
-  expect(section).not.toContain("between my own agents");
-  expect(section).not.toContain("shop internal");
+  const state = await (await fetch(`${base}/ui/api/state`, { headers: { cookie: `axos_ui=${encodeURIComponent(uiKey)}` } })).json() as { sent: { summary: string; body: string; readers: string[] }[] };
+  expect(state.sent.map((m) => m.summary)).toEqual(["to bob directly"]);
+  expect(state.sent[0]).toMatchObject({ body: "the details", readers: ["bob"] });
+});
+
+test("the page's map: a linked project shows by name, a project linked only to that one does not", async () => {
+  if (!hub.db.query("SELECT 1 FROM humans WHERE name = 'bob'").get()) hub.addHuman("bob");
+  const X = hub.addProject("bob/mapx"), Y = hub.addProject("bob/mapy");
+  hub.addHumanToProject("bob", X);
+  hub.addHumanToProject("bob", Y);
+  hub.linkProjects(SHOP, X);
+  hub.linkProjects(X, Y);
+  try {
+    const raw = await (await fetch(`${base}/ui/api/state`, { headers: { cookie: `axos_ui=${encodeURIComponent(uiKey)}` } })).text();
+    const state = JSON.parse(raw) as { projects: { id: string; links: string[]; humans: string[] }[] };
+    expect(state.projects.find((p) => p.id === "alice/shop")!.links).toContain("bob/mapx");
+    expect(state.projects.map((p) => p.id)).not.toContain("bob/mapx");
+    expect(raw).not.toContain("mapy");
+    expect(raw).not.toMatch(/prj_/);
+  } finally {
+    hub.unlinkProjects(SHOP, X);
+    hub.unlinkProjects(X, Y);
+  }
 });
 
 test("a linked project shows in join and takes messages; the session's other tools stay in its own project", async () => {
@@ -730,7 +772,8 @@ test("ask_human images: the proxy uploads files inside the checkout only; the as
   expect(img).toMatchObject({ name: "layout.png", mime: "image/png", size: 11 });
   const cookieOf = async (key: string) => (await fetch(`${base}/ui?key=${key}`, { redirect: "manual" })).headers.get("set-cookie")!.split(";")[0]!;
   const alice = await cookieOf(uiKey);
-  expect(await (await fetch(`${base}/ui`, { headers: { cookie: alice } })).text()).toContain(`<img src="/ui/image/${img!.id}" alt="layout.png"`);
+  const asks = (await (await fetch(`${base}/ui/api/state`, { headers: { cookie: alice } })).json() as { asks: { id: number; images: unknown[] }[] }).asks;
+  expect(asks.find((a) => a.id === q.id)!.images).toEqual([{ id: img!.id, name: "layout.png" }]);
   const res = await fetch(`${base}/ui/image/${img!.id}`, { headers: { cookie: alice } });
   expect(res.headers.get("content-type")).toBe("image/png");
   expect(res.headers.get("x-content-type-options")).toBe("nosniff");

@@ -720,6 +720,10 @@ export class Hub {
     return id;
   }
 
+  projectHumans(project: string): string[] {
+    return (this.db.query("SELECT human FROM human_projects WHERE project = ? ORDER BY human").all(project) as { human: string }[]).map((r) => r.human);
+  }
+
   projectsOfHuman(human: string): string[] {
     return (this.db.query("SELECT p.id FROM projects p JOIN human_projects h ON h.project = p.id WHERE h.human = ? ORDER BY p.owner, p.slug")
       .all(human) as { id: string }[]).map((r) => r.id);

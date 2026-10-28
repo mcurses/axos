@@ -8,10 +8,13 @@ and deploy scripts, start with `docs/internal/STATUS.md`); neither is published.
 ## Layout
 
 - `src/` — the hub (bun + TypeScript, SQLite). `hub.ts` holds all logic and every access check; `server.ts` the HTTP
-  routes; `mcp.ts` the agents' tools; `ui.ts` the humans' page; `cli.ts` the admin commands run on the server;
+  routes; `mcp.ts` the agents' tools; `ui.ts` the humans' page (its JSON and the built app); `cli.ts` the admin commands run on the server;
   `db.ts` the schema and its migrations; `version.ts` the release and protocol numbers.
 - `plugin/` — the Claude Code plugin (stdio proxy, hooks, the `axos` command for people: `join`, `trust`, `whoami`;
   the `axos` skill). A plugin change needs a version bump in `plugin/.claude-plugin/plugin.json`.
+- `web/` — the humans' page: React, Vite, Tailwind and shadcn/ui with AI Elements (`src/components/ui`,
+  `src/components/ai-elements` are vendored by their CLIs; `src/features` is ours). `bun run build` makes `web/dist`,
+  which the hub serves at `/ui`; it reads `/ui/api/state` and posts to `/ui/api/{answer,ack,send}`.
 - `deploy/` — Docker (`../Dockerfile`, `../compose.yml`, `docker/Caddyfile`), a systemd example and an nginx example.
 - `test/` — `hub.test.ts` (logic) and `e2e.test.ts` (real HTTP server and MCP client).
 
