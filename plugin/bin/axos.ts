@@ -793,19 +793,29 @@ function unlink(): void {
   for (const r of gone) console.log(`Unlinked ${r.remote ?? r.path} (was ${r.name ?? r.project}).`);
 }
 
+// The current folder's project, which is what a person or agent checking a link wants. Inside a session (its Bash
+// calls inherit the session's id and start folder) the session's own folder and project are added when they differ.
 function whoami(): void {
   const c = config();
   if (!c || !token(c)) return console.log(`not configured (${c ? "token missing" : `no ${CONFIG_PATH}`})`);
   const sid = process.env.CLAUDE_CODE_SESSION_ID;
-  const id = identity(sid ?? "terminal", sid ? undefined : process.cwd());
-  const repo = id ? repoFile(c, id.cwd) : null;
-  const via = !id?.project ? undefined
+  const here = identity(sid ?? "terminal", process.cwd());
+  const repo = here ? repoFile(c, here.cwd) : null;
+  const via = !here?.project ? undefined
     : repo && trusted(repo.dir, repo.ref) ? `${repo.dir}/.axos.json`
-    : id.rule?.remote ? `linked remote ${id.rule.remote}` : id.rule?.path ? `folder rule ${id.rule.path}` : undefined;
+    : here.rule?.remote ? `linked remote ${here.rule.remote}` : here.rule?.path ? `folder rule ${here.rule.path}` : undefined;
+  const sess = sid ? identity(sid, undefined) : null;
+  const real = (d: string) => { try { return realpathSync(d); } catch { return resolve(d); } };
+  const differs = !!sess && (sess.project !== here?.project || real(sess.cwd) !== real(process.cwd()));
   console.log(JSON.stringify({
-    hub: c.url, project: id?.project ?? null, project_name: id?.rule?.project === id?.project ? id?.rule?.name : undefined, via,
-    untrusted: id?.untrusted && !id.project ? `${id.untrusted.dir}/.axos.json (run axos trust there, or axos link)` : undefined,
-    profile: profile(), session: sid ?? null, name: id?.name ?? null, quiet: id?.quiet, roles: id?.roles,
+    hub: c.url, folder: process.cwd(), project: here?.project ?? null, project_name: here?.rule?.project === here?.project ? here?.rule?.name : undefined, via,
+    untrusted: here?.untrusted && !here.project ? `${here.untrusted.dir}/.axos.json (run axos trust there, or axos link)` : undefined,
+    profile: profile(), session: sid ?? null, name: here?.name ?? null, quiet: here?.quiet, roles: here?.roles,
+    session_folder: differs ? sess!.cwd : undefined,
+    session_project: differs ? sess!.project : undefined,
+    note: differs && sess!.project !== here?.project
+      ? "This session works in session_project (from the folder it started in), not in this folder's project. A link or unlink reaches running sessions at their next prompt."
+      : undefined,
   }, null, 2));
 }
 

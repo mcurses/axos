@@ -825,9 +825,13 @@ test("axos link connects every checkout of a remote on this machine, writes noth
     const r = Bun.spawnSync(a, { cwd, env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
     if (r.exitCode !== 0) throw new Error(r.stderr.toString());
   };
-  const axos = async (cwd: string, ...a: string[]) => {
+  const axos = async (cwd: string, ...a: string[]) => inSession(cwd, undefined, ...a);
+  // From a session's Bash: its id and start folder are inherited.
+  const inSession = async (cwd: string, start: string | undefined, ...a: string[]) => {
     const env: Record<string, string | undefined> = { ...process.env, AXOS_CONFIG: join(dir, "config.json") };
     delete env.CLAUDE_CODE_SESSION_ID;
+    delete env.CLAUDE_PROJECT_DIR;
+    if (start) Object.assign(env, { CLAUDE_CODE_SESSION_ID: "5e55e55e-1111-2222-3333-444444444444", CLAUDE_PROJECT_DIR: start });
     const p = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), ...a], { cwd, env, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
     const [out, err] = [await new Response(p.stdout).text(), await new Response(p.stderr).text()];
     return { out, err, code: await p.exited };
@@ -864,6 +868,11 @@ test("axos link connects every checkout of a remote on this machine, writes noth
     sh(dir, "git", "init", "-q", elsewhere);
     sh(elsewhere, "git", "remote", "add", "origin", "git@github.com:alice/other.git");
     expect(JSON.parse((await axos(elsewhere, "whoami")).out).project).toBeNull();
+    // Checked from a session that started in the linked checkout: this folder's answer, and the session's beside it.
+    const split = JSON.parse((await inSession(elsewhere, clone, "whoami")).out);
+    expect(split).toMatchObject({ project: null, session_folder: clone, session_project: SHOP });
+    expect(split.note).toContain("This session works in session_project");
+    expect(JSON.parse((await inSession(clone, clone, "whoami")).out).session_project).toBeUndefined();
 
     const outsider = await axos(work, "link", "alice/secret-nope");
     expect(outsider.code).toBe(1);

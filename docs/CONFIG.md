@@ -258,7 +258,7 @@ id>"}` in `trusted.json`.
 | `axos link [<project>] [--remote <name>] [--here]` | a person, or an agent asked to | Connects the checkout here on this machine: a `remote` rule for its `origin` (or the named remote), a `path` rule for its top folder when it has no remote or with `--here`. The hub resolves the project (`/api/whoami`) and the rule stores its id. Without a project it takes the repo's `.axos.json` and asks a person to confirm, like `axos trust`. |
 | `axos unlink` | anyone | Removes the rules that connect the checkout here (its remotes, or its top folder). |
 | `axos trust` | a person at a terminal | Trusts the `.axos.json` at or above the current folder. |
-| `axos whoami` | anyone | Prints hub, project (and `via`: the trusted file, linked remote or folder rule), profile, session, roles; says if an `.axos.json` is untrusted. |
+| `axos whoami` | anyone | Prints hub, the current folder's project (and `via`: the trusted file, linked remote or folder rule), profile, session, roles; says if an `.axos.json` is untrusted. Run inside a session (from its Bash) in another folder, it adds `session_folder` and `session_project`: the folder the session started in and the project it works in, which a link or unlink changes only at its next prompt. |
 
 The hub's admin commands (`axos init`, `invite`, `agent …`, `project …`, `human …`, `role add`, `backup`, `events`) are
 listed by running `axos` with no arguments on the hub host. Tokens and page keys they print are shown once; pipe them
