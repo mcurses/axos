@@ -795,9 +795,12 @@ function unlink(): void {
 
 // The current folder's project, which is what a person or agent checking a link wants. Inside a session (its Bash
 // calls inherit the session's id and start folder) the session's own folder and project are added when they differ.
-function whoami(): void {
+async function whoami(): Promise<void> {
   const c = config();
   if (!c || !token(c)) return console.log(`not configured (${c ? "token missing" : `no ${CONFIG_PATH}`})`);
+  // Project ids by name, from the hub; a rule written by an older plugin carries no name.
+  const names = await fetch(`${c.url.replace(/\/$/, "")}/api/whoami`, { headers: { Authorization: `Bearer ${token(c)}` }, signal: AbortSignal.timeout(TIMEOUT_MS) })
+    .then((r) => r.json() as Promise<{ projects?: { id: string; name: string }[] }>).then((w) => new Map((w.projects ?? []).map((p) => [p.id, p.name]))).catch(() => new Map<string, string>());
   const sid = process.env.CLAUDE_CODE_SESSION_ID;
   const here = identity(sid ?? "terminal", process.cwd());
   const repo = here ? repoFile(c, here.cwd) : null;
@@ -808,11 +811,11 @@ function whoami(): void {
   const real = (d: string) => { try { return realpathSync(d); } catch { return resolve(d); } };
   const differs = !!sess && (sess.project !== here?.project || real(sess.cwd) !== real(process.cwd()));
   console.log(JSON.stringify({
-    hub: c.url, folder: process.cwd(), project: here?.project ?? null, project_name: here?.rule?.project === here?.project ? here?.rule?.name : undefined, via,
+    hub: c.url, folder: process.cwd(), project: here?.project ?? null, project_name: here?.project ? names.get(here.project) ?? (here.rule?.project === here.project ? here.rule?.name : undefined) : undefined, via,
     untrusted: here?.untrusted && !here.project ? `${here.untrusted.dir}/.axos.json (run axos trust there, or axos link)` : undefined,
     profile: profile(), session: sid ?? null, name: here?.name ?? null, quiet: here?.quiet, roles: here?.roles,
     session_folder: differs ? sess!.cwd : undefined,
-    session_project: differs ? sess!.project : undefined,
+    session_project: differs ? (sess!.project && names.get(sess!.project)) || sess!.project : undefined,
     note: differs && sess!.project !== here?.project
       ? "This session works in session_project (from the folder it started in), not in this folder's project. A link or unlink reaches running sessions at their next prompt."
       : undefined,
@@ -824,7 +827,7 @@ function whoami(): void {
 const [cmd, arg] = process.argv.slice(2);
 if (cmd === "mcp") await mcp();
 else if (cmd === "hook" && arg) await hook(arg).catch(() => {});
-else if (cmd === "whoami") whoami();
+else if (cmd === "whoami") await whoami();
 else if (cmd === "join") {
   await joinHub(process.argv.slice(3)).catch((e: Error) => {
     console.error(e.message);

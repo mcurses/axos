@@ -870,7 +870,7 @@ test("axos link connects every checkout of a remote on this machine, writes noth
     expect(JSON.parse((await axos(elsewhere, "whoami")).out).project).toBeNull();
     // Checked from a session that started in the linked checkout: this folder's answer, and the session's beside it.
     const split = JSON.parse((await inSession(elsewhere, clone, "whoami")).out);
-    expect(split).toMatchObject({ project: null, session_folder: clone, session_project: SHOP });
+    expect(split).toMatchObject({ project: null, session_folder: clone, session_project: "alice/shop" });
     expect(split.note).toContain("This session works in session_project");
     expect(JSON.parse((await inSession(clone, clone, "whoami")).out).session_project).toBeUndefined();
 
