@@ -329,6 +329,42 @@ describe("asks", () => {
     expect(() => hub.answerAsk("alice", r.ask_id, "no")).toThrow(/already answered/);
   });
 
+  test("images: raster types by their bytes, the uploader's own on one question, the asked human alone sees them, 30 days", async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    expect(refusal(() => hub.attach(DEV1, "x.png", new TextEncoder().encode("<svg onload=alert(1)>")))).toContain("only PNG, JPEG, GIF and WebP");
+    expect(refusal(() => hub.attach(DEV1, "big.png", new Uint8Array([...png, ...new Uint8Array(5 * 1024 * 1024)])))).toContain("the limit is 5.0 MB");
+    const img = hub.attach(DEV1, "../../etc/<b>shot.png", png);
+    expect(img).toMatchObject({ name: "_b_shot.png", mime: "image/png", size: 11 });
+    // Another agent cannot put it on its question; a path is not an upload.
+    expect(refusal(() => hub.askHuman(DEV3, { project: SHOP, human: "alice", question: "Q?", images: [`att:${img.id}`] }))).toContain(`no image att:${img.id} of yours`);
+    expect(refusal(() => hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Q?", images: ["docs/shot.png"] }))).toContain("the AXOS plugin uploads files named by path");
+    const r = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Ship this layout?", images: [`att:${img.id}`] });
+    await Bun.sleep(0);
+    expect(pushes[0]!.body).toBe("Ship this layout?\n(an image on the page)");
+    expect(hub.getMessage(r.message_id)!.body).toContain("Images on the page: _b_shot.png (1 KB)");
+    expect(hub.askImages(r.ask_id).map((i) => i.id)).toEqual([img.id]);
+    // One question per image.
+    expect(refusal(() => hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Again?", images: [`att:${img.id}`] }))).toContain("waits for a question");
+    expect(hub.imageForHuman("alice", img.id)!.mime).toBe("image/png");
+    expect(hub.imageForHuman("bob", img.id)).toBeNull();
+    // An unclaimed upload goes after an hour, a question's image after 30 days.
+    const loose = hub.attach(DEV1, "loose.png", png);
+    t += 3_601_000;
+    hub.sweep();
+    expect(hub.db.query("SELECT id FROM attachments ORDER BY id").all()).toEqual([{ id: img.id }]);
+    t += 30 * 86_400_000;
+    hub.sweep();
+    expect(hub.imageForHuman("alice", img.id)).toBeNull();
+    expect(loose.id).toBeGreaterThan(img.id);
+  });
+
+  test("at most eight uploads wait for a question per agent", () => {
+    const gif = new TextEncoder().encode("GIF89a....");
+    for (let i = 0; i < 8; i++) hub.attach(DEV1, `g${i}.gif`, gif);
+    expect(refusal(() => hub.attach(DEV1, "g9.gif", gif))).toContain("8 uploaded images wait for a question already");
+    expect(hub.attach(DEV3, "other.gif", gif).mime).toBe("image/gif");
+  });
+
   test("only the asked human answers", () => {
     const r = hub.askHuman(DEV1, { project: GAME, human: "alice", question: "Which slot?" });
     expect(() => hub.answerAsk("bob", r.ask_id, "slot 2")).toThrow(/put to alice/);
@@ -858,6 +894,7 @@ INSERT INTO events (at, actor, kind, project, data_json) VALUES
       expect(db.query("SELECT key, agent_id, project, name FROM sessions").all()).toEqual([{ key: `${M}#abcd1234`, agent_id: M, project: E, name: "shop-ab" }]);
       expect(db.query("SELECT former_names FROM sessions").all()).toEqual([{ former_names: "" }]);
       expect(db.query("SELECT outcome FROM deliveries LIMIT 1").all()).toEqual([{ outcome: null }]);
+      expect(db.query("SELECT COUNT(*) AS n FROM attachments").get()).toEqual({ n: 0 });
       expect(db.query("SELECT id, project, sender, to_json FROM messages ORDER BY id").all()).toEqual([
         { id: 1, project: E, sender: `session:${M}#abcd1234`, to_json: '["role:shop/r"]' },
         { id: 2, project: F, sender: `agent:${X}`, to_json: '["agent:alice/mac"]' },

@@ -382,12 +382,15 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       options: z.array(z.string()).optional().describe("Short answers; the first three become buttons on the phone, all show on the page"),
       default_answer: z.string().optional().describe("Your recommendation; with a deadline, what applies if nobody answers"),
       deadline_minutes: z.number().int().min(1).optional().describe("Needs default_answer"),
+      images: z.array(z.string()).max(4).optional().describe(
+        "Up to 4 images shown with the question on their page (a screenshot, a diagram): paths of PNG, JPEG, GIF or WebP files " +
+        "inside your repo, up to 5 MB each; the AXOS plugin uploads them. Kept 30 days."),
       as: asArg,
     }),
   }, tool((a) => {
     const pr = project(a.project);
     const r = hub.askHuman(agent.id, {
-      project: pr, human: a.human, question: a.question, options: a.options,
+      project: pr, human: a.human, question: a.question, options: a.options, images: a.images,
       default_answer: a.default_answer, deadline_s: a.deadline_minutes ? a.deadline_minutes * 60 : undefined, as: a.as, session: conn.session,
     });
     const to = addr(hub.seat(agent.id, pr, a.as, conn.session));

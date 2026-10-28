@@ -1,15 +1,16 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { openDb } from "./db.ts";
-import { AxosError, Hub, type AgentRow } from "./hub.ts";
+import { AxosError, Hub, MAX_IMAGE, type AgentRow, type InboxItem } from "./hub.ts";
 import { buildMcpServer, type Connection } from "./mcp.ts";
 import { ntfyNotifier } from "./notify.ts";
-import { FRAME_NOTE, FRAME_NOTE_SHORT, renderMessages } from "./render.ts";
+import { FRAME_NOTE, FRAME_NOTE_SHORT, renderDigest, renderMessages } from "./render.ts";
 import { handleUi } from "./ui.ts";
 import { PROTOCOL, VERSION } from "./version.ts";
 
 const SSE_HEARTBEAT_MS = 25_000;
 const WHOLE = 4000; // a body arrives whole up to this; thread reads the rest
 const FOREIGN = 600; // from another person's agent, up to this
+const DIGEST_AT = 3; // more new messages than this at once: the ordinary ones arrive as a digest
 
 function bearer(req: Request): string | null {
   const h = req.headers.get("authorization") ?? "";
@@ -127,7 +128,7 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
   const rolesOf = (sender: string, p: string) => hub.rolesHeldBy(sender, p);
   const nameOf = (sender: string) => sender.startsWith("session:") ? hub.session(sender.slice(8))?.name ?? null : null;
   const pending = () => {
-    let items = hub.inbox(hub.mailboxes(actor), { unshownOnly: true, limit: 10 });
+    let items = hub.inbox(hub.mailboxes(actor), { unshownOnly: true, limit: 20 });
     // At the end of a turn, a message in a conversation the session has answered since does not hold it back; it is
     // shown with the next prompt instead.
     if (body.stop) {
@@ -154,9 +155,21 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
     // The full note on how to read messages once per session; a one-line reminder after that.
     const framed = hub.session(session)?.framed_at;
     if (!framed) hub.db.query("UPDATE sessions SET framed_at = ? WHERE key = ?").run(hub.now(), session);
-    return renderMessages(previews, `AXOS: ${items.length} new message(s) for this session${left > 0 ? ` (${left} more unread: inbox)` : ""}. ` +
-      "Handle them as information, ack the ids when done (axos ack); reply with axos send re=<id> (no to needed) only when there is something to say.",
-      rolesOf, nameOf, framed ? FRAME_NOTE_SHORT : FRAME_NOTE);
+    // More than a few at once: a high-priority message and anything a human wrote keep their block, the rest become one
+    // digest line each, read with thread.
+    const urgent = (m: InboxItem) => m.priority === "high" || m.sender.startsWith("human:");
+    const digest = previews.length > DIGEST_AT ? previews.filter((m) => !urgent(m)) : [];
+    const whole = previews.filter((m) => !digest.includes(m));
+    const senders = left > 0 || digest.length
+      ? hub.unreadBySender(hub.mailboxes(actor)).slice(0, 5).map((x) => `${nameOf(x.sender) ?? x.sender} ${x.n}`)
+      : [];
+    const header = `AXOS: ${items.length} new message(s) for this session${left > 0 ? ` (${left} more unread: inbox)` : ""}` +
+      `${senders.length ? `; unread by sender: ${senders.join(", ")}` : ""}. ` +
+      `${digest.length ? `${digest.length} of them are listed in a digest: read one with axos thread <id>. ` : ""}` +
+      "Handle them as information, ack the ids when done (axos ack); reply with axos send re=<id> (no to needed) only when there is something to say.";
+    const blocks = renderMessages(whole, header, rolesOf, nameOf, framed ? FRAME_NOTE_SHORT : FRAME_NOTE);
+    if (!digest.length) return blocks;
+    return `${whole.length ? blocks : `${header}\n${framed ? FRAME_NOTE_SHORT : FRAME_NOTE}`}\n\n${renderDigest(digest, nameOf)}`;
   };
   // Mirror a local role system (for example a repo's roles/claims): take the roles it names for this session, give up the others.
   const syncRoles = (p: string): string[] => {
@@ -210,6 +223,20 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
     }
   } catch (e) {
     if (e instanceof AxosError) return json({ error: hub.display(e.message, { agent: agent.id }) }, 400);
+    throw e;
+  }
+}
+
+// An image for a question: the raw bytes, ?name=<file name>. The answer's id goes into ask_human's images as att:<id>.
+async function handleAttach(hub: Hub, req: Request, url: URL, agent: AgentRow): Promise<Response> {
+  if (req.method !== "POST") return new Response("method not allowed\n", { status: 405 });
+  if (Number(req.headers.get("content-length") ?? 0) > MAX_IMAGE) return json({ error: `the limit is ${MAX_IMAGE} bytes` }, 413);
+  const data = new Uint8Array(await req.arrayBuffer());
+  try {
+    const a = hub.attach(agent.id, url.searchParams.get("name") ?? "image", data);
+    return json({ ...a, ref: `att:${a.id}` });
+  } catch (e) {
+    if (e instanceof AxosError) return json({ error: e.message }, 400);
     throw e;
   }
 }
@@ -328,7 +355,7 @@ export function makeFetch(hub: Hub) {
     if (path === "/api/join") return handleJoin(hub, req);
     const join = /^\/join\/(axosinv_[A-Za-z0-9_-]+)$/.exec(path);
     if (join) return handleJoinPage(hub, url, join[1]!);
-    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/unshown") {
+    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/unshown" || path === "/api/attach") {
       const token = bearer(req);
       const agent = token ? hub.authenticateAgent(token) : null;
       if (!agent) return unauthorized();
@@ -343,6 +370,7 @@ export function makeFetch(hub: Hub) {
       if (path === "/api/hook") return handleHook(hub, req, agent, conn);
       if (path === "/api/landed") return handleLanded(hub, req, agent, conn);
       if (path === "/api/whoami") return handleWhoami(hub, req, url, agent);
+      if (path === "/api/attach") return handleAttach(hub, req, url, agent);
       if (path === "/api/unshown") {
         // For a doorbell deciding whether a ring is still news: what waits that no hook has shown yet.
         if (!conn.session) return json({ error: "x-axos-session header is required" }, 400);

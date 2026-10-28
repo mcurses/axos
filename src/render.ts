@@ -53,6 +53,18 @@ export function renderMessages(items: ((MessageRow | InboxItem) & { receipts?: s
   return `${header}\n${note}\n\n${items.map((m) => renderMessage(m, rolesOf, nameOf)).join("\n\n")}`;
 }
 
+// A busy mailbox in one block: a line per message with its summary, the body read on request. Peer text stays on its
+// line (whitespace collapsed) and is defanged like a block's.
+export function renderDigest(items: (MessageRow | InboxItem)[], nameOf?: NameOf): string {
+  const lines = items.map((m) => {
+    const name = nameOf?.(m.sender) ?? null;
+    const re = m.re !== null ? ` re ${m.re}` : "";
+    const size = m.body ? ` [${m.body.length}-character body]` : "";
+    return `- ${m.id} from ${m.sender}${name ? ` (${name})` : ""}, ${m.type}${re}: ${defang(m.summary.replace(/\s+/g, " "))}${size}`;
+  });
+  return `<axos-digest count="${items.length}" read="axos thread <id>">\n${lines.join("\n")}\n</axos-digest>`;
+}
+
 export function ago(ms: number | null, now: number): string {
   if (ms === null) return "never";
   const s = Math.round((now - ms) / 1000);

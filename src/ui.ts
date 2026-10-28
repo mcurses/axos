@@ -32,6 +32,17 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
   const human = hub.authenticateHuman(cookie(req, COOKIE) ?? "");
   if (!human) return page("AXOS", "<p>Open the link with your key once: <code>/ui?key=…</code> (from <code>axos human add</code>).</p>", 401);
 
+  const file = /^\/ui\/image\/(\d+)$/.exec(url.pathname);
+  if (file && req.method === "GET") {
+    const img = hub.imageForHuman(human, Number(file[1]));
+    if (!img) return new Response("not found\n", { status: 404 });
+    // Raster images only (checked on upload by their bytes); nothing on this response may run.
+    return new Response(new Uint8Array(img.data), { headers: {
+      "Content-Type": img.mime, "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Cache-Control": "private, max-age=86400", "Content-Disposition": "inline",
+    } });
+  }
+
   if (req.method === "POST") {
     // SameSite=Strict already keeps other sites out; the Origin check is a second lock.
     const origin = req.headers.get("origin");
@@ -74,6 +85,7 @@ function render(hub: Hub, human: string): string {
     out.push(`<div class="card ask" id="m${a.message_id}">
       <div class="meta">${esc(hub.label(a.asker))} · ${esc(a.project)} · ${ago(hub.getMessage(a.message_id)!.created_at, now)}${a.deadline ? ` · default <b>${esc(a.default_answer ?? "")}</b> applies ${iso(a.deadline)}` : ""}</div>
       <pre>${esc(a.question)}</pre>
+      ${hub.askImages(a.id).map((i) => `<a href="/ui/image/${i.id}"><img src="/ui/image/${i.id}" alt="${esc(i.name)}" class="shot"></a>`).join("")}
       <form method="post" action="/ui/answer"><input type="hidden" name="ask" value="${a.id}">
         ${options.map((o) => `<button name="choice" value="${esc(o)}">${esc(o)}${o === a.default_answer ? " (default)" : ""}</button>`).join(" ")}
         <textarea name="answer" rows="2" placeholder="or answer in your own words"></textarea><button>Send answer</button>
@@ -139,6 +151,7 @@ function page(title: string, body: string, status = 200): Response {
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--line); margin-right: 6px; } .dot.on { background: #34c759; }
   .send { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; } .send .wide { grid-column: 1 / -1; }
   .inline { display: inline; } .err { color: #ff3b30; }
+  .shot { display: block; max-width: 100%; max-height: 70vh; border-radius: 6px; margin: 8px 0; border: 1px solid var(--line); }
 </style></head>
 <body><h1>${esc(title)}</h1>
 ${body}

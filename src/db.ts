@@ -142,6 +142,17 @@ CREATE TABLE IF NOT EXISTS asks (
   answered_by   TEXT,
   answered_at   INTEGER
 );
+CREATE TABLE IF NOT EXISTS attachments (     -- images shown with a question on the human's page; kept 30 days
+  id            INTEGER PRIMARY KEY,
+  agent_id      TEXT NOT NULL,                 -- who uploaded it; only they can put it on an ask
+  ask_id        INTEGER,                       -- NULL until an ask takes it; unclaimed ones go after an hour
+  name          TEXT NOT NULL,
+  mime          TEXT NOT NULL,
+  size          INTEGER NOT NULL,
+  data          BLOB NOT NULL,
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS attachments_ask ON attachments(ask_id);
 CREATE TABLE IF NOT EXISTS project_links (  -- two projects whose sessions may message each other; a < b
   a             TEXT NOT NULL REFERENCES projects(id),
   b             TEXT NOT NULL REFERENCES projects(id),

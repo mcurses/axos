@@ -20,9 +20,9 @@
 // in the config (a folder path, or a git remote that `axos link` wrote), or through a committed .axos.json ({"hub": "<url>", "project": "<owner>/<name>", "id": "prj_…"}) at or
 // above it, once the person on this machine has trusted that file: a cloned repo must not steer sessions into a project.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 interface FolderRule {
   path?: string; // this folder and everything below it
@@ -369,7 +369,43 @@ function currentIdentity(): Identity | null {
   return identity(sf?.sessionId ?? process.env.CLAUDE_CODE_SESSION_ID, sf?.cwd ?? process.env.CLAUDE_PROJECT_DIR, sf?.name ?? process.env.AXOS_SESSION_NAME);
 }
 
-async function forward(id: Identity, msg: { id?: unknown; method?: string }): Promise<void> {
+// ask_human's images name files; the hub cannot read this disk, so they are uploaded here and replaced by the hub's
+// att:<id>. Only files inside the session's own checkout: a message talked into attaching ~/.ssh or another repo's
+// file finds it refused.
+const MAX_IMAGE = 5 * 1024 * 1024;
+
+async function uploadImages(id: Identity, paths: unknown[]): Promise<string[]> {
+  const root = realpathSync(gitRemotes(id.cwd)?.root ?? id.cwd);
+  const refs: string[] = [];
+  for (const p of paths) {
+    if (typeof p !== "string") throw new Error("images takes file paths");
+    if (/^att:\d+$/.test(p)) { refs.push(p); continue; }
+    let file: string;
+    try { file = realpathSync(resolve(id.cwd, p)); } catch { throw new Error(`no file ${p}`); }
+    const rel = relative(root, file);
+    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`${p} is outside this checkout (${root}); only files inside it can be attached`);
+    const size = statSync(file).size;
+    if (size > MAX_IMAGE) throw new Error(`${p} is ${Math.round(size / 1024)} KB; the limit is 5 MB`);
+    const res = await fetch(`${id.c.url.replace(/\/$/, "")}/api/attach?name=${encodeURIComponent(basename(file))}`, {
+      method: "POST", headers: { ...headers(id), "Content-Type": "application/octet-stream" }, body: readFileSync(file),
+    });
+    const out = (await res.json().catch(() => ({}))) as { ref?: string; error?: string };
+    if (!out.ref) throw new Error(`${p}: ${out.error ?? `upload failed (${res.status})`}`);
+    refs.push(out.ref);
+  }
+  return refs;
+}
+
+async function forward(id: Identity, msg: { id?: unknown; method?: string; params?: { name?: string; arguments?: Record<string, unknown> } }): Promise<void> {
+  const args = msg.method === "tools/call" && msg.params?.name === "ask_human" ? msg.params.arguments : undefined;
+  if (args && Array.isArray(args.images)) {
+    try {
+      args.images = await uploadImages(id, args.images);
+    } catch (e) {
+      write({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: `Not asked: ${(e as Error).message}` }], isError: true } });
+      return;
+    }
+  }
   try {
     const res = await fetch(`${id.c.url.replace(/\/$/, "")}/mcp`, {
       method: "POST",

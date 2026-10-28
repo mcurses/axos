@@ -150,6 +150,11 @@ const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,47}$/;
 const MAX_SUMMARY = 300;
 const MAX_BODY = 64_000;
 const MAX_BRIEF = 2_000;
+export const MAX_IMAGE = 5 * 1024 * 1024;
+const MAX_IMAGES = 4; // per question
+const MAX_UNCLAIMED = 8; // uploads per agent not yet on a question
+const IMAGES_KEPT_MS = 30 * 86_400_000;
+const UNCLAIMED_KEPT_MS = 3_600_000;
 const MAX_WAIT_S = 240;
 const MAX_LEASE_TTL_S = 86_400;
 const MAX_SUBSCRIPTION_TTL_S = 30 * 86_400;
@@ -1175,6 +1180,12 @@ export class Hub {
       WHERE ${box.sql} AND d.acked_at IS NULL GROUP BY m.project ORDER BY n DESC`).all(...box.args) as { project: string; n: number }[];
   }
 
+  unreadBySender(recipient: string | string[]): { sender: string; n: number }[] {
+    const box = this.boxSql(Array.isArray(recipient) ? recipient : [recipient]);
+    return this.db.query(`SELECT m.sender, COUNT(DISTINCT m.id) AS n FROM deliveries d JOIN messages m ON m.id = d.message_id
+      WHERE ${box.sql} AND d.acked_at IS NULL GROUP BY m.sender ORDER BY n DESC, MAX(m.id) DESC`).all(...box.args) as { sender: string; n: number }[];
+  }
+
   // Messages not yet put into this reader's context (by a hook, inbox or wait); marks them shown. They stay unread until acked.
   takeUnshown(boxes: string[], limit = 10): InboxItem[] {
     const items = this.inbox(boxes, { unshownOnly: true, limit });
@@ -1540,10 +1551,11 @@ export class Hub {
 
   // ---------------------------------------------------------------- asks to humans
 
-  askHuman(agentId: string, input: { project: string; human: string; question: string; options?: string[]; default_answer?: string; deadline_s?: number; summary?: string; as?: string; session?: string }):
+  askHuman(agentId: string, input: { project: string; human: string; question: string; options?: string[]; default_answer?: string; deadline_s?: number; summary?: string; as?: string; session?: string; images?: string[] }):
     { ask_id: number; message_id: number; pushed: boolean } {
     const asker = this.seat(agentId, input.project, input.as, input.session);
     if (!this.humanInProject(input.human, input.project)) throw new AxosError(`human '${input.human}' is not in project '${input.project}'`);
+    const images = this.unclaimedImages(agentId, input.images ?? []);
     const options = input.options ?? [];
     if (input.default_answer !== undefined && options.length && !options.includes(input.default_answer)) {
       throw new AxosError("default_answer must be one of options");
@@ -1553,7 +1565,8 @@ export class Hub {
     }
     const summary = (input.summary ?? input.question).trim().slice(0, MAX_SUMMARY);
     const body = [input.question, options.length ? `\nOptions:\n${options.map((o) => `- ${o}`).join("\n")}` : "",
-      input.default_answer !== undefined ? `\nDefault if unanswered: ${input.default_answer}` : ""].join("");
+      input.default_answer !== undefined ? `\nDefault if unanswered: ${input.default_answer}` : "",
+      images.length ? `\nImages on the page: ${images.map((i) => `${i.name} (${kb(i.size)})`).join(", ")}` : ""].join("");
     const sent = this.send({ kind: "agent", id: agentId, human: "", as: input.as, session: input.session }, {
       project: input.project, to: [`human:${input.human}`], type: "ask", summary, body, priority: "high", no_push: true,
     });
@@ -1562,11 +1575,13 @@ export class Hub {
       `INSERT INTO asks (project, asker, human, question, options_json, default_answer, deadline, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(input.project, asker, input.human, input.question, JSON.stringify(options), input.default_answer ?? null, deadline, sent.id);
     const askId = Number(res.lastInsertRowid);
+    for (const i of images) this.db.query("UPDATE attachments SET ask_id = ? WHERE id = ?").run(askId, i.id);
     const topic = this.ntfyTopic(input.human);
     const link = this.publicUrl ? `${this.publicUrl}/a/${askId}/${this.askSignature(askId)}` : "";
     const actions: PushAction[] = link ? options.slice(0, 3).map((o) => ({ label: o.slice(0, 40), url: link, body: o })) : [];
     const sender = addr(asker);
     const tail = (options.length > 3 ? `\n(${options.length - 3} more options on the page)` : "") +
+      (images.length ? `\n(${images.length === 1 ? "an image" : `${images.length} images`} on the page)` : "") +
       (input.default_answer !== undefined && deadline ? `\n(default "${input.default_answer}", chosen by the agent, at ${iso(deadline)})` : "");
     void this.pushToHuman(input.human, `${this.senderTitle(sender)} (${this.projectName(input.project)})`, `${summary}${tail}`, `#m${sent.id}`, actions);
     return { ask_id: askId, message_id: sent.id, pushed: !!topic };
@@ -1598,6 +1613,45 @@ export class Hub {
     if (filter.asker) { where.push("asker = ?"); args.push(filter.asker); }
     if (filter.open) where.push("answer IS NULL");
     return this.db.query(`SELECT * FROM asks ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT 100`).all(...args) as AskRow[];
+  }
+
+  // An image for a question, uploaded before the question is put. Only raster formats a browser shows without running
+  // anything; the type is read from the bytes, never from the name.
+  attach(agentId: string, name: string, data: Uint8Array): { id: number; name: string; mime: string; size: number } {
+    const mime = imageType(data);
+    if (!mime) throw new AxosError("only PNG, JPEG, GIF and WebP images can be attached");
+    if (data.length > MAX_IMAGE) throw new AxosError(`the image is ${kb(data.length)}; the limit is ${kb(MAX_IMAGE)}`);
+    const t = this.now();
+    const waiting = (this.db.query("SELECT COUNT(*) AS n FROM attachments WHERE agent_id = ? AND ask_id IS NULL AND created_at >= ?")
+      .get(agentId, t - UNCLAIMED_KEPT_MS) as { n: number }).n;
+    if (waiting >= MAX_UNCLAIMED) throw new AxosError(`${waiting} uploaded images wait for a question already; put them on one or wait an hour`);
+    const clean = (name.split(/[\\/]/).pop() ?? "").replace(/[^\w.\- ]/g, "_").slice(0, 80) || "image";
+    const res = this.db.query("INSERT INTO attachments (agent_id, name, mime, size, data, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(agentId, clean, mime, data.length, data, t);
+    this.event(agentId, "attachment.uploaded", null, { id: Number(res.lastInsertRowid), size: data.length });
+    return { id: Number(res.lastInsertRowid), name: clean, mime, size: data.length };
+  }
+
+  private unclaimedImages(agentId: string, refs: string[]): { id: number; name: string; size: number }[] {
+    if (refs.length > MAX_IMAGES) throw new AxosError(`at most ${MAX_IMAGES} images per question`);
+    return refs.map((ref) => {
+      const m = /^att:(\d+)$/.exec(ref.trim());
+      if (!m) throw new AxosError(`images takes uploaded images (att:<id>), not '${ref}': the AXOS plugin uploads files named by path; other clients POST them to /api/attach`);
+      const row = this.db.query("SELECT id, name, size FROM attachments WHERE id = ? AND agent_id = ? AND ask_id IS NULL")
+        .get(Number(m[1]), agentId) as { id: number; name: string; size: number } | null;
+      if (!row) throw new AxosError(`no image ${ref} of yours waits for a question (each goes on one question, within an hour of its upload)`);
+      return row;
+    });
+  }
+
+  askImages(askId: number): { id: number; name: string; mime: string; size: number }[] {
+    return this.db.query("SELECT id, name, mime, size FROM attachments WHERE ask_id = ? ORDER BY id").all(askId) as { id: number; name: string; mime: string; size: number }[];
+  }
+
+  // An image for the page of the human the question was put to; nobody else.
+  imageForHuman(human: string, id: number): { mime: string; data: Uint8Array } | null {
+    return this.db.query(`SELECT a.mime, a.data FROM attachments a JOIN asks q ON q.id = a.ask_id WHERE a.id = ? AND q.human = ?`)
+      .get(id, human) as { mime: string; data: Uint8Array } | null;
   }
 
   private ntfyTopic(human: string): string | null {
@@ -1641,6 +1695,7 @@ export class Hub {
         x.note ? `Your note: ${x.note}` : "");
     }
     this.db.query("DELETE FROM landings WHERE at < ?").run(t - LANDINGS_KEPT_MS);
+    this.db.query("DELETE FROM attachments WHERE created_at < ? OR (ask_id IS NULL AND created_at < ?)").run(t - IMAGES_KEPT_MS, t - UNCLAIMED_KEPT_MS);
     for (const a of this.db.query("SELECT * FROM asks WHERE answer IS NULL AND deadline IS NOT NULL AND deadline < ? AND default_answer IS NOT NULL").all(t) as AskRow[]) {
       this.db.query("UPDATE asks SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(a.default_answer, "default (deadline passed)", t, a.id);
       this.ack(`human:${a.human}`, [a.message_id]);
@@ -1687,4 +1742,18 @@ function compatible(live: { mode: string }[], mode: string): boolean {
 
 export function iso(ms: number): string {
   return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function kb(n: number): string {
+  return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+// The image formats a page shows, by their magic bytes.
+export function imageType(b: Uint8Array): string | null {
+  const at = (i: number, ...xs: number[]) => xs.every((x, j) => b[i + j] === x);
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "image/png";
+  if (at(0, 0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (at(0, 0x47, 0x49, 0x46, 0x38)) return "image/gif";
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return "image/webp";
+  return null;
 }
