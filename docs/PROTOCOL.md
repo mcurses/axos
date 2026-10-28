@@ -491,8 +491,13 @@ HMAC-SHA256 of `ask:<id>` with the hub's link secret.
 
 - The body must equal one of the ask's offered options exactly. Free text is refused: the link is a bearer capability
   that sits in notification history.
-- Success: `200 answered`. A bad signature, unknown ask, wrong option or an ask already answered: `400` with a sentence.
-  Not `POST` or a malformed path: `404`.
+- Success: `200 answered`, also for the same option sent again after it went through (phones give no sign of success,
+  so people tap twice; the asker gets one answer). A bad signature, unknown ask, wrong option or an ask already
+  answered differently: `400` with a sentence. Not `POST` or a malformed path: `404`.
+- The push for a question carries the ntfy sequence id `axos-ask-<ask id>`. Once the question is settled (answered by
+  button or page, or its default applied at the deadline) the hub publishes a quiet push with the same id, without
+  buttons: "Answered: <answer>" or "Not answered in time: <default>". An ntfy server and app that know sequence ids
+  replace the question with it; older ones show it as a second notification.
 - Links are only created when the hub knows its public URL.
 
 ## Health

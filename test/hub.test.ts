@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../src/db.ts";
 import { AxosError, Hub } from "../src/hub.ts";
-import type { Notifier } from "../src/notify.ts";
+import { ntfyNotifier, type Notifier } from "../src/notify.ts";
 
 let t: number;
 let hub: Hub;
-let pushes: { topic: string; title: string; body: string }[];
+let pushes: { topic: string; title: string; body: string; sequence?: string; priority?: string; actions?: number }[];
 // Projects and agents by id, as the hub returns them. Names are labels: alice/shop, alice/dev1.
 let SHOP: string, GAME: string;
 let DEV1: string, DEV3: string, SC: string;
@@ -19,7 +19,9 @@ let A: AgentActor, B: AgentActor, S: AgentActor;
 beforeEach(() => {
   t = Date.parse("2026-10-25T12:00:00Z");
   pushes = [];
-  const notifier: Notifier = { async push(topic, m) { pushes.push({ topic, title: m.title, body: m.body }); } };
+  const notifier: Notifier = {
+    async push(topic, m) { pushes.push({ topic, title: m.title, body: m.body, sequence: m.sequence, priority: m.priority, actions: m.actions?.length }); },
+  };
   hub = new Hub(openDb(":memory:"), { now: () => t, notifier, publicUrl: "https://axos.example", roleTtlS: 3600 });
   hub.addHuman("alice", "alice-topic");
   hub.addHuman("bob");
@@ -581,6 +583,41 @@ describe("answer buttons", () => {
     expect(() => hub.answerByLink(other.ask_id, hub.askSignature(r.ask_id), "a")).toThrow(/not valid/);
     hub.answerByLink(r.ask_id, hub.askSignature(r.ask_id), "yes");
     expect(hub.asks({ human: "alice" }).find((a) => a.id === r.ask_id)!.answer).toBe("yes");
+  });
+
+  test("ntfy gets the sequence id, a quiet priority and the buttons as http actions", async () => {
+    const got: unknown[] = [];
+    const server = Bun.serve({ port: 0, async fetch(req) { got.push(await req.json()); return new Response("{}"); } });
+    try {
+      const n = ntfyNotifier(`http://127.0.0.1:${server.port}/`);
+      await n.push("t", { title: "Q", body: "b", priority: "high", sequence: "axos-ask-7", actions: [{ label: "yes", url: "https://h/a/7/s", body: "yes" }] });
+      await n.push("t", { title: "Answered: yes", body: "b", priority: "low", sequence: "axos-ask-7", actions: [] });
+    } finally {
+      server.stop(true);
+    }
+    expect(got[0]).toMatchObject({ topic: "t", priority: 4, sequence_id: "axos-ask-7", actions: [{ action: "http", method: "POST", url: "https://h/a/7/s", body: "yes" }] });
+    expect(got[1]).toMatchObject({ priority: 2, sequence_id: "axos-ask-7" });
+    expect(got[1]).not.toHaveProperty("actions");
+  });
+
+  test("a settled question replaces its notification; tapping the same answer again is no error", async () => {
+    const r = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Got the parcel?", options: ["received", "no push"] });
+    await Bun.sleep(0);
+    expect(pushes.at(-1)).toMatchObject({ sequence: `axos-ask-${r.ask_id}`, priority: "high", actions: 2 });
+    const first = hub.answerByLink(r.ask_id, hub.askSignature(r.ask_id), "received");
+    await Bun.sleep(0);
+    expect(pushes.at(-1)).toMatchObject({ sequence: `axos-ask-${r.ask_id}`, priority: "low", actions: 0, title: "Answered: received",
+      body: "Sent to alice/dev1.\nGot the parcel?" });
+    // The phone showed nothing, so the person taps again: same answer, same message, nothing new for the asker.
+    expect(hub.answerByLink(r.ask_id, hub.askSignature(r.ask_id), "received")).toEqual(first);
+    expect(hub.inbox(`agent:${DEV1}`).filter((m) => m.re === r.message_id).length).toBe(1);
+    expect(() => hub.answerByLink(r.ask_id, hub.askSignature(r.ask_id), "no push")).toThrow(/already answered/);
+
+    const late = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Merge?", options: ["yes", "no"], default_answer: "no", deadline_s: 60 });
+    t += 61_000;
+    hub.sweep();
+    await Bun.sleep(0);
+    expect(pushes.at(-1)).toMatchObject({ sequence: `axos-ask-${late.ask_id}`, title: "Not answered in time: no", body: "The default went to alice/dev1.\nMerge?" });
   });
 });
 

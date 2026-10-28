@@ -7,7 +7,8 @@ export interface PushAction {
 }
 
 export interface Notifier {
-  push(topic: string, msg: { title: string; body: string; clickUrl?: string; priority?: "default" | "high"; actions?: PushAction[] }): Promise<void>;
+  // sequence: pushes with the same one replace each other on the phone (a question, then its "answered" notice).
+  push(topic: string, msg: { title: string; body: string; clickUrl?: string; priority?: "low" | "default" | "high"; actions?: PushAction[]; sequence?: string }): Promise<void>;
 }
 
 // JSON publishing: UTF-8 titles without header encoding, and up to three answer buttons.
@@ -20,9 +21,10 @@ export function ntfyNotifier(baseUrl: string, token?: string): Notifier {
         topic,
         title: msg.title,
         message: msg.body,
-        priority: msg.priority === "high" ? 4 : 3,
+        priority: msg.priority === "high" ? 4 : msg.priority === "low" ? 2 : 3,
         tags: ["axos"],
         ...(msg.clickUrl ? { click: msg.clickUrl } : {}),
+        ...(msg.sequence ? { sequence_id: msg.sequence } : {}),
         ...(msg.actions?.length
           ? { actions: msg.actions.slice(0, 3).map((a) => ({ action: "http", label: a.label, url: a.url, method: "POST", body: a.body, clear: true })) }
           : {}),

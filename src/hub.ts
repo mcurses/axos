@@ -242,6 +242,12 @@ export class Hub {
     // Free text is for the logged-in page.
     const options = JSON.parse(ask.options_json) as string[];
     if (!options.includes(answer)) throw new AxosError("this link answers with one of the offered options only; answer in your own words on the AXOS page");
+    // The phone gives no sign that a tap went through, so people tap again: the same answer once more is no error.
+    const done = this.db.query("SELECT answer, message_id FROM asks WHERE id = ?").get(askId) as { answer: string | null; message_id: number };
+    if (done.answer === answer) {
+      const sent = this.db.query("SELECT id FROM messages WHERE re = ? AND type = 'answer' ORDER BY id LIMIT 1").get(done.message_id) as { id: number } | null;
+      return { message_id: sent?.id ?? done.message_id };
+    }
     return this.answerAsk(ask.human, askId, answer);
   }
 
@@ -1587,7 +1593,8 @@ export class Hub {
     const tail = (options.length > 3 ? `\n(${options.length - 3} more options on the page)` : "") +
       (images.length ? `\n(${images.length === 1 ? "an image" : `${images.length} images`} on the page)` : "") +
       (input.default_answer !== undefined && deadline ? `\n(default "${input.default_answer}", chosen by the agent, at ${iso(deadline)})` : "");
-    void this.pushToHuman(input.human, `${this.senderTitle(sender)} (${this.projectName(input.project)})`, `${summary}${tail}`, `#m${sent.id}`, actions);
+    void this.pushToHuman(input.human, `${this.senderTitle(sender)} (${this.projectName(input.project)})`, `${summary}${tail}`, `#m${sent.id}`, actions,
+      { sequence: askSequence(askId) });
     return { ask_id: askId, message_id: sent.id, pushed: !!topic };
   }
 
@@ -1606,6 +1613,7 @@ export class Hub {
       summary: `${human} answered: ${answer.trim().split("\n")[0]!.slice(0, 200)}`, body: answer, re: ask.message_id, priority: "high",
     });
     this.event(`human:${human}`, "ask.answered", ask.project, { ask: askId });
+    this.settledOnPhone(ask, `Answered: ${answer.trim().split("\n")[0]!.slice(0, 80)}`, `Sent to ${this.senderTitle(addr(ask.asker))}.`, sent.id);
     return { message_id: sent.id };
   }
 
@@ -1662,15 +1670,24 @@ export class Hub {
     return (this.db.query("SELECT ntfy_topic FROM humans WHERE name = ?").get(human) as { ntfy_topic: string | null } | null)?.ntfy_topic ?? null;
   }
 
-  private async pushToHuman(human: string, title: string, body: string, anchor: string, actions?: PushAction[]): Promise<void> {
+  private async pushToHuman(human: string, title: string, body: string, anchor: string, actions?: PushAction[],
+    opts: { sequence?: string; priority?: "low" | "high" } = {}): Promise<void> {
     const topic = this.ntfyTopic(human);
     if (!topic) return;
     try {
-      await this.notifier.push(topic, { title, body, clickUrl: this.publicUrl ? `${this.publicUrl}/ui${anchor}` : undefined, priority: "high", actions });
+      await this.notifier.push(topic, {
+        title, body, clickUrl: this.publicUrl ? `${this.publicUrl}/ui${anchor}` : undefined, priority: opts.priority ?? "high", actions, sequence: opts.sequence,
+      });
       this.event("axos", "push.sent", null, { human });
     } catch (e) {
       this.event("axos", "push.failed", null, { human, error: String(e) });
     }
+  }
+
+  // A settled question replaces its notification on the phone: the buttons go, and the person sees that it went through.
+  private settledOnPhone(ask: AskRow, title: string, body: string, messageId: number): void {
+    const question = this.getMessage(ask.message_id)?.summary ?? ask.question;
+    void this.pushToHuman(ask.human, title, `${body}\n${question}`, `#m${messageId}`, [], { sequence: askSequence(ask.id), priority: "low" });
   }
 
   // ---------------------------------------------------------------- housekeeping
@@ -1706,6 +1723,7 @@ export class Hub {
       this.systemMessage(a.project, addr(a.asker), "answer", `No answer from ${a.human} by the deadline; the default applies: ${a.default_answer}`,
         `Question: ${a.question}`, "high", a.message_id);
       this.event("axos", "ask.defaulted", a.project, { ask: a.id });
+      this.settledOnPhone(a, `Not answered in time: ${a.default_answer}`, `The default went to ${this.senderTitle(addr(a.asker))}.`, a.message_id);
     }
   }
 
@@ -1742,6 +1760,11 @@ function where(x: { repo: string | null; remote: string | null; branch: string }
 
 function compatible(live: { mode: string }[], mode: string): boolean {
   return live.length === 0 || (mode === "shared" && live.every((l) => l.mode === "shared"));
+}
+
+// One question's notification on the phone; later pushes with this id replace it.
+function askSequence(askId: number): string {
+  return `axos-ask-${askId}`;
 }
 
 export function iso(ms: number): string {
