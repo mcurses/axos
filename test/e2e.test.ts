@@ -219,8 +219,12 @@ test("the human page: key login, the state document, answering an ask; the app s
   expect(login.status).toBe(303);
   const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
   const ask = hub.askHuman(ids.dev1!, { project: SHOP, human: "alice", question: "Merge the hub branch?", options: ["merge", "wait"] });
+  const forPage = hub.send({ kind: "agent", id: ids.dev1!, human: "alice" }, { project: SHOP, to: ["human:alice"], type: "note", summary: "the hub branch is green" }).id;
+  expect(hub.receipts(forPage)[0]!.shown_at).toBeNull();
   const raw = await (await fetch(`${base}/ui/api/state`, { headers: { cookie } })).text();
   expect(raw).not.toMatch(/prj_|agt_/);
+  // Listed on the page counts as shown: the sender's receipt says so.
+  expect(hub.receipts(forPage)[0]!.shown_at).not.toBeNull();
   const state = JSON.parse(raw) as { human: string; asks: { id: number; question: string; options: string[] }[]; projects: { id: string; humans: string[] }[] };
   expect(state.human).toBe("alice");
   expect(state.asks.find((a) => a.id === ask.ask_id)).toMatchObject({ question: "Merge the hub branch?", options: ["merge", "wait"] });

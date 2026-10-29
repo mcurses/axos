@@ -2048,6 +2048,9 @@ export class Hub {
       new: { humans: names("human.added", "name").length ? names("human.added", "name") : all<{ actor: string }>("SELECT actor FROM events WHERE kind = 'human.added' AND at >= ?", since).map((e) => e.actor.replace(/^human:/, "")),
              projects: [...names("project.added", "project"), ...names("project.created", "project")], agents: names("agent.added", "label") },
       live_sessions: one<{ n: number }>("SELECT COUNT(*) AS n FROM sessions WHERE ended_at IS NULL AND kind = 'session' AND last_seen > ?", t - SESSION_LIVE_MS).n,
+      // Every held seat and whether its holder is reachable now: the owner's tick does not start when the owner's seat is held by a live session.
+      seats: all<{ project: string; role: string; holder: string }>("SELECT project, role, holder FROM roles WHERE holder IS NOT NULL ORDER BY project, role")
+        .map((r) => ({ ...r, label: this.label(r.holder), online: this.isOnline(r.holder) })),
     };
   }
 
