@@ -154,6 +154,7 @@ export interface HubOptions {
   linkSecret?: string; // signs answer links; kept out of the database (and its backups) when given
   sendsPerMinute?: number;
   onlineWindowS?: number;
+  sweep?: boolean; // false: a reader beside the hub process (the admin CLI); it never sweeps, since it has no notifier
 }
 
 const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,47}$/;
@@ -232,6 +233,7 @@ export class Hub {
   // Of those streams, how many said that the host behind them wakes on a message (?wakes=1), and how many said not.
   private wakers = new Map<string, number>();
   private sleepers = new Map<string, number>();
+  private readonly sweeps: boolean;
   private sendLog = new Map<string, number[]>();
   private linkSecret: string;
 
@@ -241,6 +243,7 @@ export class Hub {
     this.publicUrl = (opts.publicUrl ?? "").replace(/\/$/, "");
     this.sendsPerMinute = opts.sendsPerMinute ?? 60;
     this.onlineWindowMs = (opts.onlineWindowS ?? 600) * 1000;
+    this.sweeps = opts.sweep ?? true;
     const row = opts.linkSecret ? null : this.db.query("SELECT v FROM kv WHERE k = 'link_secret'").get() as { v: string } | null;
     this.linkSecret = opts.linkSecret ?? row?.v ?? randomBytes(32).toString("base64url");
     if (!opts.linkSecret && !row) this.db.query("INSERT INTO kv (k, v) VALUES ('link_secret', ?)").run(this.linkSecret);
@@ -1921,6 +1924,7 @@ export class Hub {
   // ---------------------------------------------------------------- housekeeping
 
   sweep(): void {
+    if (!this.sweeps) return;
     const t = this.now();
     for (const x of this.db.query("SELECT key FROM sessions WHERE ended_at IS NULL AND kind = 'session' AND last_seen < ?").all(t - SESSION_LIVE_MS) as { key: string }[]) {
       this.endSession(x.key, "silent for 7 days");
@@ -2000,7 +2004,8 @@ export class Hub {
   // The product's own measure: did messages reach a reader, and where does mail wait with nobody to read it. The owner
   // reads it (`axos health`), every brief cites it, and the owner's tick wakes a session on it. Window: since `since`.
   health(since: number) {
-    this.sweep();
+    // A read: no sweep here. The admin CLI has no phone notifier, and a sweep there would mark a reminder as sent
+    // without pushing it (architecture review 2026-10-30-b, finding 4).
     const t = this.now();
     const all = <T>(sql: string, ...args: (string | number)[]) => this.db.query(sql).all(...args) as T[];
     const one = <T>(sql: string, ...args: (string | number)[]) => this.db.query(sql).get(...args) as T;

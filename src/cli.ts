@@ -53,7 +53,9 @@ const readText = (file: string) => file === "-" ? Bun.stdin.text() : Bun.file(fi
 
 async function main(argv: string[]): Promise<void> {
   const args = [...argv];
-  const hub = new Hub(openDb(process.env.AXOS_DB ?? "axos.db"));
+  // The CLI runs beside the hub process, without its notifier: it must not sweep (a reminder would count as pushed
+  // and never reach the phone). Reads here are reads; the hub's own sweep runs in the service.
+  const hub = new Hub(openDb(process.env.AXOS_DB ?? "axos.db"), { sweep: false });
   const out = (s: string) => console.log(hub.display(s));
   const [noun, verb, ...rest] = args;
   const need = (n: number) => { if (rest.length < n) throw new AxosError(USAGE); };
