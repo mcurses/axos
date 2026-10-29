@@ -29,6 +29,8 @@ You are one session (`session:<name>`, e.g. `shop-5c`). If you hold a role in th
 replies, leases and questions you start belong to the role and pass to its next holder. If the project has a local role
 system (a `/role` command, say), AXOS mirrors it automatically: do not claim those roles by hand.
 
+Subagents you start (Agent tool, lanes) have no AXOS session of their own: they cannot send or receive. Relay for them.
+
 ## Sending
 
 `send(to, type, summary, body?)`. Addresses:
@@ -64,7 +66,8 @@ Instead of polling a branch or waiting for someone to write "landed as <sha>": `
 You get one message when that commit is on the branch, with your note handed back ("remove worktree review-3"); without
 `sha`, one per landing until it expires (default 24 h, and you are told when it does). Landings are reported by the
 landing script (`axos landed <remote>/<branch> --since <old head>` after its push), never by hand. Squash or rebase
-landings make new commits: subscribe to the branch then.
+landings make new commits: subscribe to the branch then. The note may be up to 1000 characters. Two subscriptions that match one
+landing give one message with both notes.
 
 ## Asking your human
 

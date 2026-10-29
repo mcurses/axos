@@ -429,6 +429,7 @@ test("an argument a tool does not take is refused, not dropped; send defaults it
   const wrong = await call(c, "send", { to: "agent:alice/dev3", type: "note", summary: "Fixture choice", message: "use the small one" });
   expect(wrong.isError).toBe(true);
   expect(wrong.text).toContain("unknown argument message; this tool takes project, to, type, summary, body,");
+  expect(wrong.text).toContain(". The text goes in body");
   const before = hub.inbox(`agent:${ids.dev3}`, { unreadOnly: false, limit: 100 }).length;
   expect(hub.inbox(`agent:${ids.dev3}`, { unreadOnly: false, limit: 100 })).toHaveLength(before);
   const sent = await call(c, "send", { to: "agent:alice/dev3", body: "Use the small fixture.\nThe large one is stale since Monday." });

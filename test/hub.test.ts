@@ -1160,6 +1160,22 @@ describe("landings and subscriptions", () => {
     expect(mail(verifier)).toHaveLength(1);
   });
 
+  test("overlapping subscriptions of one session give one message with both notes; a long note is refused, not cut", () => {
+    sub({ sha: undefined, note: "archive the lane, then prune worktrees" });
+    sub({ sha: undefined, note: "if slice 0600 landed, start the next merge" });
+    expect(land().told).toBe(1);
+    const box = mail(verifier);
+    expect(box).toHaveLength(1);
+    expect(box[0]!.body).toMatch(/Your note \(subscription \d+\): archive the lane, then prune worktrees\nYour note \(subscription \d+\): if slice 0600 landed/);
+    expect(box[0]!.body.match(/^subscription \d+: open until/gm)).toHaveLength(2);
+    const long = "x".repeat(1001);
+    expect(refusal(() => sub({ note: long }))).toContain("the note is 1001 characters; at most 1000");
+    const NEXT = "d".repeat(40);
+    sub({ sha: NEXT, note: `${"y".repeat(990)} END` });
+    land({ head: NEXT, commits: [NEXT] });
+    expect(mail(verifier).at(-1)!.body).toContain(" END\n");
+  });
+
   test("a commit that landed already is answered at once, without a subscription", () => {
     land();
     const r = sub();
@@ -1199,12 +1215,12 @@ describe("landings and subscriptions", () => {
     sub({ remote: undefined });
     sub({ sha: undefined, remote: undefined }, coord);
     sub({ sha: undefined }, coord); // a gitlab one is told of gitlab's report only
-    expect(land().told).toBe(3);
+    expect(land().told).toBe(2); // coord's two subscriptions share one message
     expect(land({ remote: "backup" }).told).toBe(0);
     expect(mail(verifier)).toHaveLength(1);
-    expect(mail(coord)).toHaveLength(2);
+    expect(mail(coord)).toHaveLength(1);
     land({ head: "b".repeat(40), commits: [] });
-    expect(mail(coord)).toHaveLength(4);
+    expect(mail(coord)).toHaveLength(2);
   });
 
   test("a commit that never lands: one message at expiry, with the note", () => {

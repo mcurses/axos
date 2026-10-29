@@ -151,6 +151,7 @@ const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,47}$/;
 const MAX_SUMMARY = 300;
 const MAX_BODY = 64_000;
 const MAX_BRIEF = 2_000;
+const MAX_NOTE = 1_000; // a subscription's note
 export const MAX_IMAGE = 5 * 1024 * 1024;
 const MAX_IMAGES = 4; // per question
 const MAX_UNCLAIMED = 8; // uploads per agent not yet on a question
@@ -1457,6 +1458,10 @@ export class Hub {
   subscribeLanding(agentId: string, input: { project: string; branch: string; sha?: string; remote?: string; repo?: string; note?: string; ttl_s?: number; as?: string; session?: string }):
     { id: number; expires_at: number } | { landed: LandingRow; sha: string } {
     const subscriber = addr(this.seat(agentId, input.project, input.as, input.session));
+    // Refused rather than cut: the note is an instruction to the subscriber's later self.
+    if (input.note !== undefined && input.note.length > MAX_NOTE) {
+      throw new AxosError(`the note is ${input.note.length} characters; at most ${MAX_NOTE}. Keep the instruction, or point to a file that holds it`);
+    }
     const w = landingTarget(input);
     if (w.sha) {
       const l = this.findLanding(input.project, w);
@@ -1466,7 +1471,7 @@ export class Hub {
     if (open >= MAX_OPEN_SUBSCRIPTIONS) throw new AxosError(`${open} subscriptions are open for this mailbox; unsubscribe from some first`);
     const ttl = Math.min(Math.max(input.ttl_s ?? 86_400, 60), MAX_SUBSCRIPTION_TTL_S);
     const t = this.now();
-    const note = input.note === undefined ? "" : oneLine(input.note, 300);
+    const note = input.note === undefined ? "" : oneLine(input.note, MAX_NOTE);
     const res = this.db.query(
       "INSERT INTO subscriptions (project, subscriber, repo, remote, branch, sha, note, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(input.project, subscriber, w.repo, w.remote, w.branch, w.sha, note, t, t + ttl * 1000);
@@ -1517,6 +1522,7 @@ export class Hub {
       return this.db.query("SELECT * FROM landings WHERE id = ?").get(lid) as LandingRow;
     })();
     let told = 0;
+    const due = new Map<string, { s: SubscriptionRow; matched: string | null }[]>();
     const subs = this.db.query(
       `SELECT * FROM subscriptions WHERE project = ? AND branch = ? AND ended_at IS NULL
          AND (remote IS NULL OR ? IS NULL OR remote = ?) AND (repo IS NULL OR repo = ?) ORDER BY id`,
@@ -1529,7 +1535,11 @@ export class Hub {
         "SELECT 1 FROM landings WHERE project = ? AND repo = ? AND branch = ? AND head = ? AND id <> ? AND at >= ? LIMIT 1",
       ).get(input.project, w.repo, w.branch, head, landing.id, s.created_at)) continue;
       if (matched !== null) this.db.query("UPDATE subscriptions SET ended_at = ?, end_reason = 'landed' WHERE id = ?").run(t, s.id);
-      this.tellLanded(s, landing, matched);
+      due.set(s.subscriber, [...(due.get(s.subscriber) ?? []), { s, matched }]);
+    }
+    // One message per mailbox and landing, however many of its subscriptions it met.
+    for (const hits of due.values()) {
+      this.tellLanded(hits, landing);
       told++;
     }
     this.event(by, "landing.reported", input.project, { id: landing.id, repo: w.repo, branch: w.branch, head, commits: commits.length, told });
@@ -1546,17 +1556,20 @@ export class Hub {
     ).get(project, w.branch, w.remote, w.remote, w.repo, w.repo, w.sha, w.sha) as (LandingRow & { matched: string }) | null;
   }
 
-  private tellLanded(s: SubscriptionRow, l: LandingRow, matched: string | null): void {
+  private tellLanded(hits: { s: SubscriptionRow; matched: string | null }[], l: LandingRow): void {
+    const s = hits[0]!.s;
+    const matched = hits.find((h) => h.matched)?.matched ?? null;
     const what = matched ? `${matched.slice(0, 10)} is on ${where(l)}` : `${where(l)} moved to ${l.head.slice(0, 10)}`;
+    const notes = hits.filter((h) => h.s.note);
     // The subject is the reporter's text, possibly another person's agent's: quoted, never the hub's own words.
     const summary = oneLine(`Landed: ${what}${l.subject ? `: "${l.subject}"` : ""}`, MAX_SUMMARY);
     const body = [
-      s.note ? `Your note: ${s.note}` : "",
+      hits.length === 1 && s.note ? `Your note: ${s.note}` : notes.map((h) => `Your note (subscription ${h.s.id}): ${h.s.note}`).join("\n"),
       `repo ${l.repo}, branch ${l.remote ? `${l.remote}/` : ""}${l.branch}`,
-      matched ? `commit ${matched}` : "",
+      ...hits.filter((h) => h.matched).map((h) => `commit ${h.matched}`).filter((c, i, all) => all.indexOf(c) === i),
       `head ${l.head}${l.subject ? ` "${l.subject}"` : ""}`,
       `reported by ${l.reporter === "admin" ? "the hub's admin" : this.label(l.reporter)} at ${iso(l.at)}`,
-      `subscription ${s.id}: ${s.sha ? "done" : `open until ${iso(s.expires_at)}`}`,
+      ...hits.map((h) => `subscription ${h.s.id}: ${h.s.sha ? "done" : `open until ${iso(h.s.expires_at)}`}`),
     ].filter(Boolean).join("\n");
     this.systemMessage(s.project, this.liveBox(s.subscriber), "note", summary, body);
   }

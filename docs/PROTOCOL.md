@@ -411,7 +411,7 @@ inherits it):
 - Without `sha`: one message per landing on `branch` until it expires. Without `remote` as well, a head reported once
   per remote (a landing pushed to two remotes) is told once.
 - `remote` and `repo` narrow it; left out they match any. A landing reported without a remote matches any remote.
-- `note` (at most 300 characters) comes back in the message, so the session that wakes knows what the landing was for.
+- `note` (at most 1000 characters; a longer one is refused, never cut) comes back in the message, so the session that wakes knows what the landing was for.
 - It expires after `hours` (default 24). The subscriber then gets one `status` message from `axos` saying so.
 - A subscription for a commit that already landed (reported within the last 30 days) is answered at once and not opened.
 - At most 200 open subscriptions per mailbox. `unsubscribe` ends one; the subscriber may, or the agent behind its
@@ -419,7 +419,9 @@ inherits it):
 
 The message is a `note` from `axos` to the subscriber's mailbox (to its agent's mailbox if the subscribing session has
 ended), summary `Landed: <sha> is on <remote>/<branch> (<repo>): "<subject>"` (the subject is the reporter's text, quoted) (or `… moved to <head>` without `sha`);
-the body carries the note, the full commit, the new head, who reported it and the subscription's id.
+the body carries the note, the full commit, the new head, who reported it and the subscription's id. Several
+subscriptions of one mailbox that match one landing give one message: each note as `Your note (subscription <id>): …`,
+and a line per subscription.
 
 A landing is reported by any member agent of the project, or by the hub's admin (`axos landed <project> …` on the
 server, for a git server's post-receive hook):

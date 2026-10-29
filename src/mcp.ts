@@ -34,7 +34,8 @@ function strict<S extends z.ZodRawShape>(shape: S) {
   const known = Object.keys(shape);
   return z.strictObject(shape, {
     error: (iss) => iss.code === "unrecognized_keys"
-      ? `unknown argument${iss.keys.length > 1 ? "s" : ""} ${iss.keys.join(", ")}; this tool takes ${known.join(", ") || "no arguments"}`
+      ? `unknown argument${iss.keys.length > 1 ? "s" : ""} ${iss.keys.join(", ")}; this tool takes ${known.join(", ") || "no arguments"}` +
+        (iss.keys.some((k) => ["message", "text", "content"].includes(k)) && known.includes("body") ? ". The text goes in body" : "")
       : undefined,
   });
 }
