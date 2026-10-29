@@ -1,6 +1,6 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { openDb } from "./db.ts";
-import { AxosError, Hub, MAX_IMAGE, type AgentRow, type InboxItem } from "./hub.ts";
+import { AxosError, Hub, iso, MAX_IMAGE, type AgentRow, type InboxItem } from "./hub.ts";
 import { buildMcpServer, type Connection } from "./mcp.ts";
 import { ntfyNotifier } from "./notify.ts";
 import { FRAME_NOTE, FRAME_NOTE_SHORT, renderDigest, renderMessages } from "./render.ts";
@@ -38,6 +38,13 @@ function connection(hub: Hub, req: Request, agent: AgentRow): Connection {
   const ref = h("x-axos-project");
   let project: string | undefined;
   try { project = ref ? hub.projectId(ref, hub.projectsOf(agent.id)) ?? undefined : undefined; } catch { project = undefined; }
+  // A named script of this agent (axos send --name): its own sender and mailbox in one project.
+  const script = h("x-axos-script");
+  if (script) {
+    if (cs) throw new AxosError("send x-axos-script or x-axos-session, not both");
+    if (!project) throw new AxosError(ref ? `you are not in a project '${ref}'` : "a script needs x-axos-project");
+    return { session: hub.openScript(agent.id, project, script), project };
+  }
   if (!cs) return { project };
   const key = hub.openSession(agent.id, { client_session: cs, project, name: h("x-axos-name"), profile: h("x-axos-profile") });
   return { session: key, project: hub.session(key)?.project ?? undefined };
@@ -53,6 +60,29 @@ async function handleMcp(hub: Hub, req: Request, agent: AgentRow, conn: Connecti
     return await transport.handleRequest(req);
   } finally {
     void server.close();
+  }
+}
+
+// A script's inbox as JSON (axos inbox): its own mailbox, with ?as=<role> also that role's. Nothing is marked shown or
+// acked here; ack with the ack tool. ?all=1 includes acked messages.
+function handleInbox(hub: Hub, url: URL, agent: AgentRow, conn: Connection): Response {
+  const q = url.searchParams;
+  try {
+    if (!conn.project) throw new AxosError("say which project: x-axos-project");
+    const boxes = hub.mailboxes({ id: agent.id, session: conn.session }, conn.project, q.get("as") ?? undefined);
+    const items = hub.inbox(boxes, { unreadOnly: q.get("all") !== "1", limit: Math.min(Number(q.get("limit") ?? 50) || 50, 200) });
+    const doc = {
+      project: conn.project, mailboxes: boxes.map((b) => hub.boxKey(b)), unread: hub.unreadCount(boxes),
+      messages: items.map((m) => ({
+        id: m.id, from: m.sender, from_name: m.sender.startsWith("session:") ? hub.session(m.sender.slice(8))?.name ?? null : null,
+        sender_human: m.sender_human, sent_by: m.sent_by ? hub.label(m.sent_by) : null, project: m.project, type: m.type, priority: m.priority,
+        summary: m.summary, body: m.body, re: m.re, thread: m.thread, via: m.via, sent: iso(m.created_at), acked: m.acked_at !== null,
+      })),
+    };
+    return json(JSON.parse(hub.display(JSON.stringify(doc), { agent: agent.id })));
+  } catch (e) {
+    if (e instanceof AxosError) return json({ error: hub.display(e.message, { agent: agent.id }) }, 400);
+    throw e;
   }
 }
 
@@ -358,7 +388,7 @@ export function makeFetch(hub: Hub) {
     if (path === "/api/join") return handleJoin(hub, req);
     const join = /^\/join\/(axosinv_[A-Za-z0-9_-]+)$/.exec(path);
     if (join) return handleJoinPage(hub, url, join[1]!);
-    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/unshown" || path === "/api/attach") {
+    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/unshown" || path === "/api/attach" || path === "/api/inbox") {
       const token = bearer(req);
       const agent = token ? hub.authenticateAgent(token) : null;
       if (!agent) return unauthorized();
@@ -374,6 +404,7 @@ export function makeFetch(hub: Hub) {
       if (path === "/api/landed") return handleLanded(hub, req, agent, conn);
       if (path === "/api/whoami") return handleWhoami(hub, req, url, agent);
       if (path === "/api/attach") return handleAttach(hub, req, url, agent);
+      if (path === "/api/inbox") return handleInbox(hub, url, agent, conn);
       if (path === "/api/unshown") {
         // For a doorbell deciding whether a ring is still news: what waits that no hook has shown yet.
         if (!conn.session) return json({ error: "x-axos-session header is required" }, 400);

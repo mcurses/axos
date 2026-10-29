@@ -13,6 +13,10 @@
 //   axos landed <remote>/<branch> [<commit>] [--since <old head>]
 //                        for a landing script, after a successful push: tells AXOS what is now on the branch, so every
 //                        session subscribed to one of those commits (or to the branch) gets a message
+//   axos send --name <script> --to <address> --summary <s> [--body <text>|-] [--as <role>]
+//   axos inbox --name <script> [--as <role>] [--json] [--ack]
+//                        for a script (timer, sensor, CI step): send and read as a named script of this machine, or
+//                        for a role a session here holds
 //   axos codex-bell --thread <codex session> [--session <id>]
 //                        keep running beside an interactive Codex: when an AXOS message arrives, `codex queue` wakes it
 //
@@ -650,6 +654,93 @@ async function landed(args: string[]): Promise<void> {
   console.log(`Reported to ${r.project}: ${head.slice(0, 10)} on ${where} (${repo}), ${r.commits} commit(s); ${r.told} subscription(s) told.`);
 }
 
+// Scripts (a timer, a sensor, a CI step): `axos send` and `axos inbox` speak as a named script of this machine's agent,
+// a sender of its own whose replies wait in its own mailbox. With --as <role> a script speaks for a role that a session
+// on this machine holds; the message records that the script wrote it.
+function scriptOpts(args: string[]) {
+  const opt = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    if (i < 0) return undefined;
+    const v = args[i + 1];
+    if (v === undefined) throw new Error(`${name} needs a value`);
+    args.splice(i, 2);
+    return v;
+  };
+  const flag = (name: string): boolean => {
+    const i = args.indexOf(name);
+    if (i >= 0) args.splice(i, 1);
+    return i >= 0;
+  };
+  return { opt, flag };
+}
+
+function scriptHub(name: string | undefined, projectArg: string | undefined) {
+  if (!name) throw new Error("say which script this is: --name <name> (lowercase letters, digits, . _ -); replies to it wait under that name");
+  const c = config();
+  const t = c && token(c);
+  if (!c || !t) throw new Error(`AXOS is not configured: ${CONFIG_PATH} or the token is missing`);
+  const project = projectArg ?? projectOf(c, process.cwd()).project;
+  if (!project) throw new Error("this folder belongs to no AXOS project (or its .axos.json is not trusted yet); say --project <p>");
+  const url = c.url.replace(/\/$/, "");
+  const h = { Authorization: `Bearer ${t}`, "x-axos-project": encodeURIComponent(project), "x-axos-script": encodeURIComponent(name) };
+  const call = async (tool: string, args: Record<string, unknown>): Promise<string> => {
+    const res = await fetch(`${url}/mcp`, {
+      method: "POST", signal: AbortSignal.timeout(15_000),
+      headers: { ...h, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }),
+    });
+    if (res.status === 401) throw new Error("the hub refused this machine's token");
+    if (!res.ok) throw new Error((await res.text()).trim() || `the hub answered ${res.status}`);
+    const r = (await res.json()) as { result?: { content?: { text?: string }[]; isError?: boolean }; error?: { message: string } };
+    if (r.error) throw new Error(r.error.message);
+    const text = r.result?.content?.map((x) => x.text ?? "").join("\n") ?? "";
+    if (r.result?.isError) throw new Error(text);
+    return text;
+  };
+  return { url, h, call };
+}
+
+async function sendCmd(args: string[]): Promise<void> {
+  const { opt } = scriptOpts(args);
+  const name = opt("--name"), project = opt("--project"), as = opt("--as"), to = opt("--to"), summary = opt("--summary");
+  const type = opt("--type"), priority = opt("--priority"), re = opt("--re"), dedupe = opt("--dedupe");
+  let body = opt("--body");
+  if (args.length) throw new Error(`unknown arguments: ${args.join(" ")}\nusage: axos send --name <script> (--to <address>[,…] | --re <id>) --summary <s> [--body <text>|-] [--type <t>] [--priority low|normal|high] [--as <role>] [--project <p>] [--dedupe <key>]`);
+  if (body === "-") body = await new Response(Bun.stdin.stream()).text();
+  const hub = scriptHub(name, project);
+  console.log(await hub.call("send", {
+    ...(to ? { to: to.split(",").map((x) => x.trim()).filter(Boolean) } : {}), ...(summary ? { summary } : {}), ...(body ? { body } : {}),
+    ...(type ? { type } : {}), ...(priority ? { priority } : {}), ...(re ? { re: Number(re) } : {}), ...(as ? { as } : {}), ...(dedupe ? { dedupe_key: dedupe } : {}),
+  }));
+}
+
+async function inboxCmd(args: string[]): Promise<void> {
+  const { opt, flag } = scriptOpts(args);
+  const name = opt("--name"), project = opt("--project"), as = opt("--as"), limit = opt("--limit");
+  const asJson = flag("--json"), all = flag("--all"), ack = flag("--ack");
+  if (args.length) throw new Error(`unknown arguments: ${args.join(" ")}\nusage: axos inbox --name <script> [--as <role>] [--json] [--all] [--ack] [--limit <n>] [--project <p>]`);
+  const hub = scriptHub(name, project);
+  const q = new URLSearchParams({ ...(as ? { as } : {}), ...(all ? { all: "1" } : {}), ...(limit ? { limit } : {}) });
+  const res = await fetch(`${hub.url}/api/inbox?${q}`, { headers: hub.h, signal: AbortSignal.timeout(15_000) });
+  if (res.status === 401) throw new Error("the hub refused this machine's token");
+  const doc = (await res.json().catch(() => ({ error: `the hub answered ${res.status}` }))) as
+    { error?: string; unread: number; messages: { id: number; from: string; from_name: string | null; sent_by: string | null; type: string; summary: string; body: string; re: number | null; sent: string; acked: boolean }[] };
+  if (doc.error) throw new Error(doc.error);
+  if (asJson) console.log(JSON.stringify(doc, null, 2));
+  else {
+    if (!doc.messages.length) console.log(all ? "No messages." : "No unread messages.");
+    for (const m of doc.messages) {
+      console.log(`#${m.id} ${m.sent} from ${m.from_name ?? m.from}${m.sent_by ? ` (written by ${m.sent_by})` : ""} [${m.type}${m.re ? `, re ${m.re}` : ""}${m.acked ? ", acked" : ""}]: ${m.summary}`);
+      if (m.body) console.log(m.body.replace(/^/gm, "    "));
+    }
+  }
+  const open = doc.messages.filter((m) => !m.acked).map((m) => m.id);
+  if (ack && open.length) {
+    const r = await hub.call("ack", { ids: open, ...(as ? { as } : {}) });
+    if (!asJson) console.log(r);
+  }
+}
+
 // Wake an idle Codex: listen to the mailbox Codex reads (same token, same x-axos-session) and, when a message arrives,
 // queue a fixed line into the Codex session. Codex then reads the message itself through its AXOS tools; no message
 // text passes through here.
@@ -852,12 +943,18 @@ else if (cmd === "link" || cmd === "unlink") {
     process.exit(1);
   });
 }
+else if (cmd === "send" || cmd === "inbox") {
+  await (cmd === "send" ? sendCmd(process.argv.slice(3)) : inboxCmd(process.argv.slice(3))).catch((e: Error) => {
+    console.error(e.message);
+    process.exit(1);
+  });
+}
 else if (cmd === "trust") {
   await trust().catch((e: Error) => {
     console.error(e.message);
     process.exit(1);
   });
 } else {
-  console.error("usage: axos join <invite link> | link [<project>] | unlink | trust | whoami | landed <remote>/<branch> | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
+  console.error("usage: axos join <invite link> | link [<project>] | unlink | trust | whoami | landed <remote>/<branch> | send --name <script> … | inbox --name <script> … | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
   process.exit(2);
 }

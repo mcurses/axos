@@ -34,6 +34,7 @@ export function renderMessage(m: (MessageRow | InboxItem) & { receipts?: string 
     m.sender_human && !m.sender.startsWith("human:") ? `sender-human="${attr(m.sender_human)}"` : "",
     name ? `sender-name="${attr(name)}"` : "",
     roles.length ? `sender-roles="${attr(roles.join(","))}"` : "",
+    m.sent_by ? `sent-by="${attr(nameOf?.(m.sent_by) ?? m.sent_by)}"` : "",
     `project="${attr(m.project)}"`,
     `type="${m.type}"`,
     m.priority !== "normal" ? `priority="${m.priority}"` : "",

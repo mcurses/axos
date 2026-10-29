@@ -669,6 +669,59 @@ test("an invite link: a browser gets the steps, axos join gets the token once, t
   expect((await fetch(`${base}/join/${code}`)).status).toBe(410);
 });
 
+test("scripts: axos send and axos inbox as a named script; speaking for a role a session of the same machine holds", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "axos-script-"));
+  const sid = "5c215c21-1111-2222-3333-444444444444";
+  const c = await connect(tokens.dev3!, { "x-axos-session": sid, "x-axos-project": "shop", "x-axos-name": "shop-super" });
+  const peer = await connect(tokens.dev1!, { "x-axos-session": "5c225c22-1111-2222-3333-444444444444", "x-axos-project": "shop", "x-axos-name": "shop-peer" });
+  hub.defineRole(SHOP, "supervisor", "watches the runs");
+  hub.claimRole(ids.dev3!, SHOP, "supervisor", undefined, `${ids.dev3}#5c215c21`);
+  const cli = async (token: string, ...args: string[]) => {
+    writeFileSync(join(dir, "token"), `${token}\n`);
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ url: base, token_file: join(dir, "token") }));
+    const p = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), ...args, "--project", "alice/shop"],
+      { cwd: dir, env: { ...process.env, AXOS_CONFIG: join(dir, "config.json") }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    p.stdin.write("the body\nfrom stdin");
+    p.stdin.end();
+    return { out: await new Response(p.stdout).text(), err: await new Response(p.stderr).text(), code: await p.exited };
+  };
+  try {
+    // Its own name: the peer sees the script, replies to it, and the reply waits in the script's mailbox.
+    const sent = await cli(tokens.dev3!, "send", "--name", "nightly-check", "--to", "session:shop-peer", "--summary", "the nightly run failed", "--body", "-");
+    expect(sent.err).toBe("");
+    expect(sent.out).toContain("Delivered to shop-peer");
+    const got = (await call(peer, "inbox")).text;
+    expect(got).toContain('sender-name="nightly-check"');
+    expect(got).toContain("the body\nfrom stdin");
+    const id = Number(/id="(\d+)"[^>]*sender-name="nightly-check"/.exec(got)![1]);
+    await call(peer, "send", { re: id, summary: "rerun it with --verbose" });
+    const box = JSON.parse((await cli(tokens.dev3!, "inbox", "--name", "nightly-check", "--json")).out) as { messages: { summary: string; acked: boolean }[] };
+    expect(box.messages.map((m) => m.summary)).toEqual(["rerun it with --verbose"]);
+    expect((await cli(tokens.dev3!, "inbox", "--name", "nightly-check", "--ack")).out).toContain("Acked 1 of 1");
+    expect((await cli(tokens.dev3!, "inbox", "--name", "nightly-check")).out).toContain("No unread messages.");
+    // Not a live session: not in presence, not reached by a project-wide message, no roles.
+    expect(hub.presence(SHOP).some((x) => x.name === "nightly-check")).toBe(false);
+    const all = hub.send({ kind: "agent", id: ids.dev1!, human: "alice" }, { project: SHOP, to: ["project:shop"], type: "request", summary: "everyone: pause deploys" });
+    expect(all.delivered_to.some((r) => r.includes(hub.openScript(ids.dev3!, SHOP, "nightly-check")))).toBe(false);
+    expect(() => hub.claimRole(ids.dev3!, SHOP, "supervisor", "x", hub.openScript(ids.dev3!, SHOP, "nightly-check"))).toThrow("a script holds no roles");
+
+    // For a role a session on the same machine holds: the message is the role's, and says the script wrote it.
+    const deputy = await cli(tokens.dev3!, "send", "--name", "sensor", "--as", "supervisor", "--to", "session:shop-peer", "--summary", "disk at 91%");
+    expect(deputy.err).toBe("");
+    const seen = (await call(peer, "inbox")).text;
+    expect(seen).toMatch(/from="role:alice\/shop\/supervisor"[^>]*sent-by="sensor"/);
+    // Another machine's script may not speak for it.
+    const other = await cli(tokens.dev1!, "send", "--name", "sensor", "--as", "supervisor", "--to", "session:shop-peer", "--summary", "x");
+    expect(other.code).toBe(1);
+    expect(other.err).toContain("you do not hold the role 'supervisor'");
+    expect((await cli(tokens.dev3!, "send", "--name", "Bad Name", "--to", "session:shop-peer", "--summary", "x")).err).toContain("must be 1-32 lowercase");
+  } finally {
+    await c.close();
+    await peer.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a landing script reports with axos landed; the subscribed session gets one message with its note", async () => {
   const sid = "abababab-1111-2222-3333-444444444444";
   const c = await connect(tokens.dev3!, { "x-axos-session": sid, "x-axos-project": "shop", "x-axos-name": "review-547" });

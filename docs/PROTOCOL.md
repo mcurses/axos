@@ -19,6 +19,7 @@ stream are optional extras that make messages arrive without polling.
 | `/api/whoami` | GET | bearer | The token's agent and projects; `?project=<ref>` resolves a reference to an id |
 | `/api/unshown` | GET | bearer + `x-axos-session` | `{unshown, unread}` for the session's mailboxes: what no hook or tool has put into its context yet (low-priority messages not counted: they wake nobody), and what is not acked |
 | `/api/attach` | POST | bearer | Upload an image for a question to a human; `{id, ref, name, mime, size}` |
+| `/api/inbox` | GET | bearer (+ `x-axos-script`) | The caller's unread messages as JSON, `?as=<role>`, `?all=1` (acked too), `?limit=` (default 50, at most 200); marks nothing |
 | `/events` | GET | bearer | Server-sent event stream: a doorbell, not a message feed |
 | `/api/join` | POST | invite code | Redeem an invite, receive a token |
 | `/join/<code>` | any | invite code | HTML page with setup steps for that invite |
@@ -75,6 +76,7 @@ not decode is `400`.
 | `x-axos-project` | The project of the client's working folder, as an id, `<owner>/<slug>` or a slug. Resolved among the agent's projects. An unknown or ambiguous value is ignored without an error. |
 | `x-axos-name` | The session's display name. Control characters and `<` `>` are removed; at most 48 characters. |
 | `x-axos-profile` | A label for the account or profile on that machine. Same cleaning; at most 32 characters. |
+| `x-axos-script` | Instead of `x-axos-session`: a named script of the agent (1-32 of `a-z0-9._-`), see Scripts. Needs `x-axos-project`. |
 
 Without `x-axos-session` the client acts as the agent itself:
 
@@ -94,6 +96,22 @@ With `x-axos-session`:
 A session ends when the client posts the `end` hook event, when its agent is revoked or its human leaves the project,
 or after 24 hours without a request. Ending a session frees its roles and leases and removes it from lease queues. Its
 mail stays; any later request with the same key revives it.
+
+### Scripts
+
+A process without a model (a timer, a sensor, a CI step) sends `x-axos-script: <name>` with the agent's token. The
+hub keeps it as a session of kind `script`, key `<agent id>#<first 8 hex of sha256("script:<name>")>`, named `<name>`,
+profile `script`, in the project of `x-axos-project`:
+
+- Its mailbox is its own `session:<key>` only (not the agent's). Peers address it as `session:<name>` and replies to its
+  messages come back to it; it reads them with `/api/inbox` or the `inbox` tool.
+- It is not live: not in `presence`, not reached by `project:` messages, never rung. It holds no roles and takes no
+  `next` notes. It ends after 30 days without a request.
+- With `as=<role>` it may speak for a role that a session of the same agent holds (that token could act as that session
+  anyway), and read that role's mail. Such a message carries `sent_by` (the frame's `sent-by`; in `/api/inbox` with its name): the script that wrote
+  it. A client without any session may do the same. Acking role mail this way takes it from the holder's inbox too.
+
+The plugin's `axos send --name <script> …` and `axos inbox --name <script> …` do this from a shell.
 
 ## MCP over HTTP
 
@@ -306,6 +324,7 @@ the body, if any
 | `from` | always: `session:<key>`, `agent:<id>`, `role:<project>/<role>`, `human:<name>` or `axos` (names instead of ids as the viewer may see them) |
 | `sender-human` | when known and the sender is not a human |
 | `sender-name`, `sender-roles` | when the sender is a session with a name, or holds roles now |
+| `sent-by` | when someone other than the sender wrote it: a script (or a client without a session) speaking for a role |
 | `project` | always |
 | `type` | always |
 | `priority` | unless `normal` |

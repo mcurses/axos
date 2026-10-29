@@ -41,7 +41,7 @@ function strict<S extends z.ZodRawShape>(shape: S) {
 }
 
 const projectArg =z.string().optional().describe("Project as '<slug>' or '<owner>/<slug>'; defaults to this session's project");
-const asArg = z.string().optional().describe("Only for clients without sessions: the role you act as");
+const asArg = z.string().optional().describe("Only for scripts and clients without sessions: the role you speak for");
 
 export interface Connection {
   session?: string; // session key, when the client sent one

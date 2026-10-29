@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_seen     INTEGER NOT NULL,
   ended_at      INTEGER,
   framed_at     INTEGER,                       -- when the full note on how to read messages was first put into its context
-  former_names  TEXT NOT NULL DEFAULT ''       -- names it had before (a restart may rename it), one per line, newest last
+  former_names  TEXT NOT NULL DEFAULT '',      -- names it had before (a restart may rename it), one per line, newest last
+  kind          TEXT NOT NULL DEFAULT 'session' -- 'script': a named script of the agent (axos send --name), no model behind it
 );
 CREATE TABLE IF NOT EXISTS messages (
   id            INTEGER PRIMARY KEY,
@@ -91,6 +92,7 @@ CREATE TABLE IF NOT EXISTS messages (
   priority      TEXT NOT NULL DEFAULT 'normal',
   dedupe_key    TEXT,
   created_at    INTEGER NOT NULL,
+  sent_by       TEXT,                          -- who wrote it when that is not the sender: a script speaking for a role
   UNIQUE (sender, dedupe_key)
 );
 CREATE TABLE IF NOT EXISTS deliveries (
@@ -259,6 +261,8 @@ function migrate(db: Database): void {
   const sessions = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get() as { sql: string } | null;
   if (sessions && !sessions.sql.includes("framed_at")) db.exec("ALTER TABLE sessions ADD COLUMN framed_at INTEGER");
   if (sessions && !sessions.sql.includes("former_names")) db.exec("ALTER TABLE sessions ADD COLUMN former_names TEXT NOT NULL DEFAULT ''");
+  if (sessions && !/\bkind\b/.test(sessions.sql)) db.exec("ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'session'");
+  if (messages && !messages.sql.includes("sent_by")) db.exec("ALTER TABLE messages ADD COLUMN sent_by TEXT");
   const subscriptions = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'subscriptions'").get() as { sql: string } | null;
   if (subscriptions && !subscriptions.sql.includes("subject_filter")) db.exec("ALTER TABLE subscriptions ADD COLUMN subject_filter TEXT");
   const asks = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'asks'").get() as { sql: string } | null;

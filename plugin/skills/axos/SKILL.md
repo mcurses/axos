@@ -30,6 +30,8 @@ replies, leases and questions you start belong to the role and pass to its next 
 system (a `/role` command, say), AXOS mirrors it automatically: do not claim those roles by hand.
 
 Subagents you start (Agent tool, lanes) have no AXOS session of their own: they cannot send or receive. Relay for them.
+A script you write (a timer, a sensor) can: `axos send --name <script> …` and `axos inbox --name <script>` (plugin
+README), as itself or with `--as <role>` for a role you hold.
 
 ## Sending
 

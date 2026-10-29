@@ -35,6 +35,7 @@ export interface SessionRow {
   ended_at: number | null;
   framed_at: number | null;
   former_names: string;
+  kind: "session" | "script";
 }
 
 export interface AgentRow {
@@ -63,6 +64,7 @@ export interface MessageRow {
   as_of: string | null;
   priority: Priority;
   created_at: number;
+  sent_by: string | null;
 }
 
 export interface InboxItem extends MessageRow {
@@ -165,6 +167,8 @@ const MAX_UNCLAIMED = 8; // uploads per agent not yet on a question
 const IMAGES_KEPT_MS = 30 * 86_400_000;
 const UNCLAIMED_KEPT_MS = 3_600_000;
 const ANSWERED_ON_PHONE_MS = 86_400_000;
+const SCRIPT_KEPT_MS = 30 * 86_400_000;
+const SCRIPT_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 const ASK_STALE_MS = 3 * 86_400_000; // an open question without a deadline
 const MAX_WAIT_S = 240;
 const MAX_LEASE_TTL_S = 86_400;
@@ -626,6 +630,23 @@ export class Hub {
     return this.db.query("SELECT * FROM sessions WHERE key = ?").get(key) as SessionRow | null;
   }
 
+  // A named script of an agent (a timer, a sensor, a CI step): a sender of its own with a mailbox for replies, kept
+  // across runs. It holds no roles, takes no notes left for the next session, is not counted live and wakes nobody.
+  openScript(agentId: string, project: string, name: string): string {
+    if (!SCRIPT_RE.test(name)) throw new AxosError(`script name '${oneLine(name, 40)}' must be 1-32 lowercase letters, digits, '.', '_' or '-'`);
+    if (!this.isMember(agentId, project)) throw new AxosError(`you are not in a project '${project}'`);
+    const key = `${agentId}#${hashSecret(`script:${name}`).slice(0, 8)}`;
+    const prev = this.session(key);
+    if (prev && prev.kind !== "script") throw new AxosError(`'${name}' collides with a session of this agent; pick another name`);
+    const t = this.now();
+    this.db.query(
+      `INSERT INTO sessions (key, agent_id, client_session, project, name, profile, started_at, last_seen, kind) VALUES (?, ?, ?, ?, ?, 'script', ?, ?, 'script')
+       ON CONFLICT (key) DO UPDATE SET last_seen = excluded.last_seen, ended_at = NULL, project = excluded.project`,
+    ).run(key, agentId, `script-${name}`, project, name, t, t);
+    if (!prev || prev.ended_at !== null) this.event(`session:${key}`, "script.started", project, { name });
+    return key;
+  }
+
   // A session that ends gives up its roles and leases; the role's mailbox stays with the role.
   endSession(key: string, reason = "ended"): void {
     const r = this.db.query("UPDATE sessions SET ended_at = ? WHERE key = ? AND ended_at IS NULL").run(this.now(), key);
@@ -643,9 +664,10 @@ export class Hub {
     this.event(`session:${key}`, "session.ended", null, { reason });
   }
 
-  liveSessions(project: string): SessionRow[] {
-    return this.db.query("SELECT * FROM sessions WHERE project = ? AND ended_at IS NULL AND last_seen > ? ORDER BY last_seen DESC")
-      .all(project, this.now() - SESSION_LIVE_MS) as SessionRow[];
+  // scripts: also the agents' named scripts (they can be addressed, but are no one's live session).
+  liveSessions(project: string, scripts = false): SessionRow[] {
+    return this.db.query(`SELECT * FROM sessions WHERE project = ? AND ended_at IS NULL AND (last_seen > ? OR kind = 'script')
+      ${scripts ? "" : "AND kind = 'session'"} ORDER BY last_seen DESC`).all(project, this.now() - SESSION_LIVE_MS) as SessionRow[];
   }
 
   // Who a session or agent is, for humans and models: 'shop-5c (alice/mac#35dabd9e, work)'.
@@ -808,6 +830,9 @@ export class Hub {
       const known = this.roles(project).map((r) => r.role).join(", ") || "none";
       throw new AxosError(`no role '${role}' in '${project}' (known: ${known}); define_role creates one`);
     }
+    if (session && this.session(session)?.kind === "script") {
+      throw new AxosError("a script holds no roles; it speaks for one its agent's session holds with --as");
+    }
     const me = session ?? agentId;
     const row = this.db.query("SELECT holder, since, expires_at FROM roles WHERE project = ? AND role = ?").get(project, role) as
       { holder: string | null; since: number | null; expires_at: number | null } | null;
@@ -855,7 +880,10 @@ export class Hub {
     this.sweep();
     const row = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(project, role) as { holder: string | null } | null;
     if (!row) throw new AxosError(`no role '${role}' in '${project}'`);
-    if (row.holder !== me) {
+    // A script, or a client without a session, may speak for a role a session of the same agent holds: that token
+    // could act as that session anyway. The message records who wrote it (sent_by).
+    const deputy = (!session || this.session(session)?.kind === "script") && !!row.holder && row.holder.startsWith(`${agentId}#`);
+    if (row.holder !== me && !deputy) {
       throw new AxosError(`you do not hold the role '${role}' in '${project}'${row.holder ? ` (${this.label(`session:${row.holder}`)} does)` : ""}; claim_role it first ` +
         "(a role taken in a repo's own role system or by a hook is not an AXOS claim unless the hook reports it)");
     }
@@ -888,8 +916,10 @@ export class Hub {
       if (!boxes.includes(box)) boxes.push(box);
     }
     if (actor.session) {
-      const own = this.session(actor.session)?.project;
-      boxes.push(`agent:${actor.id}@${own ? [own, ...this.linkedProjects(own)].join("+") : ""}`);
+      const s = this.session(actor.session);
+      // A script reads its own mail (and a role's it speaks for), not what waits for its agent's sessions.
+      if (s?.kind === "script") return boxes;
+      boxes.push(`agent:${actor.id}@${s?.project ? [s.project, ...this.linkedProjects(s.project)].join("+") : ""}`);
     } else boxes.push(`agent:${actor.id}`);
     return boxes;
   }
@@ -956,9 +986,9 @@ export class Hub {
       const k = /^(.+)#([0-9a-z]{8})$/.exec(ref);
       if (k) ref = `${this.agentId(k[1]!) ?? k[1]}#${k[2]}`;
       // The message's own project first; a linked project's session only when none here matches.
-      let live = this.liveSessions(project);
+      let live = this.liveSessions(project, true);
       if (!live.some((x) => x.key === ref || x.name === ref)) {
-        const there = this.linkedProjects(project).flatMap((p) => this.liveSessions(p)).filter((x) => x.key === ref || x.name === ref);
+        const there = this.linkedProjects(project).flatMap((p) => this.liveSessions(p, true)).filter((x) => x.key === ref || x.name === ref);
         if (there.length) live = there;
       }
       let hit = live.filter((x) => x.key === ref || x.name === ref);
@@ -1096,13 +1126,16 @@ export class Hub {
     if (!recipients.size) throw new AxosError("nobody to deliver to (the only recipient was yourself)");
 
     // A note or status to a whole project is news, not a call: it waits for each session's next step.
+    // Written by someone other than the sender: a script, or a client without a session, speaking for a role.
+    const holder = sender.startsWith("role:") ? (this.db.query("SELECT holder FROM roles WHERE project || '/' || role = ?").get(sender.slice(5)) as { holder: string | null } | null)?.holder : null;
+    const sentBy = actor.kind === "agent" && sender.startsWith("role:") && holder !== (actor.session ?? actor.id) ? addr(actor.session ?? actor.id) : null;
     const priority = input.priority ?? ((input.type === "note" || input.type === "status") && (input.to ?? []).some((a) => a.startsWith("project:")) ? "low" : "normal");
     const id = this.db.transaction(() => {
       const res = this.db.query(
-        `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at, sent_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(input.project, sender, actor.kind === "agent" ? this.humanOf(actor.id) : actor.name, JSON.stringify(input.to ?? [...recipients.keys()]), input.type, summary, body, thread, input.re ?? null,
-        input.as_of ?? null, priority, input.dedupe_key ?? null, this.now());
+        input.as_of ?? null, priority, input.dedupe_key ?? null, this.now(), sentBy);
       const mid = Number(res.lastInsertRowid);
       for (const [recipient, via] of recipients) {
         this.db.query("INSERT INTO deliveries (message_id, recipient, via) VALUES (?, ?, ?)").run(mid, recipient, via);
@@ -1766,8 +1799,11 @@ export class Hub {
 
   sweep(): void {
     const t = this.now();
-    for (const x of this.db.query("SELECT key FROM sessions WHERE ended_at IS NULL AND last_seen < ?").all(t - SESSION_LIVE_MS) as { key: string }[]) {
+    for (const x of this.db.query("SELECT key FROM sessions WHERE ended_at IS NULL AND kind = 'session' AND last_seen < ?").all(t - SESSION_LIVE_MS) as { key: string }[]) {
       this.endSession(x.key, "silent for a day");
+    }
+    for (const x of this.db.query("SELECT key FROM sessions WHERE ended_at IS NULL AND kind = 'script' AND last_seen < ?").all(t - SCRIPT_KEPT_MS) as { key: string }[]) {
+      this.endSession(x.key, "unused for 30 days");
     }
     for (const r of this.db.query("SELECT project, role, holder FROM roles WHERE holder IS NOT NULL AND expires_at < ?").all(t) as { project: string; role: string; holder: string }[]) {
       this.db.query("UPDATE roles SET holder = NULL, since = NULL, expires_at = NULL WHERE project = ? AND role = ?").run(r.project, r.role);

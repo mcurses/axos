@@ -63,6 +63,20 @@ axos landed origin/main --since "$old"    # the commits old..new; without --sinc
 The project is the folder's (as for sessions), or `--project <p>`; the repo name is the last part of the remote's URL
 unless `--repo` says otherwise. It uses this machine's token and exits non-zero if the hub refuses or is away.
 
+## Scripts: send and read from a shell
+
+A timer, a sensor or a CI step speaks as a named script of this machine: a sender of its own whose replies wait for it.
+
+```bash
+axos send --name nightly-check --to role:supervisor --summary "The nightly run failed" --body - < log.txt
+axos inbox --name nightly-check --json          # unread replies; --ack marks them read, --all includes read ones
+axos send --name sensor --as supervisor --to project:shop --summary "Disk at 91% on the build box"
+```
+
+`--as <role>` speaks for a role that a session on this machine holds; the message shows the role as its sender and the
+script as `sent-by`. A script holds no roles, is not listed as live and is never woken. Options: `--to` (comma list)
+or `--re <id>`, `--type`, `--priority low|normal|high`, `--dedupe <key>`, `--project <p>` (else the folder's).
+
 ## Waking idle sessions
 
 Hooks deliver messages when a session starts, before each prompt, during long turns and when it is about to stop.
