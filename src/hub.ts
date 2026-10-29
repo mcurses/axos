@@ -584,6 +584,21 @@ export class Hub {
     const t = this.now();
     this.db.query("UPDATE agents SET last_seen = ? WHERE id = ?").run(t, agentId);
     this.db.query("UPDATE roles SET expires_at = ? WHERE holder = ?").run(t + this.roleTtlMs, agentId);
+    this.regainRoles(agentId);
+  }
+
+  // A holder that went quiet (a sleeping laptop, a dropped connection) and comes back within a day gets back the roles
+  // its silence freed, unless someone else took them meanwhile (that one told it so) or it left the project.
+  private regainRoles(holder: string): void {
+    const t = this.now();
+    const agentId = holder.split("#")[0]!;
+    for (const r of this.db.query("SELECT project, role FROM roles WHERE lapsed_holder = ? AND holder IS NULL AND lapsed_at > ?").all(holder, t - SESSION_LIVE_MS) as { project: string; role: string }[]) {
+      if (!this.isMember(agentId, r.project)) continue;
+      this.db.query("UPDATE roles SET holder = ?, since = ?, expires_at = ?, lapsed_holder = NULL, lapsed_at = NULL WHERE project = ? AND role = ?")
+        .run(holder, t, t + this.roleTtlMs, r.project, r.role);
+      this.event(addr(holder), "role.regained", r.project, { role: r.role });
+      this.emit(addr(holder), { kind: "role" });
+    }
   }
 
   // ---------------------------------------------------------------- sessions
@@ -616,6 +631,7 @@ export class Hub {
     if (!prev || prev.ended_at !== null) this.event(`session:${key}`, "session.started", project, { name, profile });
     if (!prev) this.claimNext(key);
     this.db.query("UPDATE roles SET expires_at = ? WHERE holder = ?").run(t + this.roleTtlMs, key);
+    this.regainRoles(key);
     return key;
   }
 
@@ -654,6 +670,7 @@ export class Hub {
   endSession(key: string, reason = "ended"): void {
     const r = this.db.query("UPDATE sessions SET ended_at = ? WHERE key = ? AND ended_at IS NULL").run(this.now(), key);
     if (!r.changes) return;
+    this.db.query("UPDATE roles SET lapsed_holder = NULL, lapsed_at = NULL WHERE lapsed_holder = ?").run(key);
     for (const role of this.db.query("SELECT project, role FROM roles WHERE holder = ?").all(key) as { project: string; role: string }[]) {
       this.db.query("UPDATE roles SET holder = NULL, since = NULL, expires_at = NULL WHERE project = ? AND role = ?").run(role.project, role.role);
       this.event(`session:${key}`, "role.released", role.project, { role: role.role, reason });
@@ -855,8 +872,8 @@ export class Hub {
       throw new AxosError("a script holds no roles; it speaks for one its agent's session holds with --as");
     }
     const me = session ?? agentId;
-    const row = this.db.query("SELECT holder, since, expires_at FROM roles WHERE project = ? AND role = ?").get(project, role) as
-      { holder: string | null; since: number | null; expires_at: number | null } | null;
+    const row = this.db.query("SELECT holder, since, expires_at, lapsed_holder FROM roles WHERE project = ? AND role = ?").get(project, role) as
+      { holder: string | null; since: number | null; expires_at: number | null; lapsed_holder: string | null } | null;
     const prev = row?.holder ?? null;
     if (prev && prev !== me && this.humanOfHolder(prev) !== this.humanOfHolder(me)) {
       throw new AxosError(`role '${role}' is held by a session of ${this.humanOfHolder(prev)}; only they can release it (or it frees itself when that session ends)`);
@@ -871,7 +888,8 @@ export class Hub {
     this.db.transaction(() => {
       this.db.query(
         `INSERT INTO roles (project, role, holder, since, expires_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (project, role) DO UPDATE SET holder = excluded.holder, since = excluded.since, expires_at = excluded.expires_at`,
+         ON CONFLICT (project, role) DO UPDATE SET holder = excluded.holder, since = excluded.since, expires_at = excluded.expires_at,
+           lapsed_holder = NULL, lapsed_at = NULL`,
       ).run(project, role, me, prev === me ? row!.since : t, t + this.roleTtlMs);
     })();
     if (prev && prev !== me) {
@@ -880,6 +898,11 @@ export class Hub {
         `Reason given: ${force}\nThe role's mailbox, leases and open questions stay with the role.`, "high");
     } else if (prev !== me) {
       this.event(addr(me), "role.claimed", project, { role });
+    }
+    const lapsed = row?.lapsed_holder ?? null;
+    if (!prev && lapsed && lapsed !== me) {
+      this.systemMessage(project, addr(lapsed), "status", `You no longer hold the role '${role}': while you were away, ${this.label(me)} took it.`,
+        "It had freed itself after your silence. Its mailbox, leases and open questions stay with the role.", "high");
     }
     this.emit(addr(me), { kind: "role" });
     return { took_over_from: prev && prev !== me ? prev : null };
@@ -1838,10 +1861,11 @@ export class Hub {
       this.endSession(x.key, "unused for 30 days");
     }
     for (const r of this.db.query("SELECT project, role, holder FROM roles WHERE holder IS NOT NULL AND expires_at < ?").all(t) as { project: string; role: string; holder: string }[]) {
-      this.db.query("UPDATE roles SET holder = NULL, since = NULL, expires_at = NULL WHERE project = ? AND role = ?").run(r.project, r.role);
+      // A connected session keeps its roles through the stream's heartbeat, so this holder is away or gone. It is not
+      // told now (it would not hear it): back within a day it gets the role again, or learns who took it.
+      this.db.query("UPDATE roles SET holder = NULL, since = NULL, expires_at = NULL, lapsed_holder = ?, lapsed_at = ? WHERE project = ? AND role = ?")
+        .run(r.holder, t, r.project, r.role);
       this.event("axos", "role.expired", r.project, { role: r.role, holder: r.holder });
-      this.systemMessage(r.project, addr(r.holder), "status", `You no longer hold the role '${r.role}': it was silent for ${Math.round(this.roleTtlMs / 60_000)} minutes and freed itself.`,
-        "Its mailbox, leases and open questions stay with the role. claim_role takes it again if it is still vacant.", "high");
     }
     for (const l of this.db.query("SELECT * FROM leases WHERE ended_at IS NULL AND expires_at < ?").all(t) as LeaseRow[]) {
       this.endLease(l, "expired");

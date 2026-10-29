@@ -580,6 +580,56 @@ describe("sessions", () => {
     expect(hub.session(coord)!.ended_at).not.toBeNull();
   });
 
+  test("a session back from a long silence (a sleeping laptop) gets its role again, without being told it lost it", () => {
+    t += 61 * 60_000;
+    expect(hub.roles(SHOP)[0]!.holder).toBeNull();
+    const mail = hub.send(A, note(["role:main-coordinator"], "go, there is headroom"));
+    hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP });
+    expect(hub.roles(SHOP)[0]!.holder).toBe(coord);
+    const inbox = hub.inbox(hub.mailboxes(C(), SHOP));
+    expect(inbox.map((m) => m.id)).toContain(mail.id);
+    expect(inbox.some((m) => m.sender === "axos")).toBe(false);
+    expect(hub.events().some((e) => e.kind === "role.regained")).toBe(true);
+    // The heartbeat of a reconnected stream (touch) brings it back too.
+    t += 61 * 60_000;
+    hub.sweep();
+    hub.touch(coord);
+    expect(hub.roles(SHOP)[0]!.holder).toBe(coord);
+  });
+
+  test("a role taken while its holder was away stays taken, and the holder learns who took it", () => {
+    t += 61 * 60_000;
+    hub.sweep();
+    hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper);
+    hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP });
+    expect(hub.roles(SHOP)[0]!.holder).toBe(helper);
+    expect(hub.inbox(`session:${coord}`).some((m) => /while you were away, shop-e9/.test(shown(m.summary)))).toBe(true);
+    hub.releaseRole(DEV3, SHOP, "main-coordinator", helper);
+    hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP });
+    expect(hub.roles(SHOP)[0]!.holder).toBeNull();
+  });
+
+  test("an ended session, one away for more than a day, or one whose human left the project does not get the role back", () => {
+    t += 61 * 60_000;
+    hub.sweep();
+    hub.endSession(coord);
+    hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP });
+    expect(hub.roles(SHOP)[0]!.holder).toBeNull();
+
+    hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper);
+    t += 25 * 3600_000;
+    hub.sweep();
+    hub.touch(helper);
+    expect(hub.roles(SHOP)[0]!.holder).toBeNull();
+
+    hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper);
+    t += 61 * 60_000;
+    hub.sweep();
+    hub.removeHumanFromProject("alice", SHOP);
+    hub.touch(helper);
+    expect(hub.roles(SHOP)[0]!.holder).toBeNull();
+  });
+
   test("agents create projects for their human, named <human>/<slug>", () => {
     const k = hub.createProject(DEV3, "kittens", "Kittens game automation.");
     expect(k).toMatch(/^prj_[0-9a-z]{10}$/);
@@ -972,6 +1022,24 @@ INSERT INTO events (at, actor, kind, project, data_json) VALUES
     "deliveries", "leases", "lease_waiters", "asks", "project_links", "kv", "events"];
   const dump = (db: Database) => Object.fromEntries(TABLES.map((tb) => [tb, db.query(`SELECT * FROM ${tb} ORDER BY rowid`).all()]));
 
+  test("a database from before lapsed holders gains the columns and keeps its roles", () => {
+    const path = join(tmpdir(), `axos-lapsed-${process.pid}-${Date.now()}.db`);
+    try {
+      const db = openDb(path);
+      const h = new Hub(db);
+      h.addHuman("alice");
+      const p = h.addProject("alice/shop");
+      h.defineRole(p, "r");
+      db.exec("ALTER TABLE roles DROP COLUMN lapsed_at; ALTER TABLE roles DROP COLUMN lapsed_holder;");
+      db.close();
+      const again = openDb(path);
+      expect(again.query("SELECT role, holder, lapsed_holder, lapsed_at FROM roles").all()).toEqual([{ role: "r", holder: null, lapsed_holder: null, lapsed_at: null }]);
+      again.close();
+    } finally {
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
+    }
+  });
+
   test("an old database gets ids, its addresses are rewritten, and a second open changes nothing", () => {
     const path = join(tmpdir(), `axos-migrate-${process.pid}-${Date.now()}.db`);
     try {
@@ -1107,16 +1175,6 @@ describe("delivery and coordination", () => {
     expect(pushes.at(-1)!.body).toContain("(2 more options on the page)");
     expect(() => hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Ship?", options: ["yes", "no"], deadline_s: 600 }))
       .toThrow(/deadline needs a default_answer/);
-  });
-
-  test("a role that frees itself after silence tells the session that held it", () => {
-    hub.defineRole(SHOP, "reviewer");
-    const s = hub.openSession(DEV3, { client_session: "44444444-0000-0000-0000-000000000000", project: SHOP, name: "shop-rv" });
-    hub.claimRole(DEV3, SHOP, "reviewer", undefined, s);
-    t += 3601_000;
-    hub.sweep();
-    const told = hub.inbox(`session:${s}`).map((m) => m.summary);
-    expect(told.some((x) => x.includes("You no longer hold the role 'reviewer'"))).toBe(true);
   });
 
   test("a reply without to goes back to the sender, across a link, and to the agent when that session has ended", () => {

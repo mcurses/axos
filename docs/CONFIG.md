@@ -53,7 +53,7 @@ These are constants in the code, not settings:
 |---|---|
 | A session is live for 24 hours after its last request | hub |
 | A session or agent is online for 10 minutes after its last request, or while an event stream is open | hub |
-| A role is freed after 2 hours (7200 s) without a request from its holder | hub |
+| A role is freed after 2 hours (7200 s) without a request from its holder; an open event stream counts as requests. A holder back within 24 hours gets it again if it is still vacant | hub |
 | 60 sends per minute per agent | hub |
 | Summary 300 characters, body 64000 characters | hub |
 | `wait` at most 240 seconds | hub |

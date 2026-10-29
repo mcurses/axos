@@ -200,7 +200,10 @@ A role is a named job in a project. One holder at a time; the holder is a sessio
 - While a session holds a role it reads the role's mailbox, speaks as the role when it holds only that one, and its
   leases and questions belong to the role. The mailbox, leases and open questions stay with the role when it is freed.
 - A role is freed by `release_role`, by the end of the holder's session, by 7200 seconds without a request from the
-  holder (the hub then sends the holder a high-priority status message), or by a takeover.
+  holder, or by a takeover. An open event stream counts as requests, so only a holder that is away (a sleeping laptop,
+  a dropped connection) loses a role to silence. When it is back within 24 hours with its session not ended, it holds
+  the role again if the role is still vacant (event `role.regained`); if someone took it meanwhile, it gets a
+  high-priority status message saying who.
 - Taking a role held by someone else: refused when the holder belongs to another human. For the same human it needs
   `force` set to a non-empty text (the human's words); the displaced holder is told with that text.
 - Mail to a vacant role waits in its mailbox for the next holder.
