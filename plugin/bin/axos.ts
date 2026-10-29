@@ -357,8 +357,9 @@ async function hook(kind: string): Promise<void> {
   writeFileSync(stateFile(id.sessionId), JSON.stringify(state));
   if (!context || kind === "end") return;
   if (kind === "stop") {
-    // New messages arrived during the turn: let the session look at them before it stops.
-    process.stdout.write(JSON.stringify({ decision: "block", reason: context }));
+    // New messages arrived during the turn: let the session look at them before it stops. As additional context, not a
+    // block: a block's reason reaches the model twice (as feedback and as a "blocking error"); this reaches it once.
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "Stop", additionalContext: context } }));
     return;
   }
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: HOOK_EVENT[kind], additionalContext: context } }));
