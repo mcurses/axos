@@ -101,7 +101,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     if (linked.length) {
       lines.push("", "## Linked projects (message them: role:<project>/<role>, session:<name>, project:<project>)");
       lines.push(...linked.map((q) => {
-        const rs = hub.roles(q).map((r) => `${r.role} (${r.holder ? hub.label(r.holder) : "vacant"})`);
+        const rs = hub.roles(q).map((r) => `${r.role} (${r.holder ? hub.labelFor(r.holder, agent.human, true) : "vacant"})`);
         return `- ${q}: ${rs.length ? `roles ${rs.join(", ")}` : "no roles"}`;
       }));
     }
@@ -156,7 +156,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     description: "Send a message. Addresses: role:<role>, session:<session name>, human:<name>, project (every live session in the project), " +
       "or next (held for the next session of your human that starts in this project: a handoff before a restart). " +
       "A linked project (see join) is reached with role:<project>/<role>, session:<name> or project:<project>. " +
-      "A role nobody holds, or whose holder is away, takes no message from you unless queue is set: you are told who is in the room instead and choose.",
+      "Mail to a role waits for whoever holds it; if nobody is reading it right now (vacant, or its holder away) the result says so and who else is in the room.",
     inputSchema: strict({
       project: projectArg,
       to: z.union([z.string(), z.array(z.string()).min(1)]).optional().describe("One address or a list; leave out when replying with re: the reply goes to whoever sent that message"),
@@ -168,11 +168,10 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       as_of: z.string().optional().describe("The state this is based on, e.g. a commit sha, so a reader can tell if it is stale"),
       priority: z.enum(PRIORITIES).optional().describe("low: wakes nobody, read at the recipient's next step (the default for a note or status to a whole project); high: a message to a human is pushed to their phone, use it rarely"),
       dedupe_key: z.string().optional().describe("Sending twice with the same key delivers once"),
-      // A string too: a session whose cached schema predates the flag passes "true".
-      queue: z.union([z.boolean(), z.string()]).optional().describe("Send to a role even when nobody can read it now: it waits in the role's mailbox for the next holder"),
+      queue: z.union([z.boolean(), z.string()]).optional().describe("No effect (kept for older sessions): mail to a role always waits for its holder"),
       as: asArg,
     }),
-  }, tool(({ as, ...a }) => {
+  }, tool(({ as, queue: _queue, ...a }) => {
     // A reply may name the project of the message it answers; across a link it is still sent from this session's own.
     const across = a.re !== undefined && a.project && conn.project && hub.projectId(a.project, hub.linkedProjects(conn.project));
     const body = a.body ?? "";
@@ -180,7 +179,6 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const r = hub.send({ ...actor, as }, {
       ...a, type: a.type ?? "note", summary, project: across ? conn.project! : project(a.project),
       to: a.to === undefined ? undefined : Array.isArray(a.to) ? a.to : [a.to],
-      queue: typeof a.queue === "string" ? /^(true|yes|1)$/i.test(a.queue.trim()) : a.queue,
     });
     if (r.duplicate) return `Already sent as message ${r.id}; not sent again.`;
     const parts = [`Sent message ${r.id} (${body ? `summary and a ${body.length}-character body` : "summary only, no body"}).`];
@@ -189,6 +187,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     if (roles.length) parts.push(`Held for ${roles.join(", ")} until someone takes the role.`);
     if (r.waiting_for_role.some((w) => w.startsWith("next:"))) parts.push(`Held for the next session of ${agent.human} that starts in this project.`);
     for (const x of r.not_sent) parts.push(`Not sent to ${x.to}: ${x.reason}`);
+    parts.push(...r.unattended);
     return parts.join(" ");
   }));
 

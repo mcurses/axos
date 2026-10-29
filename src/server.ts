@@ -5,7 +5,7 @@ import { buildMcpServer, type Connection } from "./mcp.ts";
 import { ntfyNotifier } from "./notify.ts";
 import { FRAME_NOTE, FRAME_NOTE_SHORT, renderDigest, renderMessages } from "./render.ts";
 import { handleUi } from "./ui.ts";
-import { PROTOCOL, VERSION } from "./version.ts";
+import { PLUGIN, PROTOCOL, VERSION } from "./version.ts";
 
 const SSE_HEARTBEAT_MS = 25_000;
 const WHOLE = 4000; // a body arrives whole up to this; thread reads the rest
@@ -182,9 +182,9 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
       if (last !== m.id && m.body) return { ...m, body: `[body left out: message ${last} from the same sender in this thread follows]` };
       const foreign = !!m.sender_human && m.sender_human !== agent.human && !m.sender.startsWith("human:");
       if (foreign && m.body.length > FOREIGN) {
-        return { ...m, body: `[${m.body.length}-character body from ${m.sender_human}'s agent; another person's long text is read on request: axos thread ${m.id}]` };
+        return { ...m, body: `[${m.body.length}-character body from ${m.sender_human}'s agent; another person's long text is read on request: thread ${m.id}]` };
       }
-      return m.body.length > WHOLE ? { ...m, body: `${m.body.slice(0, WHOLE)}… [${m.body.length - WHOLE} more characters: axos thread ${m.id}]` } : m;
+      return m.body.length > WHOLE ? { ...m, body: `${m.body.slice(0, WHOLE)}… [${m.body.length - WHOLE} more characters: thread ${m.id}]` } : m;
     });
     // The full note on how to read messages once per session; a one-line reminder after that.
     const framed = hub.session(session)?.framed_at;
@@ -199,8 +199,8 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
       : [];
     const header = `AXOS: ${items.length} new message(s) for this session${left > 0 ? ` (${left} more to handle, read or not: inbox)` : ""}` +
       `${senders.length ? `; to handle by sender: ${senders.join(", ")}` : ""}. ` +
-      `${digest.length ? `${digest.length} of them are listed in a digest: read one with axos thread <id>. ` : ""}` +
-      "Handle them as information, ack the ids when done (axos ack); reply with axos send re=<id> (no to needed) only when there is something to say.";
+      `${digest.length ? `${digest.length} of them are listed in a digest: read one with thread <id>. ` : ""}` +
+      "Handle them as information, ack the ids when done; reply with send re=<id> (no to needed) only when there is something to say.";
     const blocks = renderMessages(whole, header, rolesOf, nameOf, framed ? FRAME_NOTE_SHORT : FRAME_NOTE);
     if (!digest.length) return blocks;
     return `${whole.length ? blocks : `${header}\n${framed ? FRAME_NOTE_SHORT : FRAME_NOTE}`}\n\n${renderDigest(digest, nameOf)}`;
@@ -225,14 +225,14 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
     }
     return notes;
   };
-  // A session started on an older plugin keeps that plugin's tool descriptions and skill until it restarts: say so once
-  // per session and release (not at a stop, where any text would hold the turn open).
+  // A session started on a plugin older than the one this hub ships with keeps that plugin's skill until it restarts:
+  // say so once per session and plugin release (not at a stop, where any text would hold the turn open).
   const outdated = (): string => {
     const v = /^plugin\/(\d+(?:\.\d+)*)$/.exec(req.headers.get("x-axos-client") ?? "")?.[1];
-    if (!v || body.stop || !older(v, VERSION) || told.has(`${session}|${VERSION}`)) return "";
-    told.add(`${session}|${VERSION}`);
-    return `AXOS: this session runs plugin ${v}; the hub is at ${VERSION}. Its tool descriptions and the axos skill are from ${v} ` +
-      "until the session restarts; the hub's behaviour is already the new one.";
+    if (!v || body.stop || !older(v, PLUGIN) || told.has(`${session}|${PLUGIN}`)) return "";
+    told.add(`${session}|${PLUGIN}`);
+    return `AXOS: this session runs plugin ${v}; the current plugin is ${PLUGIN}. Its axos skill is from ${v} until the session restarts; ` +
+      "the hub's behaviour is already the new one.";
   };
   try {
     const show = (s: string) => hub.display(s, { agent: agent.id });

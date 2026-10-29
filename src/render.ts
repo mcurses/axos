@@ -63,7 +63,7 @@ export function renderDigest(items: (MessageRow | InboxItem)[], nameOf?: NameOf)
     const size = m.body ? ` [${m.body.length}-character body]` : "";
     return `- ${m.id} from ${m.sender}${name ? ` (${name})` : ""}, ${m.type}${re}: ${defang(m.summary.replace(/\s+/g, " "))}${size}`;
   });
-  return `<axos-digest count="${items.length}" read="axos thread <id>">\n${lines.join("\n")}\n</axos-digest>`;
+  return `<axos-digest count="${items.length}" read="thread <id>">\n${lines.join("\n")}\n</axos-digest>`;
 }
 
 export function ago(ms: number | null, now: number): string {

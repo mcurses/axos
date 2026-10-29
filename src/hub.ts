@@ -1102,8 +1102,8 @@ export class Hub {
     priority?: Priority;
     dedupe_key?: string;
     no_push?: boolean;
-    queue?: boolean; // to a role nobody can take it for now: leave it in the role's mailbox anyway
-  }): { id: number; duplicate: boolean; delivered_to: string[]; waiting_for_role: string[]; not_sent: { to: string; reason: string }[] } {
+    queue?: boolean; // accepted and ignored since 0.18.0: mail to a role always waits
+  }): { id: number; duplicate: boolean; delivered_to: string[]; waiting_for_role: string[]; not_sent: { to: string; reason: string }[]; unattended: string[] } {
     this.requireActorInProject(actor, input.project);
     const sender = actor.kind === "agent" ? addr(this.seat(actor.id, input.project, actor.as, actor.session)) : `human:${actor.name}`;
     if (!MESSAGE_TYPES.includes(input.type)) throw new AxosError(`type must be one of ${MESSAGE_TYPES.join(", ")}`);
@@ -1117,7 +1117,7 @@ export class Hub {
 
     if (input.dedupe_key) {
       const dup = this.db.query("SELECT id FROM messages WHERE sender = ? AND dedupe_key = ?").get(sender, input.dedupe_key) as { id: number } | null;
-      if (dup) return { id: dup.id, duplicate: true, delivered_to: [], waiting_for_role: [], not_sent: [] };
+      if (dup) return { id: dup.id, duplicate: true, delivered_to: [], waiting_for_role: [], not_sent: [], unattended: [] };
     }
     if (actor.kind === "agent") this.rateLimit(actor.id);
 
@@ -1162,7 +1162,6 @@ export class Hub {
 
     // Each address on its own: the ones that resolve get the message, the others come back with their reason.
     const notSent: { to: string; reason: string }[] = [];
-    const typed = new Map<string, string>(); // recipient -> the address it was typed as
     const human = actor.kind === "agent" ? this.humanOf(actor.id) : actor.name;
     for (const a of input.to ?? []) {
       let found: { recipient: string; via: string }[];
@@ -1176,23 +1175,7 @@ export class Hub {
       for (const r of found) {
         const self = r.recipient === sender || (actor.kind === "agent" && r.via.startsWith("project:") &&
           (r.recipient === `agent:${actor.id}` || r.recipient === `session:${actor.session}`));
-        if (!self && !recipients.has(r.recipient)) {
-          recipients.set(r.recipient, r.via);
-          typed.set(r.recipient, a);
-        }
-      }
-    }
-    // A role nobody can take the message for now (vacant, or its holder away) gets none from an agent unless it says
-    // queue: the agent sends because it needs something, so it is told who is in the room and chooses. A script and a
-    // person have nobody to choose from: their message waits for the role's next holder.
-    const chooses = actor.kind === "agent" && !input.queue && !(actor.session && this.session(actor.session)?.kind === "script");
-    if (chooses) {
-      for (const recipient of [...recipients.keys()]) {
-        if (!recipient.startsWith("role:")) continue;
-        const holder = this.roleHolder(recipient);
-        if (holder && this.isOnline(holder)) continue;
-        recipients.delete(recipient);
-        notSent.push({ to: typed.get(recipient) ?? recipient, reason: this.room(input.project, recipient, holder, actor.session ?? actor.id) });
+        if (!self && !recipients.has(r.recipient)) recipients.set(r.recipient, r.via);
       }
     }
     if (!recipients.size) {
@@ -1204,7 +1187,7 @@ export class Hub {
     // Written by someone other than the sender: a script, or a client without a session, speaking for a role.
     const holder = sender.startsWith("role:") ? (this.db.query("SELECT holder FROM roles WHERE project || '/' || role = ?").get(sender.slice(5)) as { holder: string | null } | null)?.holder : null;
     const sentBy = actor.kind === "agent" && sender.startsWith("role:") && holder !== (actor.session ?? actor.id) ? addr(actor.session ?? actor.id) : null;
-    const priority = input.priority ?? ((input.type === "note" || input.type === "status") && (input.to ?? []).some((a) => a.startsWith("project:")) ? "low" : "normal");
+    const priority = input.priority ?? ((input.type === "note" || input.type === "status") && (input.to ?? []).some((a) => a === "project" || a.startsWith("project:")) ? "low" : "normal");
     const id = this.db.transaction(() => {
       const res = this.db.query(
         `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at, sent_by)
@@ -1228,28 +1211,43 @@ export class Hub {
       }
     }
     const vacant = (r: string) => (r.startsWith("role:") && !this.roleHolder(r)) || r.startsWith("next:");
+    const holderText = (r: string) => {
+      const h = this.roleHolder(r)!;
+      return `${this.labelFor(h, human, r.slice(5).split("/")[0] !== input.project)}, ${this.whereabouts(h)}`;
+    };
+    // A role nobody is reading right now (vacant, or its holder away): the mail waits, and the sender is told so, with
+    // who else is in the room, so it can also turn to someone who is there.
+    const unattended = [...recipients.keys()].filter((r) => r.startsWith("role:") && !(this.roleHolder(r) && this.isOnline(this.roleHolder(r)!)))
+      .map((r) => this.room(input.project, r, human, actor.kind === "agent" ? actor.session ?? actor.id : ""));
     return {
       id,
       duplicate: false,
-      delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => r.startsWith("role:") ? `${r} (held by ${this.label(this.roleHolder(r)!)}, ${this.whereabouts(this.roleHolder(r)!)})` : r),
+      delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => r.startsWith("role:") ? `${r} (held by ${holderText(r)})` : r),
       waiting_for_role: [...recipients.keys()].filter(vacant),
       not_sent: notSent,
+      unattended,
     };
   }
 
-  // Who is in the room, for a sender whose role addressee cannot take a message now: the role's state, then, in the
-  // sender's own project, every other live session with its roles and reach; in a linked project only the roles and
-  // their holders' reach, as nothing else crosses a link.
-  private room(from: string, roleAddr: string, holder: string | null, me: string): string {
+  // A holder in words for a viewer: its label in the viewer's own project or for its own human; across a link another
+  // person's session is only "a session of <human>", as presence does not cross a link.
+  labelFor(holder: string, viewerHuman: string, acrossLink: boolean): string {
+    const h = this.humanOfHolder(holder);
+    return !acrossLink || h === viewerHuman ? this.label(holder) : `a session of ${h}`;
+  }
+
+  // The state of a role nobody is reading now and who else is in the room: in the sender's own project every other
+  // live session with its roles and reach; in a linked project only the roles held there, as nothing else crosses.
+  private room(from: string, roleAddr: string, viewerHuman: string, me: string): string {
     const [p, role] = roleAddr.slice(5).split("/", 2) as [string, string];
-    const state = holder ? `held by ${this.label(holder)} (${this.whereabouts(holder)})` : "held by nobody";
     const own = p === from;
+    const holder = this.roleHolder(roleAddr);
+    const state = holder ? `held by ${this.labelFor(holder, viewerHuman, !own)} (${this.whereabouts(holder)})` : "held by nobody";
     const room = own
-      ? this.liveSessions(p).filter((x) => x.key !== me)
+      ? this.liveSessions(p).filter((x) => x.key !== me && x.key !== holder)
         .map((x) => `${this.label(x.key)} (${this.rolesHeldBy(`session:${x.key}`, p).join(", ") || "no role"}; ${this.whereabouts(x.key)})`)
-      : this.roles(p).filter((r) => r.holder && r.role !== role).map((r) => `role:${p}/${r.role} (${this.label(r.holder!)}; ${this.whereabouts(r.holder!)})`);
-    return `role '${role}' is ${state}, so nobody would read this now. ${own ? "In the room" : `Roles held in ${p}`}: ${room.join("; ") || (own ? "nobody else" : "none")}. ` +
-      "Send it to whoever there fits, leave it for the role's next holder with queue: true, or ask your human.";
+      : this.roles(p).filter((r) => r.holder && r.role !== role).map((r) => `role:${p}/${r.role} (${this.labelFor(r.holder!, viewerHuman, true)}; ${this.whereabouts(r.holder!)})`);
+    return `${roleAddr} is ${state}: the message waits there. ${own ? "In the room" : `Roles held in ${p}`}: ${room.join("; ") || (own ? "nobody else" : "none")}.`;
   }
 
   // Where mail for a mailbox goes now: a session that has ended since hands it to its agent's shared mailbox.
@@ -1756,12 +1754,12 @@ export class Hub {
     const body = [input.question, options.length ? `\nOptions:\n${options.map((o) => `- ${o}`).join("\n")}` : "",
       input.default_answer !== undefined ? `\nDefault if unanswered: ${input.default_answer}` : "",
       images.length ? `\nImages on the page: ${images.map((i) => `${i.name} (${kb(i.size)})`).join(", ")}` : ""].join("");
-    const sent = this.send({ kind: "agent", id: agentId, human: "", as: input.as, session: input.session }, {
-      project: input.project, to: [`human:${input.human}`], type: "ask", summary, body, priority: "high", no_push: true,
-    });
     const deadline = input.deadline_s ? this.now() + input.deadline_s * 1000 : null;
     const remind = input.remind_s ? this.now() + input.remind_s * 1000 : null;
     if (remind && deadline && remind >= deadline) throw new AxosError("the reminder would come after the deadline; leave it out or make it sooner");
+    const sent = this.send({ kind: "agent", id: agentId, human: "", as: input.as, session: input.session }, {
+      project: input.project, to: [`human:${input.human}`], type: "ask", summary, body, priority: "high", no_push: true,
+    });
     const res = this.db.query(
       `INSERT INTO asks (project, asker, human, question, options_json, default_answer, deadline, remind_at, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(input.project, asker, input.human, input.question, JSON.stringify(options), input.default_answer ?? null, deadline, remind, sent.id);
@@ -1814,7 +1812,7 @@ export class Hub {
     this.db.query("UPDATE asks SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(answer, `human:${human}`, t, askId);
     this.ack(`human:${human}`, [ask.message_id]);
     const sent = this.send({ kind: "human", name: human }, {
-      project: ask.project, to: [addr(ask.asker)], type: "answer",
+      project: ask.project, to: [this.liveBox(addr(ask.asker))], type: "answer",
       summary: `${human} answered: ${answer.trim().split("\n")[0]!.slice(0, 200)}`, body: answer, re: ask.message_id, priority: "high",
     });
     this.event(`human:${human}`, "ask.answered", ask.project, { ask: askId });
@@ -1931,7 +1929,7 @@ export class Hub {
     for (const a of this.db.query("SELECT * FROM asks WHERE answer IS NULL AND deadline IS NOT NULL AND deadline < ? AND default_answer IS NOT NULL").all(t) as AskRow[]) {
       this.db.query("UPDATE asks SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(a.default_answer, "default (deadline passed)", t, a.id);
       this.ack(`human:${a.human}`, [a.message_id]);
-      this.systemMessage(a.project, addr(a.asker), "answer", `No answer from ${a.human} by the deadline; the default applies: ${a.default_answer}`,
+      this.systemMessage(a.project, this.liveBox(addr(a.asker)), "answer", `No answer from ${a.human} by the deadline; the default applies: ${a.default_answer}`,
         `Question: ${a.question}`, "high", a.message_id);
       this.event("axos", "ask.defaulted", a.project, { ask: a.id });
       this.settledOnPhone(a, `Not answered in time: ${a.default_answer}`, `The default went to ${this.senderTitle(addr(a.asker))}.`, a.message_id);

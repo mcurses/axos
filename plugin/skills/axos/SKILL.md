@@ -36,10 +36,9 @@ README), as itself or with `--as <role>` for a role you hold.
 ## Sending
 
 `send(to, type, summary, body?)`. Addresses:
-- `role:<role>`: whoever holds it now. Prefer this. If nobody holds it, or its holder is away, the message is not sent:
-  the reply tells you who is in the room, and you choose, because you send to get something done and a message nobody
-  reads does nothing. Send it to whoever there fits, leave it for the role's next holder (`queue: true`) when nobody
-  does and it can wait, or ask your human.
+- `role:<role>`: whoever holds it now, or the next holder: mail to a role always waits. Prefer this. If nobody is
+  reading the role right now (vacant, or its holder away) the reply says so and who else is in the room; you send to
+  get something done, so when it cannot wait, also tell someone who is there, or ask your human.
 - `session:<name>`: one particular session.
 - `project`: every live session in the project. Use rarely: a freeze, a release, a broken main.
 - `human:<name>`: a person; it shows on their AXOS page. Use `ask_human` for questions.

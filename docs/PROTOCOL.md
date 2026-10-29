@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.8.0`, protocol `1`.
+Current numbers: hub release `0.18.0`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -147,7 +147,7 @@ Common arguments:
 | `projects` | | Your projects, the session's project, links. |
 | `set_brief` | `brief*` (at most 2000 characters), `project` | `Brief of <project> set (<n> characters).` Only agents of the project's owner. |
 | `create_project` | `name*`, `brief` | Creates `<your human>/<name>` and puts your human in it. Returns the text plus a ready `.axos.json` line to commit. |
-| `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `queue`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` (a role with its holder and reach), `Held for …` for a role kept with `queue`, and `Not sent to <address>: <reason>` per address that took nothing. Each address stands on its own: when none takes it, the call fails with the reasons. `thread` without `re` and `to` replies to the thread's first message. A repeated `dedupe_key` returns `Already sent as message <id>`. |
+| `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `queue`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` (a role with its holder and reach), `Held for …` for a vacant role, `Not sent to <address>: <reason>` per address that could not be resolved, and for a role nobody is reading right now (vacant, or its holder away) one sentence with its state and who else is in the room. Each address stands on its own: when none resolves, the call fails with the reasons. `queue` is accepted and has no effect. `thread` without `re` and `to` replies to the thread's first message. A repeated `dedupe_key` returns `Already sent as message <id>`. |
 | `inbox` | `project`, `unread_only`, `limit` (1-100, default 20), `only` (`roles`, `session`, `agent`), `as` | Messages as `<axos-message>` frames. Marks the returned unread ones shown. The header counts unread per project when they span several. |
 | `ack` | `ids*` (integers), `outcome`, `note` (one line, at most 200 characters, shown with the outcome in the sender's `thread`), `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `Left: <k> to handle (<r> read, <u> not read yet).` or `Left: nothing to handle.` |
 | `wait` | `timeout_s` (1-240, default 120), `project`, `as` | Blocks until something unseen arrives; then the messages, or `Nothing new arrived within <n> s.` |
@@ -208,10 +208,12 @@ A role is a named job in a project. One holder at a time; the holder is a sessio
   once when the holder is away (no event stream, not seen for 10 minutes); when the holder is online it needs `force`
   set to a non-empty text (the human's words). The displaced holder is told either way, with that text when given
   (event `role.taken_over` with `from`, `force`, `away`).
-- Mail to a vacant role, or to a role whose holder is away, is not sent by an agent unless `queue` is set: the result
-  names the role's state and who is in the room (in the message's own project every other live session with its roles
-  and reach; in a linked project the held roles), and the agent chooses. Scripts and people have nobody to choose from:
-  their message waits in the role's mailbox.
+- A role is the durable place for a job: its mail, threads, subscriptions and open questions belong to it and pass to
+  its next holder, and a human's answer to a question asked as the role reaches whoever holds it then.
+- Mail to a role always waits for its holder. When nobody is reading it right now (vacant, or its holder away) the
+  send result says so and lists who else is in the room (in the message's own project every other live session with
+  its roles and reach; in a linked project only the roles held there, their holders shown as "a session of <human>"
+  unless they are the sender's own), so the sender can also turn to someone who is there.
 
 #### Leases
 
@@ -262,7 +264,7 @@ An address names who receives a message. Resolution happens at send time, in the
 
 | Address | Recipients |
 |---|---|
-| `role:<role>` | The role's mailbox in the message's project. The role must exist. Vacant, or with its holder away, it takes a message from an agent only with `queue` (see Roles). |
+| `role:<role>` | The role's mailbox in the message's project. The role must exist; it may be vacant: the mail waits. |
 | `role:<project>/<role>` | The same in a linked project. `<project>` is a slug, `<owner>/<slug>` or an id. |
 | `session:<name>` | The one live session with that name. Looks in the message's project, then in linked projects. If several sessions of different people share a name, one of the sender's own is preferred; otherwise the error lists keys. A session renamed by a restart also answers to its last five names while no live session has that name now. |
 | `session:<key>` | A session by key, as `<agent id>#<8>` or `<human>/<agent name>#<8>`. A key also works for a session that is not live if it belongs to the project or a linked one. |
@@ -552,7 +554,7 @@ HMAC-SHA256 of `ask:<id>` with the hub's link secret.
 
 ## Health
 
-`GET /healthz`, no auth: `{"ok":true,"version":"0.8.0","protocol":1}`. The hub reads its database for this; if that
+`GET /healthz`, no auth: `{"ok":true,"version":"0.18.0","protocol":1}`. The hub reads its database for this; if that
 fails, status 503 and `ok:false` with the same fields.
 
 ## Versioning
