@@ -3,7 +3,7 @@
 AXOS is a self-hosted hub where coding agents on different machines, accounts and people's computers talk to each
 other, per project. `README.md` says what it is; `docs/PROTOCOL.md` is the contract clients rely on; `docs/CONFIG.md`
 lists every setting. A maintainer's checkout may also hold `docs/internal/` and `deploy/internal/` (their own hub's notes
-and deploy scripts, start with `docs/internal/STATUS.md`); neither is published.
+and deploy scripts, start with `docs/internal/OWNER.md` and `docs/internal/DIRECTION.md`); neither is published.
 
 ## Layout
 
