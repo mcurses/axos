@@ -718,6 +718,9 @@ export class Hub {
     add(this.streams);
     if (wakes === true) add(this.wakers);
     if (wakes === false) add(this.sleepers);
+    // Remembered on the session, so a reader outside this process (the admin CLI's health) can tell a session that
+    // cannot be woken from one whose hooks are not reaching it.
+    if (wakes !== null && agentId.includes("#")) this.db.query("UPDATE sessions SET wakes = ? WHERE key = ?").run(wakes ? 1 : 0, agentId);
     this.touch(agentId);
   }
 
@@ -2015,8 +2018,8 @@ export class Hub {
       `SELECT COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d JOIN messages m ON m.id = d.message_id
         WHERE d.acked_at IS NULL AND d.recipient LIKE ?`, `${kind}:%`) }));
     // Live sessions that have had mail they were not shown for over an hour: the hooks or the channel are not reaching them.
-    const stuck_sessions = all<{ key: string; name: string | null; project: string; n: number; oldest: number }>(
-      `SELECT s.key, s.name, s.project, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d
+    const stuck_sessions = all<{ key: string; name: string | null; project: string; wakes: number | null; n: number; oldest: number }>(
+      `SELECT s.key, s.name, s.project, s.wakes, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d
          JOIN messages m ON m.id = d.message_id JOIN sessions s ON 'session:' || s.key = d.recipient
         WHERE d.acked_at IS NULL AND d.shown_at IS NULL AND s.ended_at IS NULL AND m.created_at < ? GROUP BY s.key ORDER BY oldest`, t - 3_600_000)
       .map((s) => ({ ...s, label: this.label(`session:${s.key}`) }));

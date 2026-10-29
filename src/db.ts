@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   ended_at      INTEGER,
   framed_at     INTEGER,                       -- when the full note on how to read messages was first put into its context
   former_names  TEXT NOT NULL DEFAULT '',      -- names it had before (a restart may rename it), one per line, newest last
-  kind          TEXT NOT NULL DEFAULT 'session' -- 'script': a named script of the agent (axos send --name), no model behind it
+  kind          TEXT NOT NULL DEFAULT 'session', -- 'script': a named script of the agent (axos send --name), no model behind it
+  wakes         INTEGER                        -- what its last event stream said: 1 the host wakes on a ring, 0 it does not, NULL unknown
 );
 CREATE TABLE IF NOT EXISTS messages (
   id            INTEGER PRIMARY KEY,
@@ -266,6 +267,7 @@ function migrate(db: Database): void {
   if (sessions && !sessions.sql.includes("former_names")) db.exec("ALTER TABLE sessions ADD COLUMN former_names TEXT NOT NULL DEFAULT ''");
   if (sessions && !/\bkind\b/.test(sessions.sql)) db.exec("ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'session'");
   if (messages && !messages.sql.includes("sent_by")) db.exec("ALTER TABLE messages ADD COLUMN sent_by TEXT");
+  if (sessions && !/\bwakes\b/.test(sessions.sql)) db.exec("ALTER TABLE sessions ADD COLUMN wakes INTEGER");
   const subscriptions = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'subscriptions'").get() as { sql: string } | null;
   if (subscriptions && !subscriptions.sql.includes("subject_filter")) db.exec("ALTER TABLE subscriptions ADD COLUMN subject_filter TEXT");
   const asks = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'asks'").get() as { sql: string } | null;

@@ -1517,6 +1517,17 @@ describe("mailboxes nobody reads", () => {
     expect(hub.inbox(`role:${SHOP}/main-coordinator`).map((m) => m.summary)).toEqual(["handing over: the queue is drained"]);
   });
 
+  test("health tells a live session that cannot be woken from one whose hooks are not reaching it", () => {
+    const s = hub.openSession(DEV3, { client_session: "33333333-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-33", profile: "dev3" });
+    hub.streamOpened(s, false);
+    hub.send(A, note([`session:${s}`], "are you there"));
+    t += 2 * 3_600_000;
+    hub.openSession(DEV3, { client_session: "33333333-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-33", profile: "dev3" }); // still alive
+    expect(hub.health(t - DAY).stuck_sessions.map((x) => ({ key: x.key, wakes: x.wakes, n: x.n }))).toEqual([{ key: s, wakes: 0, n: 1 }]);
+    hub.streamOpened(s, true);
+    expect(hub.health(t - DAY).stuck_sessions[0]!.wakes).toBe(1);
+  });
+
   test("health says what reached a reader and where mail waits with nobody to read it", () => {
     hub.touch(SC);
     const seen = hub.send(A, note([`agent:${SC}`], "hello", GAME)).id;

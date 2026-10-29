@@ -120,7 +120,7 @@ The join link works once and expires in 24 hours; axos invite --human ${name} ma
       `Waiting now: ${h.open.map((o) => `${o.kind} ${o.n}${age(o.oldest)}`).join("; ")}.`,
     ];
     const nobody = [
-      ...h.stuck_sessions.map((s) => `live session ${s.label} has ${s.n} message(s) not shown for over an hour${age(s.oldest)}`),
+      ...h.stuck_sessions.map((s) => `live session ${s.label} has ${s.n} message(s) not shown for over an hour${age(s.oldest)}${s.wakes === 0 ? " (its host does not wake on messages: they wait for its next prompt)" : s.wakes === 1 ? " (its host wakes on messages, so the hooks are not reaching it)" : ""}`),
       ...h.unread_agents.map((a) => `agent ${a.human}/${a.name} has ${a.n} unread and has ${a.last_seen === null ? "never connected" : `not connected since ${iso(a.last_seen)}`}`),
       ...h.unread_roles.map((r) => `role ${r.project}/${r.role} has ${r.n} unread, ${r.state}${age(r.oldest)}`),
       ...h.unread_humans.map((u) => `${u.human} has ${u.n} high-priority message(s) unhandled on the page for over a day`),
