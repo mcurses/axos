@@ -32,7 +32,7 @@ export function ProjectCard({ p, now, me }: { p: Project; now: number; me: strin
                     <div className="flex items-center gap-1">
                       <span className="truncate">{name}</span>
                       {s.bell && <BellIcon className="size-3 text-muted-foreground" aria-label="wakes on messages" />}
-                      {s.unread > 0 && <Badge variant="secondary" className="h-4 px-1 text-[10px]">{s.unread}</Badge>}
+                      {s.unread > 0 && <Badge variant="secondary" className="h-4 px-1 text-[10px]" title={`${s.unread} to handle, ${s.unseen} not read yet`}>{s.unread}</Badge>}
                     </div>
                     <div className="truncate text-muted-foreground text-xs">
                       {[detail, `seen ${ago(s.last_seen, now)}`, s.roles.join(", ")].filter(Boolean).join(" · ")}
@@ -51,7 +51,7 @@ export function ProjectCard({ p, now, me }: { p: Project; now: number; me: strin
               <li key={r.role} title={r.description}>
                 <span className="font-medium">{r.role}</span>{" "}
                 <span className="text-muted-foreground">{r.holder ? splitLabel(r.holder).name : "vacant"}</span>
-                {r.unread > 0 && <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{r.unread} unread</Badge>}
+                {r.unread > 0 && <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{r.unread} to handle{r.unseen ? `, ${r.unseen} not read` : ""}</Badge>}
               </li>
             ))}
             {!p.roles.length && <li className="text-muted-foreground">None.</li>}

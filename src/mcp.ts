@@ -93,9 +93,9 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     lines.push("", "## Roles");
     const roles = hub.roles(pr);
     lines.push(...(roles.length ? roles.map((r) => {
-      const unread = hub.roleUnread(pr, r.role);
+      const open = hub.roleUnread(pr, r.role);
       const who = r.holder ? `${hub.label(r.holder)}${r.holder === conn.session || r.holder === agent.id ? " (you)" : ""}, since ${ago(r.since, now)}` : "vacant";
-      return `- ${r.role}: ${who}${unread ? `, ${unread} unread` : ""}${r.description ? ` — ${r.description}` : ""}`;
+      return `- ${r.role}: ${who}${open ? `, ${hub.mailText(`role:${pr}/${r.role}`)}` : ""}${r.description ? ` — ${r.description}` : ""}`;
     }) : ["(none defined; define_role creates one)"]));
     const linked = hub.linkedProjects(pr);
     if (linked.length) {
@@ -114,7 +114,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const askers = [conn.session ?? agent.id, ...held.map((r) => `role:${pr}/${r}`)];
     const open = askers.flatMap((k) => hub.asks({ asker: k, open: true }));
     if (open.length) lines.push("", "## Your open questions to humans", ...open.map((a) => `- ask ${a.id} to ${a.human}: ${a.question.split("\n")[0]}`));
-    lines.push("", `## Inbox: ${hub.unreadCount(boxes(), pr)} unread. Call inbox to read.`);
+    lines.push("", `## Inbox: ${hub.mailText(boxes(), pr)}. Call inbox to read.`);
     return lines.join("\n");
   }));
 
@@ -203,13 +203,14 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     if (!mb.length) return only === "roles" ? "This session holds no role, so it has no role mail." : `No ${only} mailbox here.`;
     const p = name ? ref(name) : undefined;
     const items = hub.inbox(mb, { project: p, unreadOnly: unread_only, limit });
+    const unseen = hub.unshownCount(mb, false, p);
     if (unread_only ?? true) hub.markShown(mb, items.map((m) => m.id)); // read here, so the next hook does not repeat them
     const unread = hub.unreadCount(mb, p);
     const elsewhere = p ? hub.unreadCount(mb) - unread : 0;
     // Where the unread mail is, when it spans projects.
     const spread = !p && unread ? hub.unreadByProject(mb) : [];
     const header = (unread_only ?? true)
-      ? `${unread} unread${p ? ` in ${p}` : ""}${spread.length > 1 ? ` (${spread.map((x) => `${x.project}: ${x.n}`).join(", ")})` : ""}` +
+      ? `${unread} to handle${p ? ` in ${p}` : ""}${unread ? ` (${unseen} not read before)` : ""}${spread.length > 1 ? `; by project: ${spread.map((x) => `${x.project} ${x.n}`).join(", ")}` : ""}` +
         `${items.length < unread ? `, showing the oldest ${items.length}` : ""}.` +
         `${elsewhere ? ` ${elsewhere} more in other projects.` : ""}${items.length ? " Ack ids when handled." : ""}`
       : `Last ${items.length} messages.`;
@@ -232,7 +233,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       `Acked ${r.acked.length} of ${n}.`,
       r.earlier.length ? `Already acked before: ${r.earlier.join(", ")}.` : "",
       r.missing.length ? `Not in this session's mailboxes (wrong id, another session's or role's mail, or a project this session does not read): ${r.missing.join(", ")}.` : "",
-      `${hub.unreadCount(mb)} unread left.`,
+      `Left: ${hub.mailText(mb)}.`,
     ].filter(Boolean).join(" ");
   }));
 
@@ -282,7 +283,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const r = hub.claimRole(agent.id, pr, role, force, conn.session);
     const tail = conn.session ? "Its mail now reaches you and you speak as the role." : `Pass as="${role}" to act as the role.`;
     return `You hold ${role} in ${pr}${r.took_over_from ? `, taken over from ${hub.label(r.took_over_from)}` : ""}. ${tail} ` +
-      `Its mailbox has ${hub.roleUnread(pr, role)} unread. It stays yours while this session is active.`;
+      `Its mailbox: ${hub.mailText(`role:${pr}/${role}`)}. It stays yours while this session is active.`;
   }));
 
   server.registerTool("release_role", {
@@ -428,12 +429,12 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }));
 
   server.registerTool("presence", {
-    description: "Live sessions in a project, with their roles and unread counts.",
+    description: "Live sessions in a project, with their roles and what they have to handle (not acked) and not read yet.",
     inputSchema: strict({ project: projectArg }),
   }, tool(({ project: p }) => {
     const now = hub.now();
     return hub.presence(project(p)).map((a) =>
-      `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "idle"}${a.wake === "wakes" ? " (wakes on messages)" : a.wake === "no" ? " (listening, but does not wake on messages)" : a.wake === "unknown" ? " (listening; whether it wakes is not known)" : ""}, seen ${ago(a.last_seen, now)}, ${a.unread} unread${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`,
+      `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "idle"}${a.wake === "wakes" ? " (wakes on messages)" : a.wake === "no" ? " (listening, but does not wake on messages)" : a.wake === "unknown" ? " (listening; whether it wakes is not known)" : ""}, seen ${ago(a.last_seen, now)}, ${a.unread ? `${a.unread} to handle (${a.unseen} not read yet)` : "nothing to handle"}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`,
     ).join("\n") || "Nobody is live.";
   }));
 

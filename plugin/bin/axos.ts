@@ -17,6 +17,8 @@
 //   axos inbox --name <script> [--as <role>] [--json] [--ack]
 //                        for a script (timer, sensor, CI step): send and read as a named script of this machine, or
 //                        for a role a session here holds
+//   axos codex [<codex arguments>]
+//                        start Codex with the AXOS tools under a session of its own, woken when a message arrives
 //   axos codex-bell --thread <codex session> [--session <id>]
 //                        keep running beside an interactive Codex: when an AXOS message arrives, `codex queue` wakes it
 //
@@ -371,7 +373,9 @@ function write(msg: unknown): void {
 function currentIdentity(): Identity | null {
   const sf = sessionOfParent();
   // Clients other than Claude Code (a Codex wrapper) name their session with AXOS_SESSION_NAME.
-  return identity(sf?.sessionId ?? process.env.CLAUDE_CODE_SESSION_ID, sf?.cwd ?? process.env.CLAUDE_PROJECT_DIR, sf?.name ?? process.env.AXOS_SESSION_NAME);
+  // `axos codex` pins its session with AXOS_SESSION_ID and AXOS_PROJECT_DIR.
+  return identity(sf?.sessionId ?? process.env.AXOS_SESSION_ID ?? process.env.CLAUDE_CODE_SESSION_ID,
+    sf?.cwd ?? process.env.AXOS_PROJECT_DIR ?? process.env.CLAUDE_PROJECT_DIR, sf?.name ?? process.env.AXOS_SESSION_NAME);
 }
 
 // ask_human's images name files; the hub cannot read this disk, so they are uploaded here and replaced by the hub's
@@ -536,7 +540,8 @@ async function mcp(): Promise<void> {
         continue;
       }
       void forward(id, msg); // concurrently: wait may block for minutes
-      if (msg.method === "notifications/initialized" && !bellStarted) {
+      // Under `axos codex` the launcher holds the bell (Codex has no channel to ring).
+      if (msg.method === "notifications/initialized" && !bellStarted && process.env.AXOS_CLIENT !== "codex") {
         bellStarted = true;
         void bell();
       }
@@ -771,14 +776,18 @@ async function codexBell(args: string[]): Promise<void> {
   if (!project) throw new Error("this folder belongs to no AXOS project; run it in the repo Codex works in, or say --project <p>");
   const h: Record<string, string> = { Authorization: `Bearer ${t}`, "x-axos-profile": encodeURIComponent(profile()), "x-axos-project": encodeURIComponent(project) };
   if (session) h["x-axos-session"] = session;
+  console.error(`Listening for AXOS messages of ${session ? `session ${session}` : "this machine's agent"} in ${project}; nudging Codex session ${thread}.`);
+  await doorbell(() => ({ url: c.url, headers: h }), codexRinger(codex, thread, (s) => console.error(s)), true);
+}
 
-  // Rings within a few seconds become one nudge; a ring while a nudge is being queued is kept for after it.
+// Rings within a few seconds become one nudge; a ring while a nudge is being queued is kept for after it.
+function codexRinger(codex: string, thread: string, log: (line: string) => void): () => void {
   let state: "idle" | "waiting" | "queueing" = "idle", again = false;
   const nudge = async () => {
     const r = Bun.spawn([codex, "queue", "--thread", thread, "--message", CODEX_NUDGE], { stdout: "pipe", stderr: "pipe" });
     const code = await r.exited;
     const out = (code === 0 ? await new Response(r.stdout).text() : await new Response(r.stderr).text()).trim().split("\n").at(-1);
-    console.error(`${new Date().toISOString()} ${code === 0 ? "nudged" : `codex queue failed (${code})`}: ${out}`);
+    log(`${new Date().toISOString()} ${code === 0 ? "nudged" : `codex queue failed (${code})`}: ${out}`);
   };
   const ring = () => {
     if (state === "queueing") again = true;
@@ -786,7 +795,7 @@ async function codexBell(args: string[]): Promise<void> {
     state = "waiting";
     setTimeout(async () => {
       state = "queueing";
-      await nudge().catch((e: Error) => console.error(`${new Date().toISOString()} codex queue failed: ${e.message}`));
+      await nudge().catch((e: Error) => log(`${new Date().toISOString()} codex queue failed: ${e.message}`));
       state = "idle";
       if (again) {
         again = false;
@@ -794,8 +803,103 @@ async function codexBell(args: string[]): Promise<void> {
       }
     }, 2000);
   };
-  console.error(`Listening for AXOS messages of ${session ? `session ${session}` : "this machine's agent"} in ${project}; nudging Codex session ${thread}.`);
-  await doorbell(() => ({ url: c.url, headers: h }), ring, true);
+  return ring;
+}
+
+// Codex, first class: `axos codex [codex arguments]` starts Codex with the AXOS tools (this plugin's proxy as its MCP
+// server) under an AXOS session of its own, one per launch, so two Codex in one repo are two sessions. Codex starts its
+// MCP servers before its thread exists, so the launcher pins the session id itself, finds the thread when Codex writes
+// it, remembers the pair (`axos codex resume <thread>` gets the same session back), and wakes Codex when a message
+// arrives while it sits idle. When Codex exits the session ends.
+const CODEX_MAP = join(dirname(CONFIG_PATH), "codex-sessions.json"); // { "<codex thread id>": "<AXOS session id>" }
+
+async function codexLaunch(args: string[]): Promise<number> {
+  const c = config();
+  const t = c && token(c);
+  if (!c || !t) throw new Error(`AXOS is not configured: ${CONFIG_PATH} or the token is missing`);
+  const cwd = realpathSync(process.cwd());
+  const project = projectOf(c, cwd).project;
+  if (!project) throw new Error("this folder belongs to no AXOS project (axos link <project> connects it)");
+  const codexHome = process.env.CODEX_HOME ?? join(HOME, ".codex");
+  if (/^\s*\[mcp_servers\.axos\]/m.test(readText(join(codexHome, "config.toml")))) {
+    throw new Error(`${join(codexHome, "config.toml")} has its own [mcp_servers.axos]; remove it: axos codex sets that server up per launch`);
+  }
+  const codex = process.env.AXOS_CODEX ?? "codex";
+  const map = readJson<Record<string, string>>(CODEX_MAP) ?? {};
+  // `codex resume <thread>` or `codex exec resume <thread>`
+  const r = args.slice(0, 2).indexOf("resume");
+  const resumed = r >= 0 && args[r + 1] && !args[r + 1]!.startsWith("-") ? args[r + 1] : undefined;
+  // The hub keys a session by the first 8 characters of its id: those are random.
+  const sessionId = (resumed && map[resumed]) || `${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}-codex`;
+  const name = `codex-${basename(gitRemotes(cwd)?.root ?? cwd)}-${sessionId.slice(0, 4)}`;
+  const env: Record<string, string> = { AXOS_SESSION_ID: sessionId, AXOS_SESSION_NAME: name, AXOS_PROJECT_DIR: cwd, AXOS_CLIENT: "codex", AXOS_CONFIG: CONFIG_PATH };
+  const overrides = [
+    `mcp_servers.axos.command=${JSON.stringify(process.execPath)}`,
+    `mcp_servers.axos.args=${JSON.stringify([import.meta.path, "mcp"])}`,
+    `mcp_servers.axos.env={${Object.entries(env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")}}`,
+    `mcp_servers.axos.default_tools_approval_mode="approve"`,
+  ].flatMap((o) => ["-c", o]);
+  const started = Date.now();
+  const child = Bun.spawn([codex, ...overrides, ...args], { stdio: ["inherit", "inherit", "inherit"] });
+
+  // Nothing may write to the terminal Codex draws on: the bridge logs to a file.
+  const logFile = join(dirname(CONFIG_PATH), "codex-launch.log");
+  const log = (line: string) => { try { writeFileSync(logFile, `${line}\n`, { flag: "a" }); } catch { /* best effort */ } };
+  const h = { Authorization: `Bearer ${t}`, "x-axos-session": sessionId, "x-axos-project": encodeURIComponent(project),
+    "x-axos-name": encodeURIComponent(name), "x-axos-profile": encodeURIComponent(profile()), "x-axos-client": `plugin/${PLUGIN_VERSION}` };
+  let stop = false;
+  void (async () => {
+    let thread = resumed ?? null;
+    while (!thread && !stop) {
+      await Bun.sleep(2000);
+      thread = claimCodexThread(codexHome, cwd, started, sessionId);
+    }
+    if (!thread || stop) return;
+    log(`${new Date().toISOString()} ${name}: Codex thread ${thread}, AXOS session ${sessionId} in ${project}`);
+    await doorbell(() => (stop ? null : { url: c.url, headers: h }), codexRinger(codex, thread, log), true);
+  })();
+
+  const code = await child.exited;
+  stop = true;
+  await fetch(`${c.url.replace(/\/$/, "")}/api/hook`, { method: "POST", headers: { ...h, "Content-Type": "application/json" },
+    body: JSON.stringify({ event: "end" }), signal: AbortSignal.timeout(5000) }).catch(() => {});
+  return code;
+}
+
+// The thread a Codex started in this folder since `since` wrote, not yet taken by another launch; recorded as taken.
+function claimCodexThread(codexHome: string, cwd: string, since: number, sessionId: string): string | null {
+  const root = join(codexHome, "sessions");
+  const days: string[] = [];
+  for (const y of listDir(root).sort().reverse().slice(0, 2)) {
+    for (const m of listDir(join(root, y)).sort().reverse().slice(0, 2)) {
+      for (const d of listDir(join(root, y, m)).sort().reverse().slice(0, 2)) days.push(join(root, y, m, d));
+    }
+  }
+  const map = readJson<Record<string, string>>(CODEX_MAP) ?? {};
+  const files = days.flatMap((d) => listDir(d).filter((f) => f.endsWith(".jsonl")).map((f) => join(d, f)))
+    .filter((f) => statSync(f).mtimeMs >= since - 5000).sort();
+  for (const f of files) {
+    const first = readText(f).split("\n", 1)[0] ?? "";
+    let meta: { payload?: { id?: string; cwd?: string; timestamp?: string } };
+    try { meta = JSON.parse(first); } catch { continue; }
+    const id = meta.payload?.id, at = Date.parse(meta.payload?.timestamp ?? "");
+    if (!id || map[id] || !(at >= since - 5000)) continue;
+    let dir = meta.payload?.cwd ?? "";
+    try { dir = realpathSync(dir); } catch { /* gone */ }
+    if (dir !== cwd) continue;
+    map[id] = sessionId;
+    writeFileSync(CODEX_MAP, `${JSON.stringify(map, null, 2)}\n`, { mode: 0o600 });
+    return id;
+  }
+  return null;
+}
+
+function listDir(dir: string): string[] {
+  try { return readdirSync(dir); } catch { return []; }
+}
+
+function readText(path: string): string {
+  try { return readFileSync(path, "utf8"); } catch { return ""; }
 }
 
 // The hub says which project a reference means for this machine's agent; the link stores its id, so a rename or a second
@@ -929,6 +1033,12 @@ else if (cmd === "join") {
     process.exit(1);
   });
 }
+else if (cmd === "codex") {
+  process.exit(await codexLaunch(process.argv.slice(3)).catch((e: Error) => {
+    console.error(e.message);
+    return 1;
+  }));
+}
 else if (cmd === "codex-bell") {
   await codexBell(process.argv.slice(3)).catch((e: Error) => {
     console.error(e.message);
@@ -959,6 +1069,6 @@ else if (cmd === "trust") {
     process.exit(1);
   });
 } else {
-  console.error("usage: axos join <invite link> | link [<project>] | unlink | trust | whoami | landed <remote>/<branch> | send --name <script> … | inbox --name <script> … | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
+  console.error("usage: axos join <invite link> | link [<project>] | unlink | trust | whoami | landed <remote>/<branch> | send --name <script> … | inbox --name <script> … | codex [<codex args>] | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
   process.exit(2);
 }

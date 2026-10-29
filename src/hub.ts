@@ -720,7 +720,7 @@ export class Hub {
       return {
         id: s.key, address: `session:${s.key}`, name: s.name, profile: s.profile, human: agent.human, last_seen: s.last_seen as number | null,
         bell: this.streams.has(s.key), wake: this.wake(s.key), online: this.streams.has(s.key) || t - s.last_seen < this.onlineWindowMs,
-        unread: this.unreadCount(`session:${s.key}`), roles: rolesOf(s.key),
+        unread: this.unreadCount(`session:${s.key}`), unseen: this.unshownCount([`session:${s.key}`]), roles: rolesOf(s.key),
       };
     });
     const withSessions = new Set(this.liveSessions(project).map((s) => s.agent_id));
@@ -733,7 +733,7 @@ export class Hub {
       .map((r) => ({
         id: r.id, address: `agent:${r.id}`, name: null as string | null, profile: null as string | null, human: r.human, last_seen: r.last_seen,
         bell: this.streams.has(r.id), wake: this.wake(r.id), online: this.streams.has(r.id) || (r.last_seen !== null && t - r.last_seen < this.onlineWindowMs),
-        unread: this.unreadCount(`agent:${r.id}`), roles: rolesOf(r.id),
+        unread: this.unreadCount(`agent:${r.id}`), unseen: this.unshownCount([`agent:${r.id}`]), roles: rolesOf(r.id),
       }));
     return [...sessions, ...agents];
   }
@@ -1251,6 +1251,16 @@ export class Hub {
       WHERE ${box.sql} AND d.acked_at IS NULL${project ? " AND m.project = ?" : ""}`).get(...box.args, ...(project ? [project] : [])) as { n: number }).n;
   }
 
+  // In words for a reader: 'open' is not acked (still to handle); 'unseen' is not yet put into any context.
+  mailText(recipient: string | string[], project?: string): string {
+    const boxes = Array.isArray(recipient) ? recipient : [recipient];
+    const open = this.unreadCount(boxes, project);
+    if (!open) return "nothing to handle";
+    const unseen = this.unshownCount(boxes, false, project);
+    const how = unseen === 0 ? "all read, not acked yet" : unseen === open ? "none read yet" : `${open - unseen} read, ${unseen} not read yet`;
+    return `${open} to handle (${how})`;
+  }
+
   unreadByProject(recipient: string | string[]): { project: string; n: number }[] {
     const box = this.boxSql(Array.isArray(recipient) ? recipient : [recipient]);
     return this.db.query(`SELECT m.project, COUNT(DISTINCT m.id) AS n FROM deliveries d JOIN messages m ON m.id = d.message_id
@@ -1292,10 +1302,11 @@ export class Hub {
   }
 
   // waking: only messages worth waking an idle session for (low priority ones wait for its next step).
-  unshownCount(boxes: string[], waking = false): number {
+  unshownCount(boxes: string[], waking = false, project?: string): number {
     const box = this.boxSql(boxes);
     return (this.db.query(`SELECT COUNT(*) AS n FROM deliveries d JOIN messages m ON m.id = d.message_id
-      WHERE ${box.sql} AND d.acked_at IS NULL AND d.shown_at IS NULL${waking ? " AND m.priority <> 'low'" : ""}`).get(...box.args) as { n: number }).n;
+      WHERE ${box.sql} AND d.acked_at IS NULL AND d.shown_at IS NULL${waking ? " AND m.priority <> 'low'" : ""}${project ? " AND m.project = ?" : ""}`)
+      .get(...box.args, ...(project ? [project] : [])) as { n: number }).n;
   }
 
   ack(recipient: string | string[], ids: number[], outcome?: AckOutcome, note?: string): number {

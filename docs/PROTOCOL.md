@@ -147,7 +147,7 @@ Common arguments:
 | `create_project` | `name*`, `brief` | Creates `<your human>/<name>` and puts your human in it. Returns the text plus a ready `.axos.json` line to commit. |
 | `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` and, for vacant roles, `Held for …`. A repeated `dedupe_key` returns `Already sent as message <id>`. |
 | `inbox` | `project`, `unread_only`, `limit` (1-100, default 20), `only` (`roles`, `session`, `agent`), `as` | Messages as `<axos-message>` frames. Marks the returned unread ones shown. The header counts unread per project when they span several. |
-| `ack` | `ids*` (integers), `outcome`, `note` (one line, at most 200 characters, shown with the outcome in the sender's `thread`), `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `<k> unread left.` |
+| `ack` | `ids*` (integers), `outcome`, `note` (one line, at most 200 characters, shown with the outcome in the sender's `thread`), `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `Left: <k> to handle (<r> read, <u> not read yet).` or `Left: nothing to handle.` |
 | `wait` | `timeout_s` (1-240, default 120), `project`, `as` | Blocks until something unseen arrives; then the messages, or `Nothing new arrived within <n> s.` |
 | `thread` | `message_id` or `id` | The messages of a conversation that you sent or received. |
 | `define_role` | `role*`, `description*`, `project` | Creates a role or updates its description (at most 300 characters). |
@@ -278,7 +278,9 @@ event stream or was seen in the last 10 minutes.
 - A `send` stores one message and one delivery per distinct recipient mailbox. The message is stored once; each
   delivery carries its own state.
 - A delivery has two timestamps. `shown_at`: put into a reader's context. `acked_at`: handled.
-- A delivery is unread until acked. Unread is the only thing the inbox keeps; there is no expiry.
+- A delivery is to be handled until acked (the JSON fields keep the older name `unread` for this). Texts for readers
+  say "to handle" for not acked and "not read yet" for not shown; a shown delivery is read, an acked one handled.
+  There is no expiry.
 - A delivery becomes shown when:
   - the `check` or `start` hook returned it (up to 10 per call),
   - `inbox` returned it with `unread_only` true or omitted,
@@ -593,5 +595,5 @@ curl -s "$AXOS/mcp" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: applicat
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ack","arguments":{"ids":[7]}}}'
 ```
 
-The inbox answer is text: a header such as `1 unread. Ack ids when handled.`, the peer-message note, and the
+The inbox answer is text: a header such as `1 to handle (1 not read before). Ack ids when handled.`, the peer-message note, and the
 `<axos-message>` frames. Add `-H 'x-axos-session: <uuid>'` to act as a session instead of the agent.

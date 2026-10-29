@@ -553,6 +553,19 @@ describe("sessions", () => {
     expect(hub.unreadByProject(`agent:${DEV1}`)).toEqual([{ project: SHOP, n: 2 }, { project: GAME, n: 1 }]);
   });
 
+  test("counts in words keep read apart from handled", () => {
+    const box = `agent:${DEV1}`;
+    expect(hub.mailText(box)).toBe("nothing to handle");
+    const [a, b] = [hub.send(B, note([box], "a")), hub.send(B, note([box], "b"))];
+    expect(hub.mailText(box)).toBe("2 to handle (none read yet)");
+    hub.markShown([box], [a.id]);
+    expect(hub.mailText(box)).toBe("2 to handle (1 read, 1 not read yet)");
+    hub.markShown([box], [b.id]);
+    expect(hub.mailText(box)).toBe("2 to handle (all read, not acked yet)");
+    hub.ack(box, [a.id, b.id]);
+    expect(hub.mailText(box)).toBe("nothing to handle");
+  });
+
   test("an ended session gives its role back; the mail waits for the next holder", () => {
     hub.endSession(coord);
     expect(hub.roles(SHOP).find((r) => r.role === "main-coordinator")!.holder).toBeNull();

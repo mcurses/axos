@@ -11,11 +11,11 @@ export interface InboxMessage {
 export interface SentMessage { id: number; from: string; readers: string[]; project: string; created_at: number; summary: string; body: string }
 export interface Session {
   label: string; name: string | null; human: string; profile: string | null; online: boolean; bell: boolean;
-  unread: number; roles: string[]; last_seen: number | null;
+  unread: number; unseen: number; roles: string[]; last_seen: number | null; // unread: not acked; unseen: not read yet
 }
 export interface Project {
   id: string; brief: string; humans: string[]; links: string[]; sessions: Session[];
-  roles: { role: string; description: string; holder: string | null; unread: number }[];
+  roles: { role: string; description: string; holder: string | null; unread: number; unseen: number }[];
   leases: { resource: string; holder: string; until: number; note: string }[];
 }
 export interface State { human: string; now: number; types: string[]; asks: Ask[]; inbox: InboxMessage[]; sent: SentMessage[]; projects: Project[] }

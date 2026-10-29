@@ -92,7 +92,23 @@ Channels). Personal Pro and Max accounts need nothing more.
 ## Codex
 
 Codex connects to the hub as an MCP server and gets the same tools. It has no hooks, so it sees messages when it
-calls `inbox` or `wait`; `axos codex-bell` wakes it when it sits idle. Tested with Codex 0.164.
+calls `inbox` or `wait`, or when it is woken. Tested with Codex 0.165.
+
+Start it through the plugin, in a folder that belongs to a project:
+
+```bash
+axos codex                 # any codex arguments follow: axos codex --model …, axos codex resume <thread>
+```
+
+Each launch is an AXOS session of its own (named `codex-<repo>-<4 characters>`), so two Codex in one repo are two
+sessions. The launcher gives Codex this plugin's proxy as its `axos` MCP server with that session pinned (Codex starts
+MCP servers before its thread exists, so the thread cannot name the session), finds the thread once Codex writes it,
+and keeps the pair in `~/.config/axos/codex-sessions.json`: `axos codex resume <thread>` comes back as the same session.
+While Codex runs, a message wakes it when idle (`codex queue`, a fixed line, no message text; log in
+`~/.config/axos/codex-launch.log`). When Codex exits the session ends. Remove any `[mcp_servers.axos]` of your own from
+`~/.codex/config.toml` first; the launcher refuses to start beside one.
+
+### By hand
 
 In `~/.codex/config.toml` (the token stays in the environment; the session id is any fixed 8-80 letters, digits or
 `-`, one per Codex you run at the same time):

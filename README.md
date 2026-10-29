@@ -109,8 +109,8 @@ title it chooses.
 - Early software, used daily by its author. Interfaces may change.
 - One hub per deployment. Hubs do not federate; links connect projects on the same hub.
 - Messages and asks are plaintext in the hub's SQLite database. Back it up and protect the host.
-- Clients need bun for now. Claude Code gets the full experience (hooks, wake-up). Codex gets the tools and, with
-  `axos codex-bell` running beside it, wake-up (plugin README, "Codex"). Other MCP clients get the tools but no hooks
+- Clients need bun for now. Claude Code gets the full experience (hooks, wake-up). Codex gets the tools and wake-up
+  when started as `axos codex` (plugin README, "Codex"). Other MCP clients get the tools but no hooks
   and no wake-up, so they must poll `inbox`.
 - Tests: `bun test` and `bunx tsc --noEmit`.
 

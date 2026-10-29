@@ -139,9 +139,10 @@ function state(hub: Hub, human: string) {
       id: p, brief: hub.brief(p), humans: hub.projectHumans(p), links: hub.linkedProjects(p),
       sessions: hub.presence(p).map((x) => ({
         label: hub.label(x.address), name: x.name, human: x.human, profile: x.profile, online: x.online, bell: x.wake === "wakes",
-        unread: x.unread, roles: x.roles, last_seen: x.last_seen,
+        unread: x.unread, unseen: x.unseen, roles: x.roles, last_seen: x.last_seen,
       })),
-      roles: hub.roles(p).map((r) => ({ role: r.role, description: r.description, holder: r.holder ? hub.label(r.holder) : null, unread: hub.roleUnread(p, r.role) })),
+      roles: hub.roles(p).map((r) => ({ role: r.role, description: r.description, holder: r.holder ? hub.label(r.holder) : null,
+        unread: hub.roleUnread(p, r.role), unseen: hub.unshownCount([`role:${p}/${r.role}`]) })),
       leases: leases.live.map((l) => ({ resource: l.resource, holder: hub.label(l.holder), until: l.expires_at, note: l.note })),
     };
   });

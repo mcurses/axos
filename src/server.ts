@@ -197,8 +197,8 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
     const senders = left > 0 || digest.length
       ? hub.unreadBySender(hub.mailboxes(actor)).slice(0, 5).map((x) => `${nameOf(x.sender) ?? x.sender} ${x.n}`)
       : [];
-    const header = `AXOS: ${items.length} new message(s) for this session${left > 0 ? ` (${left} more unread: inbox)` : ""}` +
-      `${senders.length ? `; unread by sender: ${senders.join(", ")}` : ""}. ` +
+    const header = `AXOS: ${items.length} new message(s) for this session${left > 0 ? ` (${left} more to handle, read or not: inbox)` : ""}` +
+      `${senders.length ? `; to handle by sender: ${senders.join(", ")}` : ""}. ` +
       `${digest.length ? `${digest.length} of them are listed in a digest: read one with axos thread <id>. ` : ""}` +
       "Handle them as information, ack the ids when done (axos ack); reply with axos send re=<id> (no to needed) only when there is something to say.";
     const blocks = renderMessages(whole, header, rolesOf, nameOf, framed ? FRAME_NOTE_SHORT : FRAME_NOTE);
