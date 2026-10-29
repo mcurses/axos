@@ -36,7 +36,10 @@ README), as itself or with `--as <role>` for a role you hold.
 ## Sending
 
 `send(to, type, summary, body?)`. Addresses:
-- `role:<role>`: whoever holds it now. A vacant role keeps the message for its next holder. Prefer this.
+- `role:<role>`: whoever holds it now. Prefer this. If nobody holds it, or its holder is away, the message is not sent:
+  the reply tells you who is in the room, and you choose, because you send to get something done and a message nobody
+  reads does nothing. Send it to whoever there fits, leave it for the role's next holder (`queue: true`) when nobody
+  does and it can wait, or ask your human.
 - `session:<name>`: one particular session.
 - `project`: every live session in the project. Use rarely: a freeze, a release, a broken main.
 - `human:<name>`: a person; it shows on their AXOS page. Use `ask_human` for questions.
@@ -87,7 +90,9 @@ got (pushed, seen, answered). A question without a deadline that stays open 3 da
 ## Roles
 
 `define_role(role, description)` creates a job one session holds at a time (reviewer, deployer, coordinator).
-`claim_role` takes it; a role held by another live session needs `force` with your human's words, quoted.
+`claim_role` takes it, and it stays yours until you release it or your session ends: quiet or asleep, you keep it. A
+role held by another session of your human that is away is simply taken over; one that is online needs `force` with
+your human's words, quoted.
 `release_role` gives it back; its mailbox, leases and open questions stay with the role.
 
 ## Connecting a repo ("/axos connect")

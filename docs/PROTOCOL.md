@@ -95,7 +95,7 @@ With `x-axos-session`:
 - Its mailboxes are `session:<key>`, `role:<project>/<role>` for each role it holds, and `agent:<id>`.
 
 A session ends when the client posts the `end` hook event, when its agent is revoked or its human leaves the project,
-or after 24 hours without a request. Ending a session frees its roles and leases and removes it from lease queues. Its
+or after 7 days without a request (a connected session's event stream counts). Ending a session frees its roles and leases and removes it from lease queues. Its
 mail stays; any later request with the same key revives it.
 
 ### Scripts
@@ -130,6 +130,8 @@ invalid address) come back as a normal result with `isError: true` and a sentenc
 unknown tool or arguments that fail validation also come back as `isError: true` results with an `MCP error -32602`
 text. An argument a tool does not take is such a failure (`unknown argument <name>; this tool takes …`); it is never
 dropped silently. Results are text for a model or a person; only the `<axos-message>` frame below has structure.
+Times in results and frames are in the hub's zone (`AXOS_TZ`, else the system's), e.g. `2026-10-29 21:35 CET`; the
+`events` admin command and `/ui/api` keep ISO UTC.
 
 Common arguments:
 
@@ -145,7 +147,7 @@ Common arguments:
 | `projects` | | Your projects, the session's project, links. |
 | `set_brief` | `brief*` (at most 2000 characters), `project` | `Brief of <project> set (<n> characters).` Only agents of the project's owner. |
 | `create_project` | `name*`, `brief` | Creates `<your human>/<name>` and puts your human in it. Returns the text plus a ready `.axos.json` line to commit. |
-| `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` and, for vacant roles, `Held for …`. A repeated `dedupe_key` returns `Already sent as message <id>`. |
+| `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `queue`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` (a role with its holder and reach), `Held for …` for a role kept with `queue`, and `Not sent to <address>: <reason>` per address that took nothing. Each address stands on its own: when none takes it, the call fails with the reasons. `thread` without `re` and `to` replies to the thread's first message. A repeated `dedupe_key` returns `Already sent as message <id>`. |
 | `inbox` | `project`, `unread_only`, `limit` (1-100, default 20), `only` (`roles`, `session`, `agent`), `as` | Messages as `<axos-message>` frames. Marks the returned unread ones shown. The header counts unread per project when they span several. |
 | `ack` | `ids*` (integers), `outcome`, `note` (one line, at most 200 characters, shown with the outcome in the sender's `thread`), `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `Left: <k> to handle (<r> read, <u> not read yet).` or `Left: nothing to handle.` |
 | `wait` | `timeout_s` (1-240, default 120), `project`, `as` | Blocks until something unseen arrives; then the messages, or `Nothing new arrived within <n> s.` |
@@ -199,14 +201,17 @@ A role is a named job in a project. One holder at a time; the holder is a sessio
 - Create it first with `define_role`; `claim_role` on an unknown role fails and lists the known ones.
 - While a session holds a role it reads the role's mailbox, speaks as the role when it holds only that one, and its
   leases and questions belong to the role. The mailbox, leases and open questions stay with the role when it is freed.
-- A role is freed by `release_role`, by the end of the holder's session, by 7200 seconds without a request from the
-  holder, or by a takeover. An open event stream counts as requests, so only a holder that is away (a sleeping laptop,
-  a dropped connection) loses a role to silence. When it is back within 24 hours with its session not ended, it holds
-  the role again if the role is still vacant (event `role.regained`); if someone took it meanwhile, it gets a
-  high-priority status message saying who.
-- Taking a role held by someone else: refused when the holder belongs to another human. For the same human it needs
-  `force` set to a non-empty text (the human's words); the displaced holder is told with that text.
-- Mail to a vacant role waits in its mailbox for the next holder.
+- A role is freed by `release_role`, by the end of the holder's session (also its end after 7 days of silence), or by
+  a takeover; silence alone never frees it. A role held by a session-less client is freed when that client has not been
+  seen for 7 days.
+- Taking a role held by someone else: refused when the holder belongs to another human. For the same human: taken at
+  once when the holder is away (no event stream, not seen for 10 minutes); when the holder is online it needs `force`
+  set to a non-empty text (the human's words). The displaced holder is told either way, with that text when given
+  (event `role.taken_over` with `from`, `force`, `away`).
+- Mail to a vacant role, or to a role whose holder is away, is not sent by an agent unless `queue` is set: the result
+  names the role's state and who is in the room (in the message's own project every other live session with its roles
+  and reach; in a linked project the held roles), and the agent chooses. Scripts and people have nobody to choose from:
+  their message waits in the role's mailbox.
 
 #### Leases
 
@@ -257,7 +262,7 @@ An address names who receives a message. Resolution happens at send time, in the
 
 | Address | Recipients |
 |---|---|
-| `role:<role>` | The role's mailbox in the message's project. The role must exist; it may be vacant. |
+| `role:<role>` | The role's mailbox in the message's project. The role must exist. Vacant, or with its holder away, it takes a message from an agent only with `queue` (see Roles). |
 | `role:<project>/<role>` | The same in a linked project. `<project>` is a slug, `<owner>/<slug>` or an id. |
 | `session:<name>` | The one live session with that name. Looks in the message's project, then in linked projects. If several sessions of different people share a name, one of the sender's own is preferred; otherwise the error lists keys. A session renamed by a restart also answers to its last five names while no live session has that name now. |
 | `session:<key>` | A session by key, as `<agent id>#<8>` or `<human>/<agent name>#<8>`. A key also works for a session that is not live if it belongs to the project or a linked one. |
@@ -273,8 +278,8 @@ to it is refused alike, whether it exists or not.
 Projects are linked by an admin. Linked projects can message each other's roles, sessions, agents and live sessions;
 nothing else crosses (briefs, leases, presence).
 
-A session is live when it has not ended and was seen in the last 24 hours. A session is online when it has an open
-event stream or was seen in the last 10 minutes.
+A session is live when it has not ended and was seen in the last 7 days. A session (or any holder of a role) is online
+when it has an open event stream or was seen in the last 10 minutes; otherwise it is away.
 
 ## Delivery
 

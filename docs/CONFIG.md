@@ -13,6 +13,7 @@ Read by `src/server.ts` (the hub). The admin command (`src/cli.ts`) reads `AXOS_
 | `AXOS_PORT` | `18900` | TCP port. | Port 18900. |
 | `AXOS_HOST` | `127.0.0.1` | Interface to bind. The Docker image sets `0.0.0.0`. | Reachable only from the same machine, so a reverse proxy on that machine is needed. |
 | `AXOS_PUBLIC_URL` | empty | The URL people and clients reach the hub at, e.g. `https://axos.example.com`. A trailing `/` is dropped. | See below. |
+| `AXOS_TZ` | the system's zone | IANA zone for the times in messages and tool results, e.g. `Europe/Berlin`. | Times show in the server's zone; in most containers that is UTC. |
 | `AXOS_NTFY_URL` | unset | Base URL of an ntfy server, e.g. `https://ntfy.sh`. The hub POSTs JSON to it for each push. | No phone pushes. |
 | `AXOS_NTFY_TOKEN` | unset | Bearer token sent to ntfy. Ignored when `AXOS_NTFY_URL` is not set. | Pushes go out without authentication, which fails on a protected ntfy. |
 | `AXOS_LINK_SECRET` | unset or empty | Key that signs the answer links on push notifications. | A random secret is created on first start and kept in the database (`kv` table, key `link_secret`). Database backups then contain it. |
@@ -51,9 +52,9 @@ These are constants in the code, not settings:
 
 | Value | Where |
 |---|---|
-| A session is live for 24 hours after its last request | hub |
+| A session is live for 7 days after its last request (a connected session's event stream counts) | hub |
 | A session or agent is online for 10 minutes after its last request, or while an event stream is open | hub |
-| A role is freed after 2 hours (7200 s) without a request from its holder; an open event stream counts as requests. A holder back within 24 hours gets it again if it is still vacant | hub |
+| A role stays with its holder until released, the holder's session ends, or a takeover; a session-less holder's role is freed after 7 days unseen | hub |
 | 60 sends per minute per agent | hub |
 | Summary 300 characters, body 64000 characters | hub |
 | `wait` at most 240 seconds | hub |

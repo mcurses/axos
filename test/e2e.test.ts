@@ -79,7 +79,7 @@ test("two accounts: a role-addressed ask and its answer, with wait and ack", asy
   const waiting = call(dev3, "wait", { timeout_s: 20, as: "main-coordinator" });
   await Bun.sleep(100);
   const sent = await call(dev1, "send", { to: "role:main-coordinator", type: "ask", summary: "Can I take the Windows worker box for a 20-minute deploy rehearsal?" });
-  expect(sent.text).toMatch(/Sent message \d+ \(summary only, no body\)\. Delivered to role:alice\/shop\/main-coordinator \(held by alice\/dev3\)\./);
+  expect(sent.text).toMatch(/Sent message \d+ \(summary only, no body\)\. Delivered to role:alice\/shop\/main-coordinator \(held by alice\/dev3, seen 0s ago\)\./);
   expect((await call(dev3, "inbox")).text).toBe("0 to handle.");
   expect((await call(dev1, "inbox", { project: "shop" })).text).toBe("0 to handle in alice/shop.");
 
@@ -489,7 +489,10 @@ test("a linked project shows in join and takes messages; the session's other too
   expect(join).toContain("## Linked projects (message them: role:<project>/<role>, session:<name>, project:<project>)");
   expect(join).toContain("- alice/tools: roles maintainer (vacant)");
   expect((await call(client, "projects")).text).toContain("- alice/shop (this session), linked with alice/tools");
-  expect((await call(client, "send", { to: "role:tools/maintainer", type: "request", summary: "Please add a dry-run flag to the deploy." })).text)
+  const nobody = await call(client, "send", { to: "role:tools/maintainer", type: "request", summary: "Please add a dry-run flag to the deploy." });
+  expect(nobody.isError).toBe(true);
+  expect(nobody.text).toContain("role 'maintainer' is held by nobody, so nobody would read this now. Roles held in alice/tools: none.");
+  expect((await call(client, "send", { to: "role:tools/maintainer", type: "request", summary: "Please add a dry-run flag to the deploy.", queue: true })).text)
     .toContain("Held for role:alice/tools/maintainer until someone takes the role.");
   const presence = await call(client, "presence", { project: "tools" });
   expect(presence.isError).toBe(true);

@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ACK_OUTCOMES, addr, AxosError, Hub, iso, MESSAGE_TYPES, PRIORITIES, type Actor, type AgentRow } from "./hub.ts";
+import { ACK_OUTCOMES, addr, AxosError, Hub, when, MESSAGE_TYPES, PRIORITIES, type Actor, type AgentRow } from "./hub.ts";
 import { ago, defang, renderMessages } from "./render.ts";
 import { VERSION } from "./version.ts";
 
@@ -109,7 +109,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     lines.push(...hub.presence(pr).map((a) => `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "idle"}, seen ${ago(a.last_seen, now)}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`));
     const ls = hub.leases(pr);
     lines.push("", "## Leases");
-    lines.push(...(ls.live.length ? ls.live.map((l) => `- ${l.resource}: ${hub.label(l.holder)} (${l.mode}) until ${iso(l.expires_at)}${l.note ? ` — ${l.note}` : ""}`) : ["(none)"]));
+    lines.push(...(ls.live.length ? ls.live.map((l) => `- ${l.resource}: ${hub.label(l.holder)} (${l.mode}) until ${when(l.expires_at)}${l.note ? ` — ${l.note}` : ""}`) : ["(none)"]));
     if (ls.waiting.length) lines.push(...ls.waiting.map((w) => `- waiting for ${w.resource}: ${hub.label(w.agent_id)} (${w.mode})`));
     const askers = [conn.session ?? agent.id, ...held.map((r) => `role:${pr}/${r}`)];
     const open = askers.flatMap((k) => hub.asks({ asker: k, open: true }));
@@ -156,7 +156,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     description: "Send a message. Addresses: role:<role>, session:<session name>, human:<name>, project (every live session in the project), " +
       "or next (held for the next session of your human that starts in this project: a handoff before a restart). " +
       "A linked project (see join) is reached with role:<project>/<role>, session:<name> or project:<project>. " +
-      "A vacant role keeps the message until someone takes it.",
+      "A role nobody holds, or whose holder is away, takes no message from you unless queue is set: you are told who is in the room instead and choose.",
     inputSchema: strict({
       project: projectArg,
       to: z.union([z.string(), z.array(z.string()).min(1)]).optional().describe("One address or a list; leave out when replying with re: the reply goes to whoever sent that message"),
@@ -168,6 +168,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       as_of: z.string().optional().describe("The state this is based on, e.g. a commit sha, so a reader can tell if it is stale"),
       priority: z.enum(PRIORITIES).optional().describe("low: wakes nobody, read at the recipient's next step (the default for a note or status to a whole project); high: a message to a human is pushed to their phone, use it rarely"),
       dedupe_key: z.string().optional().describe("Sending twice with the same key delivers once"),
+      queue: z.boolean().optional().describe("Send to a role even when nobody can read it now: it waits in the role's mailbox for the next holder"),
       as: asArg,
     }),
   }, tool(({ as, ...a }) => {
@@ -185,6 +186,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const roles = r.waiting_for_role.filter((w) => w.startsWith("role:"));
     if (roles.length) parts.push(`Held for ${roles.join(", ")} until someone takes the role.`);
     if (r.waiting_for_role.some((w) => w.startsWith("next:"))) parts.push(`Held for the next session of ${agent.human} that starts in this project.`);
+    for (const x of r.not_sent) parts.push(`Not sent to ${x.to}: ${x.reason}`);
     return parts.join(" ");
   }));
 
@@ -272,18 +274,18 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }));
 
   server.registerTool("claim_role", {
-    description: "Take a role. While you hold it you read its mailbox and speak as it. A role held by another live session needs force with the human's words.",
+    description: "Take a role. While you hold it you read its mailbox and speak as it, until you release it or your session ends. A role held by another session of your human that is away (not connected) is simply taken over; one that is online needs force with the human's words.",
     inputSchema: strict({
       project: projectArg,
       role: z.string(),
-      force: z.string().optional().describe("Only for taking over from a live holder: the human's words authorising it, quoted"),
+      force: z.string().optional().describe("Only for taking over from an online holder: the human's words authorising it, quoted"),
     }),
   }, tool(({ project: p, role, force }) => {
     const pr = project(p);
     const r = hub.claimRole(agent.id, pr, role, force, conn.session);
     const tail = conn.session ? "Its mail now reaches you and you speak as the role." : `Pass as="${role}" to act as the role.`;
     return `You hold ${role} in ${pr}${r.took_over_from ? `, taken over from ${hub.label(r.took_over_from)}` : ""}. ${tail} ` +
-      `Its mailbox: ${hub.mailText(`role:${pr}/${role}`)}. It stays yours while this session is active.`;
+      `Its mailbox: ${hub.mailText(`role:${pr}/${role}`)}. It stays yours until you release it or this session ends.`;
   }));
 
   server.registerTool("release_role", {
@@ -305,8 +307,8 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     }),
   }, tool((a) => {
     const r = hub.lease(agent.id, { ...a, project: project(a.project), session: conn.session });
-    if (r.granted) return `${r.renewed ? "Renewed" : "Granted"}: you hold ${a.resource} until ${iso(r.expires_at!)}.`;
-    const who = r.holders.map((h) => `${hub.label(h.holder)} (${h.mode}${h.note ? `: ${h.note}` : ""}, until ${iso(h.expires_at)})`).join("; ");
+    if (r.granted) return `${r.renewed ? "Renewed" : "Granted"}: you hold ${a.resource} until ${when(r.expires_at!)}.`;
+    const who = r.holders.map((h) => `${hub.label(h.holder)} (${h.mode}${h.note ? `: ${h.note}` : ""}, until ${when(h.expires_at)})`).join("; ");
     return r.position ? `Taken by ${who || "someone ahead in the queue"}. You are number ${r.position} in the queue; a message will tell you when it is yours.`
       : `Taken by ${who}. Not queued.`;
   }));
@@ -324,7 +326,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     inputSchema: strict({ project: projectArg }),
   }, tool(({ project: p }) => {
     const ls = hub.leases(project(p));
-    const lines = ls.live.map((l) => `- ${l.resource}: ${hub.label(l.holder)} (${l.mode}) until ${iso(l.expires_at)}${l.note ? ` — ${l.note}` : ""}`);
+    const lines = ls.live.map((l) => `- ${l.resource}: ${hub.label(l.holder)} (${l.mode}) until ${when(l.expires_at)}${l.note ? ` — ${l.note}` : ""}`);
     lines.push(...ls.waiting.map((w) => `- waiting for ${w.resource}: ${hub.label(w.agent_id)} (${w.mode})`));
     return lines.join("\n") || "No leases.";
   }));
@@ -354,11 +356,11 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const at = `${a.remote ? `${a.remote}/` : ""}${a.branch}`;
     if ("landed" in r) {
       const l = r.landed;
-      return `Already landed: ${r.sha.slice(0, 10)} is on ${l.remote ? `${l.remote}/` : ""}${l.branch} (${l.repo}) since ${iso(l.at)}` +
+      return `Already landed: ${r.sha.slice(0, 10)} is on ${l.remote ? `${l.remote}/` : ""}${l.branch} (${l.repo}) since ${when(l.at)}` +
         `${l.subject ? `: ${l.subject}` : ""}. No subscription needed.`;
     }
     return `Subscription ${r.id}: ${a.sha ? `one message when ${a.sha.slice(0, 10)} lands on ${at}` : `a message for every landing on ${at}`}` +
-      `${a.subject?.trim() ? ` whose subject contains "${a.subject.trim()}"` : ""}, until ${iso(r.expires_at)}.` +
+      `${a.subject?.trim() ? ` whose subject contains "${a.subject.trim()}"` : ""}, until ${when(r.expires_at)}.` +
       `${r.replaced !== undefined ? ` Subscription ${r.replaced} has ended.` : ""}`;
   }));
 
@@ -373,7 +375,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }, tool(({ project: p }) => {
     return hub.subscriptions(project(p)).map((s) =>
       `- ${s.id}: ${hub.label(s.subscriber)} waits for ${s.sha ? s.sha.slice(0, 10) : "every landing"} on ${s.remote ? `${s.remote}/` : ""}${s.branch}` +
-      `${s.repo ? ` (${s.repo})` : ""}${s.subject_filter ? ` with "${s.subject_filter}" in the subject` : ""} until ${iso(s.expires_at)}${s.note ? ` — ${s.note}` : ""}`,
+      `${s.repo ? ` (${s.repo})` : ""}${s.subject_filter ? ` with "${s.subject_filter}" in the subject` : ""} until ${when(s.expires_at)}${s.note ? ` — ${s.note}` : ""}`,
     ).join("\n") || "No open subscriptions.";
   }));
 
@@ -416,14 +418,14 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     if (!rows.length) return "You have asked no questions here.";
     return rows.map((a) => {
       const steps = [
-        `asked ${iso(a.created_at)}`,
+        `asked ${when(a.created_at)}`,
         a.pushed_at ? "pushed to the phone" : "no push on record (no phone set up, the push failed, or asked before 0.14)",
-        a.seen_at ? `seen on the page ${iso(a.seen_at)}` : "",
-        a.reminded_at ? `reminded ${iso(a.reminded_at)}` : a.remind_at && a.answer === null ? `reminder at ${iso(a.remind_at)}` : "",
+        a.seen_at ? `seen on the page ${when(a.seen_at)}` : "",
+        a.reminded_at ? `reminded ${when(a.reminded_at)}` : a.remind_at && a.answer === null ? `reminder at ${when(a.remind_at)}` : "",
       ].filter(Boolean);
       const state = a.answer !== null
-        ? a.answered_by?.startsWith("default") ? `the default applied ${iso(a.answered_at!)}: ${a.answer}` : `answered ${iso(a.answered_at!)}: ${a.answer.split("\n")[0]}`
-        : a.stale_at ? "open, stale (no answer for days)" : a.deadline ? `open, default "${a.default_answer}" at ${iso(a.deadline)}` : "open";
+        ? a.answered_by?.startsWith("default") ? `the default applied ${when(a.answered_at!)}: ${a.answer}` : `answered ${when(a.answered_at!)}: ${a.answer.split("\n")[0]}`
+        : a.stale_at ? "open, stale (no answer for days)" : a.deadline ? `open, default "${a.default_answer}" at ${when(a.deadline)}` : "open";
       return `- ask ${a.id} to ${a.human}: ${a.question.split("\n")[0]!.slice(0, 120)}\n  ${state}; ${steps.join(", ")}`;
     }).join("\n");
   }));

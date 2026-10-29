@@ -1,4 +1,4 @@
-import { iso, type InboxItem, type MessageRow } from "./hub.ts";
+import { when, type InboxItem, type MessageRow } from "./hub.ts";
 
 // How messages look to a receiving model. The frame carries provenance; the closing note says what authority it has.
 
@@ -42,7 +42,7 @@ export function renderMessage(m: (MessageRow | InboxItem) & { receipts?: string 
     m.re !== null ? `re="${m.re}"` : "",
     m.thread !== null ? `thread="${m.thread}"` : "",
     m.as_of ? `as-of="${attr(m.as_of)}"` : "",
-    `sent="${iso(m.created_at)}"`,
+    `sent="${when(m.created_at)}"`,
     m.receipts ? `receipts="${attr(m.receipts)}"` : "",
   ].filter(Boolean).join(" ");
   const body = m.body ? `\n${defang(m.body)}` : "";

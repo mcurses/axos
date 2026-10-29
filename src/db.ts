@@ -59,9 +59,7 @@ CREATE TABLE IF NOT EXISTS roles (
   description   TEXT NOT NULL DEFAULT '',
   holder        TEXT,                          -- a session key '<agent id>#<session>' or, from clients without sessions, an agent id
   since         INTEGER,
-  expires_at    INTEGER,
-  lapsed_holder TEXT,                          -- the holder whose silence freed the role; it gets the role back when it returns
-  lapsed_at     INTEGER,
+  expires_at    INTEGER,                       -- unused since 0.17.0 (roles no longer lapse); kept for old rows
   PRIMARY KEY (project, role)
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -241,7 +239,7 @@ export function openDb(path: string): Database {
 }
 
 // Databases created before sessions existed: roles.holder lost its agents FK (it now holds session keys),
-// roles gained a description and the holder their silence freed, deliveries gained shown_at, messages gained sender_human.
+// roles gained a description, deliveries gained shown_at, messages gained sender_human.
 function migrate(db: Database): void {
   const roles = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'roles'").get() as { sql: string } | null;
   if (roles && roles.sql.includes("REFERENCES agents")) {
@@ -253,7 +251,8 @@ function migrate(db: Database): void {
       PRAGMA foreign_keys = ON;`);
   }
   const rolesNow = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'roles'").get() as { sql: string } | null;
-  if (rolesNow && !rolesNow.sql.includes("lapsed_holder")) db.exec("ALTER TABLE roles ADD COLUMN lapsed_holder TEXT; ALTER TABLE roles ADD COLUMN lapsed_at INTEGER;");
+  // 0.16.1 remembered the holder a role's silence had freed; roles no longer lapse, so the columns go again.
+  if (rolesNow && rolesNow.sql.includes("lapsed_holder")) db.exec("ALTER TABLE roles DROP COLUMN lapsed_holder; ALTER TABLE roles DROP COLUMN lapsed_at;");
   const deliveries = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'deliveries'").get() as { sql: string } | null;
   if (deliveries && !deliveries.sql.includes("shown_at")) db.exec("ALTER TABLE deliveries ADD COLUMN shown_at INTEGER");
   if (deliveries && !deliveries.sql.includes("outcome")) db.exec("ALTER TABLE deliveries ADD COLUMN outcome TEXT");

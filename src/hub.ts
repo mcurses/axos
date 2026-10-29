@@ -3,6 +3,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { newId } from "./db.ts";
 import { findSecret } from "./secrets.ts";
 import { nullNotifier, type Notifier, type PushAction } from "./notify.ts";
+import { ago } from "./render.ts";
 
 // The hub's domain logic. Transport-free: the MCP layer, the HTTP UI and the CLI all call into this.
 // Time is milliseconds since epoch, injectable for tests.
@@ -149,7 +150,6 @@ export interface HubOptions {
   now?: () => number;
   notifier?: Notifier;
   publicUrl?: string;
-  roleTtlS?: number;
   linkSecret?: string; // signs answer links; kept out of the database (and its backups) when given
   sendsPerMinute?: number;
   onlineWindowS?: number;
@@ -194,7 +194,9 @@ export function holderOf(address: string): string {
   return address.replace(/^(agent|session):/, "");
 }
 
-const SESSION_LIVE_MS = 24 * 3600_000;
+// A session that is not heard from (a laptop asleep, a project left for the weekend) stays live, with its roles, this
+// long; then it ends. A connected session is heard from every heartbeat.
+const SESSION_LIVE_MS = 7 * 86_400_000;
 
 export function hashSecret(s: string): string {
   return createHash("sha256").update(s).digest("hex");
@@ -222,7 +224,6 @@ export class Hub {
   readonly now: () => number;
   private notifier: Notifier;
   readonly publicUrl: string;
-  private roleTtlMs: number;
   private sendsPerMinute: number;
   private onlineWindowMs: number;
   private listeners = new Map<string, Set<(e: HubEvent) => void>>();
@@ -237,7 +238,6 @@ export class Hub {
     this.now = opts.now ?? Date.now;
     this.notifier = opts.notifier ?? nullNotifier;
     this.publicUrl = (opts.publicUrl ?? "").replace(/\/$/, "");
-    this.roleTtlMs = (opts.roleTtlS ?? 7200) * 1000;
     this.sendsPerMinute = opts.sendsPerMinute ?? 60;
     this.onlineWindowMs = (opts.onlineWindowS ?? 600) * 1000;
     const row = opts.linkSecret ? null : this.db.query("SELECT v FROM kv WHERE k = 'link_secret'").get() as { v: string } | null;
@@ -501,7 +501,7 @@ export class Hub {
       }
       // Roles and leases held in this project by the agent itself or by its sessions tied to other projects.
       for (const h of this.db.query("SELECT key AS h FROM sessions WHERE agent_id = ? UNION SELECT ?").all(id, id) as { h: string }[]) {
-        this.db.query("UPDATE roles SET holder = NULL, since = NULL, expires_at = NULL WHERE project = ? AND holder = ?").run(project, h.h);
+        this.db.query("UPDATE roles SET holder = NULL, since = NULL WHERE project = ? AND holder = ?").run(project, h.h);
         for (const l of this.db.query("SELECT * FROM leases WHERE project = ? AND holder = ? AND ended_at IS NULL").all(project, h.h) as LeaseRow[]) this.endLease(l, "revoked");
         this.db.query("UPDATE lease_waiters SET done_at = ? WHERE project = ? AND agent_id = ? AND done_at IS NULL").run(this.now(), project, h.h);
       }
@@ -547,7 +547,7 @@ export class Hub {
     if (r.changes === 0) throw new AxosError(`no agent '${agentId}'`);
     for (const s of this.db.query("SELECT key FROM sessions WHERE agent_id = ? AND ended_at IS NULL").all(agentId) as { key: string }[]) this.endSession(s.key, "revoked");
     for (const role of this.db.query("SELECT project, role FROM roles WHERE holder = ?").all(agentId) as { project: string; role: string }[]) {
-      this.db.query("UPDATE roles SET holder = NULL, since = NULL, expires_at = NULL WHERE project = ? AND role = ?").run(role.project, role.role);
+      this.db.query("UPDATE roles SET holder = NULL, since = NULL WHERE project = ? AND role = ?").run(role.project, role.role);
     }
     for (const l of this.db.query("SELECT * FROM leases WHERE holder = ? AND ended_at IS NULL").all(agentId) as LeaseRow[]) {
       this.endLease(l, "revoked");
@@ -579,26 +579,30 @@ export class Hub {
     return h?.name ?? null;
   }
 
-  // Any activity keeps the agent's roles alive.
   touch(agentId: string): void {
-    const t = this.now();
-    this.db.query("UPDATE agents SET last_seen = ? WHERE id = ?").run(t, agentId);
-    this.db.query("UPDATE roles SET expires_at = ? WHERE holder = ?").run(t + this.roleTtlMs, agentId);
-    this.regainRoles(agentId);
+    this.db.query("UPDATE agents SET last_seen = ? WHERE id = ?").run(this.now(), agentId);
   }
 
-  // A holder that went quiet (a sleeping laptop, a dropped connection) and comes back within a day gets back the roles
-  // its silence freed, unless someone else took them meanwhile (that one told it so) or it left the project.
-  private regainRoles(holder: string): void {
-    const t = this.now();
-    const agentId = holder.split("#")[0]!;
-    for (const r of this.db.query("SELECT project, role FROM roles WHERE lapsed_holder = ? AND holder IS NULL AND lapsed_at > ?").all(holder, t - SESSION_LIVE_MS) as { project: string; role: string }[]) {
-      if (!this.isMember(agentId, r.project)) continue;
-      this.db.query("UPDATE roles SET holder = ?, since = ?, expires_at = ?, lapsed_holder = NULL, lapsed_at = NULL WHERE project = ? AND role = ?")
-        .run(holder, t, t + this.roleTtlMs, r.project, r.role);
-      this.event(addr(holder), "role.regained", r.project, { role: r.role });
-      this.emit(addr(holder), { kind: "role" });
-    }
+  // Whether a holder (a session key or an agent id) can take a message now: an open event stream, or a request in the
+  // last minutes. A holder that is not is away: its laptop sleeps, its connection dropped, or it is gone.
+  isOnline(holder: string): boolean {
+    if (this.streams.has(holder)) return true;
+    const seen = this.lastSeen(holder);
+    return seen !== null && this.now() - seen < this.onlineWindowMs;
+  }
+
+  private lastSeen(holder: string): number | null {
+    const row = holder.includes("#")
+      ? this.db.query("SELECT last_seen FROM sessions WHERE key = ? AND ended_at IS NULL").get(holder) as { last_seen: number } | null
+      : this.db.query("SELECT last_seen FROM agents WHERE id = ?").get(holder) as { last_seen: number | null } | null;
+    return row?.last_seen ?? null;
+  }
+
+  // A holder's reach in words: "connected", "seen 3m ago" or "away, seen 2h ago".
+  whereabouts(holder: string): string {
+    if (this.streams.has(holder)) return "connected";
+    const seen = `seen ${ago(this.lastSeen(holder), this.now())}`;
+    return this.isOnline(holder) ? seen : `away, ${seen}`;
   }
 
   // ---------------------------------------------------------------- sessions
@@ -630,8 +634,6 @@ export class Hub {
     if (kept && !this.isMember(agentId, kept)) this.db.query("UPDATE sessions SET project = NULL WHERE key = ?").run(key);
     if (!prev || prev.ended_at !== null) this.event(`session:${key}`, "session.started", project, { name, profile });
     if (!prev) this.claimNext(key);
-    this.db.query("UPDATE roles SET expires_at = ? WHERE holder = ?").run(t + this.roleTtlMs, key);
-    this.regainRoles(key);
     return key;
   }
 
@@ -670,9 +672,8 @@ export class Hub {
   endSession(key: string, reason = "ended"): void {
     const r = this.db.query("UPDATE sessions SET ended_at = ? WHERE key = ? AND ended_at IS NULL").run(this.now(), key);
     if (!r.changes) return;
-    this.db.query("UPDATE roles SET lapsed_holder = NULL, lapsed_at = NULL WHERE lapsed_holder = ?").run(key);
     for (const role of this.db.query("SELECT project, role FROM roles WHERE holder = ?").all(key) as { project: string; role: string }[]) {
-      this.db.query("UPDATE roles SET holder = NULL, since = NULL, expires_at = NULL WHERE project = ? AND role = ?").run(role.project, role.role);
+      this.db.query("UPDATE roles SET holder = NULL, since = NULL WHERE project = ? AND role = ?").run(role.project, role.role);
       this.event(`session:${key}`, "role.released", role.project, { role: role.role, reason });
     }
     for (const l of this.db.query("SELECT * FROM leases WHERE holder = ? AND ended_at IS NULL").all(key) as LeaseRow[]) this.endLease(l, "released");
@@ -853,13 +854,15 @@ export class Hub {
 
   roles(project: string) {
     this.sweep();
-    return this.db.query("SELECT role, description, holder, since, expires_at FROM roles WHERE project = ? ORDER BY role").all(project) as {
-      role: string; description: string; holder: string | null; since: number | null; expires_at: number | null;
+    return this.db.query("SELECT role, description, holder, since FROM roles WHERE project = ? ORDER BY role").all(project) as {
+      role: string; description: string; holder: string | null; since: number | null;
     }[];
   }
 
   // A role is held until released, until its holder is silent for the role TTL, or until a forced takeover.
-  // A forced takeover needs a reason (the human's words); it is logged verbatim and the displaced holder is told.
+  // A role stays with its holder until it releases it, its session ends, or another session takes it over. Taking it
+  // from one's own holder that is away (a sleeping laptop, a dropped connection) needs nothing; from one that is online
+  // it needs force: the human's words, logged verbatim. The displaced holder is told either way.
   claimRole(agentId: string, project: string, role: string, force?: string, session?: string): { took_over_from: string | null } {
     this.requireScope(agentId, project, session);
     checkName("role", role);
@@ -872,37 +875,32 @@ export class Hub {
       throw new AxosError("a script holds no roles; it speaks for one its agent's session holds with --as");
     }
     const me = session ?? agentId;
-    const row = this.db.query("SELECT holder, since, expires_at, lapsed_holder FROM roles WHERE project = ? AND role = ?").get(project, role) as
-      { holder: string | null; since: number | null; expires_at: number | null; lapsed_holder: string | null } | null;
+    const row = this.db.query("SELECT holder, since FROM roles WHERE project = ? AND role = ?").get(project, role) as
+      { holder: string | null; since: number | null } | null;
     const prev = row?.holder ?? null;
     if (prev && prev !== me && this.humanOfHolder(prev) !== this.humanOfHolder(me)) {
       throw new AxosError(`role '${role}' is held by a session of ${this.humanOfHolder(prev)}; only they can release it (or it frees itself when that session ends)`);
     }
-    if (prev && prev !== me && !force?.trim()) {
-      throw new AxosError(
-        `role '${role}' is held by ${prev} (live until ${iso(row!.expires_at!)} unless it stays active); ` +
-          `a takeover needs force set to the human's words authorising it`,
-      );
+    const reason = force?.trim() || null;
+    const away = !!prev && prev !== me && !this.isOnline(prev);
+    if (prev && prev !== me && !away && !reason) {
+      throw new AxosError(`role '${role}' is held by ${this.label(prev)} (${this.whereabouts(prev)}); a takeover needs force set to the human's words authorising it`);
     }
     const t = this.now();
-    this.db.transaction(() => {
-      this.db.query(
-        `INSERT INTO roles (project, role, holder, since, expires_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (project, role) DO UPDATE SET holder = excluded.holder, since = excluded.since, expires_at = excluded.expires_at,
-           lapsed_holder = NULL, lapsed_at = NULL`,
-      ).run(project, role, me, prev === me ? row!.since : t, t + this.roleTtlMs);
-    })();
+    // A claim is a request from the claimer: it counts as being seen, like every call does on the way in.
+    if (session) this.db.query("UPDATE sessions SET last_seen = ? WHERE key = ?").run(t, session);
+    else this.touch(agentId);
+    this.db.query(
+      `INSERT INTO roles (project, role, holder, since) VALUES (?, ?, ?, ?)
+       ON CONFLICT (project, role) DO UPDATE SET holder = excluded.holder, since = excluded.since`,
+    ).run(project, role, me, prev === me ? row!.since : t);
     if (prev && prev !== me) {
-      this.event(addr(me), "role.taken_over", project, { role, from: prev, force });
-      this.systemMessage(project, addr(prev), "status", `You no longer hold the role '${role}': ${this.label(me)} took it over.`,
-        `Reason given: ${force}\nThe role's mailbox, leases and open questions stay with the role.`, "high");
+      this.event(addr(me), "role.taken_over", project, { role, from: prev, force: reason, away });
+      this.systemMessage(project, addr(prev), "status",
+        `You no longer hold the role '${role}': ${away && !reason ? `while you were away, ${this.label(me)} took it` : `${this.label(me)} took it over`}.`,
+        `${reason ? `Reason given: ${reason}\n` : ""}The role's mailbox, leases and open questions stay with the role.`, "high");
     } else if (prev !== me) {
       this.event(addr(me), "role.claimed", project, { role });
-    }
-    const lapsed = row?.lapsed_holder ?? null;
-    if (!prev && lapsed && lapsed !== me) {
-      this.systemMessage(project, addr(lapsed), "status", `You no longer hold the role '${role}': while you were away, ${this.label(me)} took it.`,
-        "It had freed itself after your silence. Its mailbox, leases and open questions stay with the role.", "high");
     }
     this.emit(addr(me), { kind: "role" });
     return { took_over_from: prev && prev !== me ? prev : null };
@@ -1000,8 +998,7 @@ export class Hub {
 
   releaseRole(agentId: string, project: string, role: string, session?: string): void {
     const me = session ?? agentId;
-    const r = this.db.query("UPDATE roles SET holder = NULL, since = NULL, expires_at = NULL WHERE project = ? AND role = ? AND holder = ?")
-      .run(project, role, me);
+    const r = this.db.query("UPDATE roles SET holder = NULL, since = NULL WHERE project = ? AND role = ? AND holder = ?").run(project, role, me);
     if (r.changes === 0) throw new AxosError(`you do not hold role '${role}' in '${project}'`);
     this.event(addr(me), "role.released", project, { role });
   }
@@ -1105,7 +1102,8 @@ export class Hub {
     priority?: Priority;
     dedupe_key?: string;
     no_push?: boolean;
-  }): { id: number; duplicate: boolean; delivered_to: string[]; waiting_for_role: string[] } {
+    queue?: boolean; // to a role nobody can take it for now: leave it in the role's mailbox anyway
+  }): { id: number; duplicate: boolean; delivered_to: string[]; waiting_for_role: string[]; not_sent: { to: string; reason: string }[] } {
     this.requireActorInProject(actor, input.project);
     const sender = actor.kind === "agent" ? addr(this.seat(actor.id, input.project, actor.as, actor.session)) : `human:${actor.name}`;
     if (!MESSAGE_TYPES.includes(input.type)) throw new AxosError(`type must be one of ${MESSAGE_TYPES.join(", ")}`);
@@ -1119,7 +1117,7 @@ export class Hub {
 
     if (input.dedupe_key) {
       const dup = this.db.query("SELECT id FROM messages WHERE sender = ? AND dedupe_key = ?").get(sender, input.dedupe_key) as { id: number } | null;
-      if (dup) return { id: dup.id, duplicate: true, delivered_to: [], waiting_for_role: [] };
+      if (dup) return { id: dup.id, duplicate: true, delivered_to: [], waiting_for_role: [], not_sent: [] };
     }
     if (actor.kind === "agent") this.rateLimit(actor.id);
 
@@ -1139,10 +1137,12 @@ export class Hub {
       ).get(id, id, ...senders, ...box.args);
     };
     let thread = input.thread ?? null;
+    // A thread named without re or to continues that conversation: a reply to its first message.
+    const re = input.re ?? (thread !== null && !input.to?.length ? thread : undefined);
     const recipients = new Map<string, string>();
-    if (input.re !== undefined) {
-      if (!inScope(input.re)) throw new AxosError(`no message ${input.re} in '${input.project}'`);
-      const parent = this.db.query("SELECT id, thread, sender FROM messages WHERE id = ?").get(input.re) as { id: number; thread: number | null; sender: string };
+    if (re !== undefined) {
+      if (!inScope(re)) throw new AxosError(`no message ${re} in '${input.project}'`);
+      const parent = this.db.query("SELECT id, thread, sender FROM messages WHERE id = ?").get(re) as { id: number; thread: number | null; sender: string };
       thread ??= parent.thread ?? parent.id;
       // A reply always finds its way back: to the sender's mailbox, even in another project, and to the agent's shared
       // mailbox when the sending session has ended since.
@@ -1158,16 +1158,47 @@ export class Hub {
       }
     }
     if (thread !== null && !inScope(thread)) throw new AxosError(`no thread ${thread} in '${input.project}'`);
-    if (!input.to?.length && !recipients.size) throw new AxosError(input.re === undefined ? "to is empty" : "nobody to reply to (that message was yours)");
+    if (!input.to?.length && !recipients.size) throw new AxosError(re === undefined ? "to is empty" : "nobody to reply to (that message was yours)");
 
-    for (const addr of input.to ?? []) {
-      for (const r of this.resolve(input.project, addr, sender, actor.kind === "agent" ? this.humanOf(actor.id) : actor.name)) {
+    // Each address on its own: the ones that resolve get the message, the others come back with their reason.
+    const notSent: { to: string; reason: string }[] = [];
+    const typed = new Map<string, string>(); // recipient -> the address it was typed as
+    const human = actor.kind === "agent" ? this.humanOf(actor.id) : actor.name;
+    for (const a of input.to ?? []) {
+      let found: { recipient: string; via: string }[];
+      try {
+        found = this.resolve(input.project, a, sender, human);
+      } catch (e) {
+        if (!(e instanceof AxosError)) throw e;
+        notSent.push({ to: a, reason: e.message });
+        continue;
+      }
+      for (const r of found) {
         const self = r.recipient === sender || (actor.kind === "agent" && r.via.startsWith("project:") &&
           (r.recipient === `agent:${actor.id}` || r.recipient === `session:${actor.session}`));
-        if (!self && !recipients.has(r.recipient)) recipients.set(r.recipient, r.via);
+        if (!self && !recipients.has(r.recipient)) {
+          recipients.set(r.recipient, r.via);
+          typed.set(r.recipient, a);
+        }
       }
     }
-    if (!recipients.size) throw new AxosError("nobody to deliver to (the only recipient was yourself)");
+    // A role nobody can take the message for now (vacant, or its holder away) gets none from an agent unless it says
+    // queue: the agent sends because it needs something, so it is told who is in the room and chooses. A script and a
+    // person have nobody to choose from: their message waits for the role's next holder.
+    const chooses = actor.kind === "agent" && !input.queue && !(actor.session && this.session(actor.session)?.kind === "script");
+    if (chooses) {
+      for (const recipient of [...recipients.keys()]) {
+        if (!recipient.startsWith("role:")) continue;
+        const holder = this.roleHolder(recipient);
+        if (holder && this.isOnline(holder)) continue;
+        recipients.delete(recipient);
+        notSent.push({ to: typed.get(recipient) ?? recipient, reason: this.room(input.project, recipient, holder, actor.session ?? actor.id) });
+      }
+    }
+    if (!recipients.size) {
+      if (notSent.length === 1) throw new AxosError(notSent[0]!.reason);
+      throw new AxosError(notSent.length ? notSent.map((x) => `${x.to}: ${x.reason}`).join("\n") : "nobody to deliver to (the only recipient was yourself)");
+    }
 
     // A note or status to a whole project is news, not a call: it waits for each session's next step.
     // Written by someone other than the sender: a script, or a client without a session, speaking for a role.
@@ -1178,7 +1209,7 @@ export class Hub {
       const res = this.db.query(
         `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at, sent_by)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run(input.project, sender, actor.kind === "agent" ? this.humanOf(actor.id) : actor.name, JSON.stringify(input.to ?? [...recipients.keys()]), input.type, summary, body, thread, input.re ?? null,
+      ).run(input.project, sender, human, JSON.stringify(input.to?.filter((a) => !notSent.some((x) => x.to === a)) ?? [...recipients.keys()]), input.type, summary, body, thread, re ?? null,
         input.as_of ?? null, priority, input.dedupe_key ?? null, this.now(), sentBy);
       const mid = Number(res.lastInsertRowid);
       for (const [recipient, via] of recipients) {
@@ -1200,9 +1231,25 @@ export class Hub {
     return {
       id,
       duplicate: false,
-      delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => r.startsWith("role:") ? `${r} (held by ${this.label(this.roleHolder(r)!)})` : r),
+      delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => r.startsWith("role:") ? `${r} (held by ${this.label(this.roleHolder(r)!)}, ${this.whereabouts(this.roleHolder(r)!)})` : r),
       waiting_for_role: [...recipients.keys()].filter(vacant),
+      not_sent: notSent,
     };
+  }
+
+  // Who is in the room, for a sender whose role addressee cannot take a message now: the role's state, then, in the
+  // sender's own project, every other live session with its roles and reach; in a linked project only the roles and
+  // their holders' reach, as nothing else crosses a link.
+  private room(from: string, roleAddr: string, holder: string | null, me: string): string {
+    const [p, role] = roleAddr.slice(5).split("/", 2) as [string, string];
+    const state = holder ? `held by ${this.label(holder)} (${this.whereabouts(holder)})` : "held by nobody";
+    const own = p === from;
+    const room = own
+      ? this.liveSessions(p).filter((x) => x.key !== me)
+        .map((x) => `${this.label(x.key)} (${this.rolesHeldBy(`session:${x.key}`, p).join(", ") || "no role"}; ${this.whereabouts(x.key)})`)
+      : this.roles(p).filter((r) => r.holder && r.role !== role).map((r) => `role:${p}/${r.role} (${this.label(r.holder!)}; ${this.whereabouts(r.holder!)})`);
+    return `role '${role}' is ${state}, so nobody would read this now. ${own ? "In the room" : `Roles held in ${p}`}: ${room.join("; ") || (own ? "nobody else" : "none")}. ` +
+      "Send it to whoever there fits, leave it for the role's next holder with queue: true, or ask your human.";
   }
 
   // Where mail for a mailbox goes now: a session that has ended since hands it to its agent's shared mailbox.
@@ -1685,8 +1732,8 @@ export class Hub {
       `repo ${l.repo}, branch ${l.remote ? `${l.remote}/` : ""}${l.branch}`,
       ...hits.filter((h) => h.matched).map((h) => `commit ${h.matched}`).filter((c, i, all) => all.indexOf(c) === i),
       `head ${l.head}${l.subject ? ` "${l.subject}"` : ""}`,
-      `reported by ${l.reporter === "admin" ? "the hub's admin" : this.label(l.reporter)} at ${iso(l.at)}`,
-      ...hits.map((h) => `subscription ${h.s.id}: ${h.s.sha ? "done" : `open until ${iso(h.s.expires_at)}`}`),
+      `reported by ${l.reporter === "admin" ? "the hub's admin" : this.label(l.reporter)} at ${when(l.at)}`,
+      ...hits.map((h) => `subscription ${h.s.id}: ${h.s.sha ? "done" : `open until ${when(h.s.expires_at)}`}`),
     ].filter(Boolean).join("\n");
     this.systemMessage(s.project, this.liveBox(s.subscriber), "note", summary, body);
   }
@@ -1735,7 +1782,7 @@ export class Hub {
     const actions: PushAction[] = link ? options.slice(0, 3).map((o) => ({ label: o.slice(0, 40), url: link, body: o })) : [];
     const tail = (options.length > 3 ? `\n(${options.length - 3} more options on the page)` : "") +
       (images ? `\n(${images === 1 ? "an image" : `${images} images`} on the page)` : "") +
-      (a.default_answer !== null && a.deadline ? `\n(default "${a.default_answer}", chosen by the agent, at ${iso(a.deadline)})` : "");
+      (a.default_answer !== null && a.deadline ? `\n(default "${a.default_answer}", chosen by the agent, at ${when(a.deadline)})` : "");
     const title = `${reminder ? "Reminder: " : ""}${this.senderTitle(addr(a.asker))} (${this.projectName(a.project)})`;
     void this.pushToHuman(a.human, title, `${summary}${tail}`, `#m${a.message_id}`, actions, { sequence: askSequence(askId) }).then((ok) => {
       if (ok && !reminder) this.db.query("UPDATE asks SET pushed_at = ? WHERE id = ? AND pushed_at IS NULL").run(this.now(), askId);
@@ -1855,17 +1902,17 @@ export class Hub {
   sweep(): void {
     const t = this.now();
     for (const x of this.db.query("SELECT key FROM sessions WHERE ended_at IS NULL AND kind = 'session' AND last_seen < ?").all(t - SESSION_LIVE_MS) as { key: string }[]) {
-      this.endSession(x.key, "silent for a day");
+      this.endSession(x.key, "silent for 7 days");
     }
     for (const x of this.db.query("SELECT key FROM sessions WHERE ended_at IS NULL AND kind = 'script' AND last_seen < ?").all(t - SCRIPT_KEPT_MS) as { key: string }[]) {
       this.endSession(x.key, "unused for 30 days");
     }
-    for (const r of this.db.query("SELECT project, role, holder FROM roles WHERE holder IS NOT NULL AND expires_at < ?").all(t) as { project: string; role: string; holder: string }[]) {
-      // A connected session keeps its roles through the stream's heartbeat, so this holder is away or gone. It is not
-      // told now (it would not hear it): back within a day it gets the role again, or learns who took it.
-      this.db.query("UPDATE roles SET holder = NULL, since = NULL, expires_at = NULL, lapsed_holder = ?, lapsed_at = ? WHERE project = ? AND role = ?")
-        .run(r.holder, t, r.project, r.role);
-      this.event("axos", "role.expired", r.project, { role: r.role, holder: r.holder });
+    // A role held by a session goes with the session. One held by a session-less client is freed when that client has
+    // been gone as long as a session may be silent.
+    for (const r of this.db.query("SELECT r.project, r.role, r.holder FROM roles r JOIN agents a ON a.id = r.holder WHERE a.last_seen < ?")
+      .all(t - SESSION_LIVE_MS) as { project: string; role: string; holder: string }[]) {
+      this.db.query("UPDATE roles SET holder = NULL, since = NULL WHERE project = ? AND role = ?").run(r.project, r.role);
+      this.event("axos", "role.released", r.project, { role: r.role, holder: r.holder, reason: "holder gone for 7 days" });
     }
     for (const l of this.db.query("SELECT * FROM leases WHERE ended_at IS NULL AND expires_at < ?").all(t) as LeaseRow[]) {
       this.endLease(l, "expired");
@@ -1900,7 +1947,7 @@ export class Hub {
       this.db.query("UPDATE asks SET stale_at = ? WHERE id = ?").run(t, a.id);
       this.systemMessage(a.project, this.liveBox(addr(a.asker)), "note",
         `Ask ${a.id} to ${a.human} has had no answer for ${Math.round(ASK_STALE_MS / 86_400_000)} days; it stays open`,
-        `Question: ${a.question}\n${a.seen_at ? `${a.human} saw it on their page at ${iso(a.seen_at)}.` : `${a.human} has not opened it on their page.`} ` +
+        `Question: ${a.question}\n${a.seen_at ? `${a.human} saw it on their page at ${when(a.seen_at)}.` : `${a.human} has not opened it on their page.`} ` +
         "Ask again in other words, decide without it if you can, or tell your human.", "low", a.message_id);
       this.event("axos", "ask.stale", a.project, { ask: a.id });
     }
@@ -1959,6 +2006,15 @@ function askSequence(askId: number): string {
 
 export function iso(ms: number): string {
   return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+// A time in text for people and models: the hub's zone (AXOS_TZ, else the system's), to the minute, zone named.
+const ZONE = process.env.AXOS_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+export function when(ms: number): string {
+  const parts = new Intl.DateTimeFormat("en-GB", { timeZone: ZONE, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short" })
+    .formatToParts(new Date(ms));
+  const g = (k: string) => parts.find((x) => x.type === k)?.value ?? "";
+  return `${g("year")}-${g("month")}-${g("day")} ${g("hour")}:${g("minute")} ${g("timeZoneName")}`;
 }
 
 function kb(n: number): string {

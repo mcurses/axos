@@ -25,7 +25,7 @@ beforeEach(() => {
     async push(topic, m) { pushes.push({ topic, title: m.title, body: m.body, sequence: m.sequence, priority: m.priority, actions: m.actions?.length }); },
     async remove(topic, sequence) { removed.push(`${topic} ${sequence}`); },
   };
-  hub = new Hub(openDb(":memory:"), { now: () => t, notifier, publicUrl: "https://axos.example", roleTtlS: 3600 });
+  hub = new Hub(openDb(":memory:"), { now: () => t, notifier, publicUrl: "https://axos.example" });
   hub.addHuman("alice", "alice-topic");
   hub.addHuman("bob");
   SHOP = hub.addProject("alice/shop");
@@ -202,9 +202,10 @@ describe("messages", () => {
 });
 
 describe("roles", () => {
-  test("a message to a vacant role waits for whoever claims it", () => {
+  test("a message to a vacant role is refused with who is in the room; with queue it waits for whoever claims it", () => {
     hub.defineRole(SHOP, "main-coordinator");
-    const r = hub.send(A, note(["role:main-coordinator"]));
+    expect(refusal(() => hub.send(A, note(["role:main-coordinator"])))).toMatch(/role 'main-coordinator' is held by nobody.*In the room: nobody else.*queue: true/);
+    const r = hub.send(A, { ...note(["role:main-coordinator"]), queue: true });
     expect(r.waiting_for_role).toEqual([`role:${SHOP}/main-coordinator`]);
     expect(r.waiting_for_role.map((x) => shown(x))).toEqual(["role:alice/shop/main-coordinator"]);
     hub.claimRole(DEV3, SHOP, "main-coordinator");
@@ -215,7 +216,7 @@ describe("roles", () => {
   test("a role is addressed by role, slug/role or owner/slug/role", () => {
     hub.defineRole(SHOP, "main-coordinator");
     for (const to of ["role:main-coordinator", "role:shop/main-coordinator", "role:alice/shop/main-coordinator", `role:${SHOP}/main-coordinator`]) {
-      expect(hub.send(A, note([to], `via ${to}`)).waiting_for_role).toEqual([`role:${SHOP}/main-coordinator`]);
+      expect(hub.send(A, { ...note([to], `via ${to}`), queue: true }).waiting_for_role).toEqual([`role:${SHOP}/main-coordinator`]);
     }
   });
 
@@ -227,6 +228,7 @@ describe("roles", () => {
   test("a held role refuses a second claimer; force with words takes over, the role's mail stays with the role", () => {
     hub.defineRole(SHOP, "elevated");
     hub.claimRole(DEV1, SHOP, "elevated");
+    hub.touch(DEV1); // online: every request touches
     const viaRole = hub.send(B, note(["role:elevated"], "please restart the worker box"));
     const direct = hub.send(B, note(["agent:alice/dev1"], "personal note"));
     expect(refusal(() => hub.claimRole(DEV3, SHOP, "elevated"))).toMatch(/held by alice\/dev1/);
@@ -242,16 +244,30 @@ describe("roles", () => {
     expect(hub.events().some((e) => e.kind === "role.taken_over" && e.data_json.includes("dev1 is stuck"))).toBe(true);
   });
 
-  test("a silent holder loses the role after the TTL; activity keeps it", () => {
+  test("silence never frees a role: a holder quiet for days keeps it; a session-less one gone for a week loses it", () => {
     hub.defineRole(SHOP, "elevated");
     hub.claimRole(DEV1, SHOP, "elevated");
-    t += 50 * 60_000;
     hub.touch(DEV1);
-    t += 50 * 60_000;
+    t += 3 * 86_400_000;
     expect(hub.roles(SHOP)[0]!.holder).toBe(DEV1);
-    t += 11 * 60_000;
+    t += 5 * 86_400_000;
     expect(hub.roles(SHOP)[0]!.holder).toBeNull();
-    hub.claimRole(DEV3, SHOP, "elevated");
+    expect(hub.events().some((e) => e.kind === "role.released" && e.data_json.includes("gone for 7 days"))).toBe(true);
+  });
+
+  test("an away holder is replaced by another of its human's sessions without force and told when back; an online one needs force", () => {
+    hub.defineRole(SHOP, "elevated");
+    hub.claimRole(DEV1, SHOP, "elevated");
+    hub.touch(DEV1);
+    expect(refusal(() => hub.claimRole(DEV3, SHOP, "elevated"))).toMatch(/held by alice\/dev1 \(seen 0s ago\); a takeover needs force/);
+    hub.streamOpened(DEV1);
+    t += 11 * 60_000;
+    expect(refusal(() => hub.claimRole(DEV3, SHOP, "elevated"))).toMatch(/\(connected\)/);
+    hub.streamClosed(DEV1);
+    t += 11 * 60_000;
+    expect(hub.claimRole(DEV3, SHOP, "elevated").took_over_from).toBe(DEV1);
+    expect(hub.inbox(`agent:${DEV1}`).some((m) => /while you were away, alice\/dev3 took it/.test(shown(m.summary)))).toBe(true);
+    expect(hub.events().some((e) => e.kind === "role.taken_over" && e.data_json.includes('"away":true'))).toBe(true);
   });
 
   test("revoking an agent frees its roles", () => {
@@ -406,7 +422,7 @@ describe("role mailboxes", () => {
     expect(hub.inbox(`agent:${DEV3}`)).toEqual([]);
     expect(hub.ack(`agent:${DEV3}`, [m.id])).toBe(0);
     expect(hub.unreadCount(`role:${SHOP}/main-coordinator`)).toBe(1);
-    expect(m.delivered_to.map((x) => shown(x))).toEqual(["role:alice/shop/main-coordinator (held by alice/dev3)"]);
+    expect(m.delivered_to.map((x) => shown(x))).toEqual(["role:alice/shop/main-coordinator (held by alice/dev3, seen 0s ago)"]);
   });
 
   test("a reply to a message sent as the role comes back to the role", () => {
@@ -481,7 +497,7 @@ describe("sessions", () => {
   });
 
   test("the role belongs to one session: another session of the same token needs force", () => {
-    expect(refusal(() => hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper))).toMatch(/held by alice\/dev3#35dabd9e/);
+    expect(refusal(() => hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper))).toMatch(/held by shop-5c \(alice\/dev3#35dabd9e, dev3\) \(seen 0s ago\); a takeover needs force/);
     expect(() => hub.send({ ...H(), as: "main-coordinator" }, note(["agent:alice/dev1"]))).toThrow(/do not hold the role/);
   });
 
@@ -569,65 +585,62 @@ describe("sessions", () => {
   test("an ended session gives its role back; the mail waits for the next holder", () => {
     hub.endSession(coord);
     expect(hub.roles(SHOP).find((r) => r.role === "main-coordinator")!.holder).toBeNull();
-    const m = hub.send(A, note(["role:main-coordinator"], "anyone there?"));
+    const m = hub.send(A, { ...note(["role:main-coordinator"], "anyone there?"), queue: true });
     hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper);
     expect(hub.inbox(hub.mailboxes({ id: DEV3, session: helper })).map((x) => x.id)).toContain(m.id);
   });
 
-  test("a session silent for a day ends by itself", () => {
-    t += 25 * 3600_000;
+  test("a session silent for a week ends by itself", () => {
+    t += 8 * 86_400_000;
     hub.sweep();
     expect(hub.session(coord)!.ended_at).not.toBeNull();
   });
 
-  test("a session back from a long silence (a sleeping laptop) gets its role again, without being told it lost it", () => {
-    t += 61 * 60_000;
-    expect(hub.roles(SHOP)[0]!.holder).toBeNull();
-    const mail = hub.send(A, note(["role:main-coordinator"], "go, there is headroom"));
+  test("a session asleep for days keeps its role; after a week of silence it ends and the role is freed", () => {
+    t += 3 * 86_400_000;
+    expect(hub.roles(SHOP)[0]!.holder).toBe(coord);
     hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP });
+    t += 5 * 86_400_000;
     expect(hub.roles(SHOP)[0]!.holder).toBe(coord);
-    const inbox = hub.inbox(hub.mailboxes(C(), SHOP));
-    expect(inbox.map((m) => m.id)).toContain(mail.id);
-    expect(inbox.some((m) => m.sender === "axos")).toBe(false);
-    expect(hub.events().some((e) => e.kind === "role.regained")).toBe(true);
-    // The heartbeat of a reconnected stream (touch) brings it back too.
-    t += 61 * 60_000;
-    hub.sweep();
-    hub.touch(coord);
-    expect(hub.roles(SHOP)[0]!.holder).toBe(coord);
+    t += 3 * 86_400_000;
+    expect(hub.roles(SHOP)[0]!.holder).toBeNull();
+    expect(hub.session(coord)!.ended_at).not.toBeNull();
   });
 
-  test("a role taken while its holder was away stays taken, and the holder learns who took it", () => {
-    t += 61 * 60_000;
-    hub.sweep();
-    hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper);
-    hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP });
-    expect(hub.roles(SHOP)[0]!.holder).toBe(helper);
-    expect(hub.inbox(`session:${coord}`).some((m) => /while you were away, shop-e9/.test(shown(m.summary)))).toBe(true);
-    hub.releaseRole(DEV3, SHOP, "main-coordinator", helper);
-    hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP });
-    expect(hub.roles(SHOP)[0]!.holder).toBeNull();
+  test("a role whose holder is connected takes a message; away, the sender is told who is in the room; queue leaves it anyway", () => {
+    hub.streamOpened(coord);
+    expect(hub.send(A, note(["role:main-coordinator"], "go")).delivered_to[0]).toMatch(/^role:.*main-coordinator \(held by shop-5c .*, connected\)$/);
+    hub.streamClosed(coord);
+    t += 11 * 60_000;
+    const why = refusal(() => hub.send(H(), note(["role:main-coordinator"], "go")));
+    expect(why).toMatch(/held by shop-5c \(.*away, seen 11m ago\)/);
+    expect(why).toMatch(/In the room: shop-5c \(alice\/dev3#35dabd9e, dev3\) \(main-coordinator; away, seen 11m ago\)\./);
+    expect(why).not.toContain("shop-e9");
+    expect(refusal(() => hub.send(A, note(["role:main-coordinator"], "go")))).toMatch(/In the room: shop-5c .*; shop-e9 \(alice\/dev3#7b9f51e0, dev3\) \(no role; away/);
+    const kept = hub.send(H(), { ...note(["role:main-coordinator"], "go, when you are back"), queue: true });
+    expect(kept.delivered_to[0]).toMatch(/away, seen 11m ago\)$/);
+    expect(hub.inbox(`role:${SHOP}/main-coordinator`).map((m) => m.id)).toContain(kept.id);
   });
 
-  test("an ended session, one away for more than a day, or one whose human left the project does not get the role back", () => {
-    t += 61 * 60_000;
-    hub.sweep();
-    hub.endSession(coord);
-    hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP });
-    expect(hub.roles(SHOP)[0]!.holder).toBeNull();
+  test("a send to several addresses delivers to the ones that take it and names the others with their reason", () => {
+    t += 11 * 60_000;
+    const r = hub.send(A, note(["role:main-coordinator", "session:shop-e9", "session:nobody-here"], "fan out"));
+    expect(r.delivered_to).toEqual([`session:${helper}`]);
+    expect(r.not_sent.map((x) => x.to)).toEqual(["session:nobody-here", "role:main-coordinator"]);
+    expect(r.not_sent[0]!.reason).toMatch(/no live session 'nobody-here'/);
+    expect(r.not_sent[1]!.reason).toMatch(/In the room/);
+    expect(JSON.parse(hub.getMessage(r.id)!.to_json)).toEqual(["session:shop-e9"]);
+    expect(refusal(() => hub.send(A, note(["session:nobody-here", "session:nor-this"], "x")))).toMatch(/nobody-here.*\n.*nor-this/);
+  });
 
-    hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper);
-    t += 25 * 3600_000;
-    hub.sweep();
-    hub.touch(helper);
-    expect(hub.roles(SHOP)[0]!.holder).toBeNull();
-
-    hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper);
-    t += 61 * 60_000;
-    hub.sweep();
-    hub.removeHumanFromProject("alice", SHOP);
-    hub.touch(helper);
-    expect(hub.roles(SHOP)[0]!.holder).toBeNull();
+  test("a thread named without re or to continues that conversation: a reply to its first message", () => {
+    hub.streamOpened(coord);
+    const first = hub.send(C(), note(["session:shop-e9"], "can you review the queue change?"));
+    const back = hub.send(H(), { project: SHOP, type: "answer", summary: "yes, on it", thread: first.id });
+    expect(back.delivered_to[0]).toMatch(/^role:.*main-coordinator/);
+    const got = hub.inbox(`role:${SHOP}/main-coordinator`).find((m) => m.id === back.id)!;
+    expect(got.re).toBe(first.id);
+    expect(got.thread).toBe(first.id);
   });
 
   test("agents create projects for their human, named <human>/<slug>", () => {
@@ -879,7 +892,7 @@ describe("ids and names", () => {
 
   test("a renamed project answers to its old and new name; stored messages are untouched", () => {
     hub.defineRole(SHOP, "r");
-    const m = hub.send(A, note(["role:shop/r"], "before the rename"));
+    const m = hub.send(A, { ...note(["role:shop/r"], "before the rename"), queue: true });
     const before = hub.getMessage(m.id);
     const deliveries = hub.inbox(`role:${SHOP}/r`);
     hub.renameProject(SHOP, "shop2");
@@ -890,8 +903,8 @@ describe("ids and names", () => {
     expect(hub.inbox(`role:${SHOP}/r`)).toEqual(deliveries);
     expect(shown(before!.project)).toBe("alice/shop2");
     // Both names address the role.
-    expect(hub.send(A, note(["role:shop/r"], "old name")).waiting_for_role).toEqual([`role:${SHOP}/r`]);
-    expect(hub.send(A, note(["role:alice/shop2/r"], "new name")).waiting_for_role).toEqual([`role:${SHOP}/r`]);
+    expect(hub.send(A, { ...note(["role:shop/r"], "old name"), queue: true }).waiting_for_role).toEqual([`role:${SHOP}/r`]);
+    expect(hub.send(A, { ...note(["role:alice/shop2/r"], "new name"), queue: true }).waiting_for_role).toEqual([`role:${SHOP}/r`]);
     expect(shown(`role:${SHOP}/r`)).toBe("role:alice/shop2/r");
     // A taken name is refused, renaming back works and keeps the second name too.
     expect(() => hub.renameProject(SHOP, "game")).toThrow("alice already has a project 'game'");
@@ -1022,7 +1035,7 @@ INSERT INTO events (at, actor, kind, project, data_json) VALUES
     "deliveries", "leases", "lease_waiters", "asks", "project_links", "kv", "events"];
   const dump = (db: Database) => Object.fromEntries(TABLES.map((tb) => [tb, db.query(`SELECT * FROM ${tb} ORDER BY rowid`).all()]));
 
-  test("a database from before lapsed holders gains the columns and keeps its roles", () => {
+  test("a database from 0.16.1 loses the lapsed-holder columns and keeps its roles", () => {
     const path = join(tmpdir(), `axos-lapsed-${process.pid}-${Date.now()}.db`);
     try {
       const db = openDb(path);
@@ -1030,10 +1043,11 @@ INSERT INTO events (at, actor, kind, project, data_json) VALUES
       h.addHuman("alice");
       const p = h.addProject("alice/shop");
       h.defineRole(p, "r");
-      db.exec("ALTER TABLE roles DROP COLUMN lapsed_at; ALTER TABLE roles DROP COLUMN lapsed_holder;");
+      db.exec("ALTER TABLE roles ADD COLUMN lapsed_holder TEXT; ALTER TABLE roles ADD COLUMN lapsed_at INTEGER;");
       db.close();
       const again = openDb(path);
-      expect(again.query("SELECT role, holder, lapsed_holder, lapsed_at FROM roles").all()).toEqual([{ role: "r", holder: null, lapsed_holder: null, lapsed_at: null }]);
+      expect((again.query("PRAGMA table_info(roles)").all() as { name: string }[]).map((c) => c.name)).not.toContain("lapsed_holder");
+      expect(again.query("SELECT role, holder FROM roles").all()).toEqual([{ role: "r", holder: null }]);
       again.close();
     } finally {
       for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
