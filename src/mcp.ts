@@ -168,7 +168,8 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       as_of: z.string().optional().describe("The state this is based on, e.g. a commit sha, so a reader can tell if it is stale"),
       priority: z.enum(PRIORITIES).optional().describe("low: wakes nobody, read at the recipient's next step (the default for a note or status to a whole project); high: a message to a human is pushed to their phone, use it rarely"),
       dedupe_key: z.string().optional().describe("Sending twice with the same key delivers once"),
-      queue: z.boolean().optional().describe("Send to a role even when nobody can read it now: it waits in the role's mailbox for the next holder"),
+      // A string too: a session whose cached schema predates the flag passes "true".
+      queue: z.union([z.boolean(), z.string()]).optional().describe("Send to a role even when nobody can read it now: it waits in the role's mailbox for the next holder"),
       as: asArg,
     }),
   }, tool(({ as, ...a }) => {
@@ -179,6 +180,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const r = hub.send({ ...actor, as }, {
       ...a, type: a.type ?? "note", summary, project: across ? conn.project! : project(a.project),
       to: a.to === undefined ? undefined : Array.isArray(a.to) ? a.to : [a.to],
+      queue: typeof a.queue === "string" ? /^(true|yes|1)$/i.test(a.queue.trim()) : a.queue,
     });
     if (r.duplicate) return `Already sent as message ${r.id}; not sent again.`;
     const parts = [`Sent message ${r.id} (${body ? `summary and a ${body.length}-character body` : "summary only, no body"}).`];

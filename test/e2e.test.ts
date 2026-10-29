@@ -492,7 +492,8 @@ test("a linked project shows in join and takes messages; the session's other too
   const nobody = await call(client, "send", { to: "role:tools/maintainer", type: "request", summary: "Please add a dry-run flag to the deploy." });
   expect(nobody.isError).toBe(true);
   expect(nobody.text).toContain("role 'maintainer' is held by nobody, so nobody would read this now. Roles held in alice/tools: none.");
-  expect((await call(client, "send", { to: "role:tools/maintainer", type: "request", summary: "Please add a dry-run flag to the deploy.", queue: true })).text)
+  // queue as a string too: a session whose cached schema predates the flag sends "true".
+  expect((await call(client, "send", { to: "role:tools/maintainer", type: "request", summary: "Please add a dry-run flag to the deploy.", queue: "true" })).text)
     .toContain("Held for role:alice/tools/maintainer until someone takes the role.");
   const presence = await call(client, "presence", { project: "tools" });
   expect(presence.isError).toBe(true);
