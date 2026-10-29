@@ -910,6 +910,68 @@ test("the stdio proxy outside Claude Code: a wrapper's fixed session id and AXOS
   }
 });
 
+// The stdio proxy's bell, as a Claude Code session sees it: a channel notification on stdout.
+async function proxyWithBell(wakes: "1" | "0", sessionId: string, name: string) {
+  const dir = mkdtempSync(join(tmpdir(), "axos-bell-"));
+  writeFileSync(join(dir, "token"), `${tokens.dev3}\n`);
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ url: base, token_file: join(dir, "token"), folders: [{ path: dir, project: "alice/shop" }] }));
+  const proxy = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), "mcp"], {
+    cwd: dir, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, AXOS_CONFIG: join(dir, "config.json"), CLAUDE_CODE_SESSION_ID: sessionId, CLAUDE_PROJECT_DIR: dir, AXOS_SESSION_NAME: name, AXOS_WAKES: wakes, AXOS_BELL_SETTLE_MS: "100" },
+  });
+  for (const m of [{ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } }, { jsonrpc: "2.0", method: "notifications/initialized" }]) {
+    proxy.stdin.write(`${JSON.stringify(m)}\n`);
+  }
+  proxy.stdin.flush();
+  const reader = proxy.stdout.getReader();
+  let buf = "";
+  const lines: { method?: string; params?: { content?: string } }[] = [];
+  // Reads stdout until a channel notification arrives or the time is up; returns its content.
+  const channel = async (ms: number): Promise<string | null> => {
+    const until = Date.now() + ms;
+    for (;;) {
+      const found = lines.find((l) => l.method === "notifications/claude/channel");
+      if (found) { lines.splice(lines.indexOf(found), 1); return found.params?.content ?? ""; }
+      if (Date.now() > until) return null;
+      const chunk = await Promise.race([reader.read(), Bun.sleep(200).then(() => null)]);
+      if (chunk && chunk.value) buf += new TextDecoder().decode(chunk.value);
+      let i: number;
+      while ((i = buf.indexOf("\n")) >= 0) { lines.push(JSON.parse(buf.slice(0, i))); buf = buf.slice(i + 1); }
+    }
+  };
+  return { proxy, channel, close: () => { proxy.kill(); rmSync(dir, { recursive: true, force: true }); } };
+}
+
+test("with the channel on, the wake-up carries the messages and the hooks do not repeat them; without it, a notice only", async () => {
+  const dev1 = await connect(tokens.dev1!);
+  const on = await proxyWithBell("1", "be11be11-shop", "shop-bell");
+  const off = await proxyWithBell("0", "0ff00ff0-shop", "shop-mute");
+  const unshown = (key: string) => hub.inbox([`session:${ids.dev3}#${key}`], { unshownOnly: true }).length;
+  try {
+    const live = async () => (await call(dev1, "presence", { project: "alice/shop" })).text;
+    for (let i = 0; i < 50 && !(/shop-bell.*wakes on messages/.test(await live()) && /shop-mute.*does not wake/.test(await live())); i++) await Bun.sleep(100);
+    expect(await live()).toMatch(/shop-bell.*wakes on messages/);
+    expect(await live()).toMatch(/shop-mute.*does not wake/);
+
+    await call(dev1, "send", { project: "alice/shop", to: ["session:shop-bell", "session:shop-mute"], type: "request", summary: "Please review the toolbar change.", body: "Branch toolbar-2." });
+    const carried = await on.channel(5000);
+    expect(carried).toContain("AXOS: 1 new message(s) for this session");
+    expect(carried).toContain("<axos-message ");
+    expect(carried).toContain("Please review the toolbar change.");
+    expect(carried).toContain("Branch toolbar-2.");
+    expect(unshown("be11be11")).toBe(0); // the hooks have nothing left to repeat
+    expect(hub.unreadCount(`session:${ids.dev3}#be11be11`)).toBe(1); // still to handle until acked
+
+    const notice = await off.channel(5000);
+    expect(notice).toBe("AXOS: a new message is waiting for this session. It is shown at your next step; or call inbox now.");
+    expect(unshown("0ff00ff0")).toBe(1); // nothing marked shown: the next hook delivers it
+  } finally {
+    on.close();
+    off.close();
+    await dev1.close();
+  }
+}, 20_000);
+
 test("ask_human images: the proxy uploads files inside the checkout only; the asked human's page shows them, nobody else's", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "axos-img-")));
   const outside = realpathSync(mkdtempSync(join(tmpdir(), "axos-secret-")));

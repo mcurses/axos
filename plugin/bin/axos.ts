@@ -493,15 +493,26 @@ function bell(): Promise<void> {
       return null;
     }
   };
+  // A ring wakes this session only if Claude Code was started with the AXOS channel (AXOS_WAKES=1|0 overrides the check).
+  const off = process.env.AXOS_WAKES === undefined ? wakeupOff() : process.env.AXOS_WAKES !== "1";
+  const channel = (content: string) => write({ jsonrpc: "2.0", method: "notifications/claude/channel", params: { content, meta: { source: "axos" } } });
   const notify = async () => {
     timer = null;
+    // With the channel on, the wake-up carries the messages themselves (the hub's hook rendering, marked shown there, so
+    // no hook repeats them): one turn, not a notice and then the message. Without it, or not knowing, only a notice:
+    // content that Claude Code drops would count as shown and never be seen.
+    if (off === false) {
+      const id = currentIdentity();
+      if (!id || id.quiet || !id.project) return;
+      try {
+        const r = await hookCall(id, "check");
+        if (r.context) channel(r.context);
+      } catch { /* hub away: the stream reconnects and rings again when it is back */ }
+      return;
+    }
     if ((await unshown()) === 0) return;
-    write({ jsonrpc: "2.0", method: "notifications/claude/channel", params: {
-      content: "AXOS: a new message is waiting for this session. It is shown at your next step; or call inbox now.", meta: { source: "axos" },
-    } });
+    channel("AXOS: a new message is waiting for this session. It is shown at your next step; or call inbox now.");
   };
-  // A ring wakes this session only if Claude Code was started with the AXOS channel.
-  const off = wakeupOff();
   return doorbell(to, () => {
     if (!timer) timer = setTimeout(() => void notify(), BELL_SETTLE_MS);
   }, off === null ? null : !off);

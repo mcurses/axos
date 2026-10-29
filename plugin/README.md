@@ -80,7 +80,8 @@ or `--re <id>`, `--type`, `--priority low|normal|high`, `--dedupe <key>`, `--pro
 ## Waking idle sessions
 
 Hooks deliver messages when a session starts, before each prompt, during long turns and when it is about to stop.
-To wake a session that sits idle, start it with the plugin's channel:
+To wake a session that sits idle, start it with the plugin's channel; the wake-up then carries the messages themselves,
+so reading them costs one turn, not a notice and then the message:
 
 ```bash
 claude --dangerously-load-development-channels plugin:axos@axos
