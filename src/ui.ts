@@ -126,7 +126,10 @@ function state(hub: Hub, human: string) {
     created_at: hub.getMessage(a.message_id)?.created_at ?? null, images: hub.askImages(a.id).map((i) => ({ id: i.id, name: i.name })),
   }));
   hub.asksSeen(human, asks.map((a) => a.id));
-  const inbox = hub.inbox(`human:${human}`, { limit: 50 }).filter((m) => m.type !== "ask").map((m) => ({
+  // Listed on the page is shown: the sender's receipt says so (asks have their own seen mark above).
+  const items = hub.inbox(`human:${human}`, { limit: 50 });
+  hub.markShown([`human:${human}`], items.map((m) => m.id));
+  const inbox = items.filter((m) => m.type !== "ask").map((m) => ({
     id: m.id, from: m.sender.startsWith("session:") ? hub.label(m.sender) : m.sender, sender_human: m.sender_human, project: m.project,
     type: m.type, priority: m.priority, created_at: m.created_at, summary: m.summary, body: m.body, re: m.re,
   }));

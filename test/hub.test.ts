@@ -116,6 +116,7 @@ describe("messages", () => {
   });
 
   test("project broadcast reaches every member except the sender", () => {
+    hub.touch(DEV3); hub.touch(SC); // agents that have connected lately; one that never did gets nothing (see 'mailboxes nobody reads')
     const r = hub.send(A, note(["project"], "release 0.4.36 is out", GAME));
     expect(r.delivered_to.map((x) => shown(x)).sort()).toEqual(["agent:alice/dev3", "agent:bob/claude"]);
   });
@@ -455,6 +456,7 @@ describe("role mailboxes", () => {
   });
 
   test("a broadcast sent as a role does not land in the sender's own inbox", () => {
+    hub.touch(DEV1);
     hub.send({ ...B, as: "main-coordinator" }, note(["project"], "staging is frozen until 18:00"));
     expect(hub.inbox(`agent:${DEV3}`)).toEqual([]);
     expect(hub.inbox(`agent:${DEV1}`).map((x) => shown(x.sender))).toEqual(["role:alice/shop/main-coordinator"]);
@@ -1039,7 +1041,7 @@ CREATE TABLE events (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, actor TEXT NOT
   const ROWS = `
 INSERT INTO humans VALUES ('alice', 'alice-topic', 'hk1', 1), ('bob', NULL, 'hk2', 2);
 INSERT INTO projects VALUES ('shop', 'The shop.', 10), ('workshop', 'Shared mod work.', 11);
-INSERT INTO agents VALUES ('alice/mac', 'alice', 'mac', 'th1', 0, 20, 100), ('bob/box', 'bob', 'box', 'th2', 0, 21, 101);
+INSERT INTO agents VALUES ('alice/mac', 'alice', 'mac', 'th1', 0, 20, 9999999999999), ('bob/box', 'bob', 'box', 'th2', 0, 21, 101);
 INSERT INTO memberships VALUES ('alice/mac', 'shop'), ('bob/box', 'workshop');
 INSERT INTO human_projects VALUES ('alice', 'shop'), ('alice', 'workshop'), ('bob', 'workshop');
 INSERT INTO roles VALUES ('shop', 'r', 'runs things', 'alice/mac#abcd1234', 30, 9999999999999), ('workshop', 'modder', '', 'bob/box', 31, 9999999999999),
@@ -1451,5 +1453,82 @@ describe("landings and subscriptions", () => {
     sub();
     expect(land({}, "admin").told).toBe(1);
     expect(mail(verifier)[0]!.body).toContain("reported by the hub's admin");
+  });
+});
+
+describe("mailboxes nobody reads", () => {
+  const DAY = 86_400_000;
+
+  test("a broadcast skips an agent that never connected and one gone for a week", () => {
+    hub.touch(DEV3);
+    t += 8 * DAY;
+    hub.touch(SC);
+    const r = hub.send(A, note(["project"], "release 0.4.36 is out", GAME));
+    expect(r.delivered_to.map((x) => shown(x))).toEqual(["agent:bob/claude"]);
+  });
+
+  test("direct mail to an agent that is not connecting is delivered, and the sender is told it waits", () => {
+    const r = hub.send(A, note([`agent:${DEV3}`], "ping"));
+    expect(shown(r.delivered_to[0]!)).toBe("agent:alice/dev3");
+    expect(shown(r.unattended.join(" "))).toContain("alice/dev3 has not connected yet");
+    hub.touch(DEV3);
+    expect(hub.send(A, note([`agent:${DEV3}`], "ping again")).unattended).toEqual([]);
+  });
+
+  test("mail to an agent that stays away for a week expires, with the outcome on the receipt", () => {
+    const id = hub.send(A, note([`agent:${DEV3}`], "ping")).id;
+    t += 6 * DAY;
+    hub.sweep();
+    expect(hub.inbox(`agent:${DEV3}`).length).toBe(1);
+    t += 2 * DAY;
+    hub.sweep();
+    expect(hub.inbox(`agent:${DEV3}`)).toEqual([]);
+    expect(hub.receipts(id)[0]).toMatchObject({ outcome: "expired" });
+    expect(hub.getMessage(id)).not.toBeNull();
+  });
+
+  test("mail to a session that ended a week ago expires; a session that ended yesterday keeps it", () => {
+    const s = hub.openSession(DEV3, { client_session: "11111111-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-11", profile: "dev3" });
+    hub.send(A, note([`session:${s}`], "for you"));
+    hub.endSession(s);
+    t += DAY;
+    hub.sweep();
+    expect(hub.inbox(`session:${s}`).length).toBe(1);
+    t += 7 * DAY;
+    hub.sweep();
+    expect(hub.inbox(`session:${s}`)).toEqual([]);
+  });
+
+  test("a revoked session-less agent leaves the lease queue and is never granted", () => {
+    hub.lease(DEV1, { project: GAME, resource: "server:main" });
+    expect(hub.lease(SC, { project: GAME, resource: "server:main" }).granted).toBe(false);
+    hub.revokeAgent(SC);
+    expect(hub.leases(GAME).waiting).toEqual([]);
+    hub.releaseLease(DEV1, GAME, "server:main");
+    expect(hub.leases(GAME).live).toEqual([]);
+  });
+
+  test("a session speaking as its only role can write to that role: a note its successor reads", () => {
+    hub.defineRole(SHOP, "main-coordinator");
+    const s = hub.openSession(DEV3, { client_session: "22222222-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-22", profile: "dev3" });
+    hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, s);
+    const r = hub.send({ kind: "agent", id: DEV3, human: "alice", session: s }, note(["role:main-coordinator"], "handing over: the queue is drained"));
+    expect(r.delivered_to[0]).toContain("role:");
+    expect(hub.inbox(`role:${SHOP}/main-coordinator`).map((m) => m.summary)).toEqual(["handing over: the queue is drained"]);
+  });
+
+  test("health says what reached a reader and where mail waits with nobody to read it", () => {
+    hub.touch(SC);
+    const seen = hub.send(A, note([`agent:${SC}`], "hello", GAME)).id;
+    t += 60_000;
+    hub.markShown([`agent:${SC}`], [seen]);
+    hub.send(A, note([`agent:${DEV3}`], "ping"));
+    const h = hub.health(t - DAY);
+    expect(h.messages).toBe(2);
+    expect(h.delivered.find((d) => d.kind === "agent")).toMatchObject({ n: 2, shown: 1, within_10m: 1, within_1h: 1, handled: 0, expired: 0 });
+    expect(h.unread_agents.map((a) => a.id)).toEqual([DEV3]);
+    expect(h.open.find((o) => o.kind === "agent")).toMatchObject({ n: 2 });
+    expect(h.stuck_sessions).toEqual([]);
+    expect(h.new.agents.length).toBe(3);
   });
 });

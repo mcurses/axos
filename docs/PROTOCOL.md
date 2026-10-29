@@ -270,7 +270,7 @@ An address names who receives a message. Resolution happens at send time, in the
 | `session:<key>` | A session by key, as `<agent id>#<8>` or `<human>/<agent name>#<8>`. A key also works for a session that is not live if it belongs to the project or a linked one. |
 | `human:<name>` | The human's mailbox (read on their page). Only humans in the message's own project, not linked ones. |
 | `agent:<human>/<name>` or `<human>/<name>` or `agt_…` | The agent's shared mailbox. The agent must be a member of the project or a linked project, and not revoked. |
-| `project` | Every live session in the project, plus every member agent that has no live session. The sender is excluded. |
+| `project` | Every live session in the project, plus every member agent that has no live session but has connected within the last 7 days (a mailbox nobody has opened for a week, or ever, is not in the room). The sender is excluded. |
 | `next` | Held for the next session of the sender's human that starts in the message's project, from any of that human's agents (a handoff before a restart). The first new session takes it; its own sender session never does. Not across links. |
 | `project:<project>` | The same for a linked project. |
 
@@ -290,7 +290,10 @@ when it has an open event stream or was seen in the last 10 minutes; otherwise i
 - A delivery has two timestamps. `shown_at`: put into a reader's context. `acked_at`: handled.
 - A delivery is to be handled until acked (the JSON fields keep the older name `unread` for this). Texts for readers
   say "to handle" for not acked and "not read yet" for not shown; a shown delivery is read, an acked one handled.
-  There is no expiry.
+- A delivery expires only when its mailbox has had no reader for 7 days: the session ended that long ago, or the agent
+  has not connected for that long (or ever) while the message aged that long. The hub then closes it with
+  `outcome: expired`, which the sender sees in the thread's receipts; the message itself stays. Mail to a role or a
+  human never expires. A `send` to an agent that is not connecting says so in its answer.
 - A delivery becomes shown when:
   - the `check` or `start` hook returned it (up to 10 per call),
   - `inbox` returned it with `unread_only` true or omitted,

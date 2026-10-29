@@ -4,6 +4,7 @@ import { newId } from "./db.ts";
 import { findSecret } from "./secrets.ts";
 import { nullNotifier, type Notifier, type PushAction } from "./notify.ts";
 import { ago } from "./render.ts";
+import { VERSION } from "./version.ts";
 
 // The hub's domain logic. Transport-free: the MCP layer, the HTTP UI and the CLI all call into this.
 // Time is milliseconds since epoch, injectable for tests.
@@ -552,6 +553,11 @@ export class Hub {
     for (const l of this.db.query("SELECT * FROM leases WHERE holder = ? AND ended_at IS NULL").all(agentId) as LeaseRow[]) {
       this.endLease(l, "revoked");
     }
+    // Its places in lease queues go too (its sessions' went with the sessions above), so it is never granted one later.
+    for (const w of this.db.query("SELECT id, project, resource FROM lease_waiters WHERE agent_id = ? AND done_at IS NULL").all(agentId) as { id: number; project: string; resource: string }[]) {
+      this.db.query("UPDATE lease_waiters SET done_at = ? WHERE id = ?").run(this.now(), w.id);
+      this.grantWaiters(w.project, w.resource);
+    }
     this.event("admin", "agent.revoked", null, { agent: agentId });
   }
 
@@ -589,6 +595,12 @@ export class Hub {
     if (this.streams.has(holder)) return true;
     const seen = this.lastSeen(holder);
     return seen !== null && this.now() - seen < this.onlineWindowMs;
+  }
+
+  // An agent without a session counts as reachable while it has connected within the liveness window.
+  agentReachable(agentId: string): boolean {
+    const seen = this.lastSeen(agentId);
+    return seen !== null && this.now() - seen < SESSION_LIVE_MS;
   }
 
   private lastSeen(holder: string): number | null {
@@ -1011,14 +1023,15 @@ export class Hub {
   // too; humans only in the message's own project.
   resolve(project: string, address: string, sender: string, senderHuman?: string): { recipient: string; via: string }[] {
     const a = address.trim();
-    // Every live session, and every member agent that has none (it reads its own mailbox when it next connects).
+    // Every live session, and every member agent that has none but has connected within the liveness window (it reads
+    // its own mailbox when it next connects). A mailbox nobody has read for a week, or ever, is not in the room.
     if (a === "project" || a.startsWith("project:")) {
       const p = a === "project" ? project : this.reach(project, a.slice(8), a);
       const live = this.liveSessions(p);
       const withSessions = new Set(live.map((x) => x.agent_id));
       return [
         ...live.map((x) => `session:${x.key}`),
-        ...this.projectAgents(p).filter((id) => !withSessions.has(id)).map((id) => `agent:${id}`),
+        ...this.projectAgents(p).filter((id) => !withSessions.has(id) && this.agentReachable(id)).map((id) => `agent:${id}`),
       ].map((recipient) => ({ recipient, via: `project:${p}` })).filter((r) => r.recipient !== sender);
     }
     if (a.startsWith("session:")) {
@@ -1173,7 +1186,9 @@ export class Hub {
         continue;
       }
       for (const r of found) {
-        const self = r.recipient === sender || (actor.kind === "agent" && r.via.startsWith("project:") &&
+        // One's own role is a mailbox the next holder reads too, so mail to it is kept (a note for a successor); oneself
+        // as a session or agent is dropped.
+        const self = (r.recipient === sender && !r.recipient.startsWith("role:")) || (actor.kind === "agent" && r.via.startsWith("project:") &&
           (r.recipient === `agent:${actor.id}` || r.recipient === `session:${actor.session}`));
         if (!self && !recipients.has(r.recipient)) recipients.set(r.recipient, r.via);
       }
@@ -1219,13 +1234,18 @@ export class Hub {
     // who else is in the room, so it can also turn to someone who is there.
     const unattended = [...recipients.keys()].filter((r) => r.startsWith("role:") && !(this.roleHolder(r) && this.isOnline(this.roleHolder(r)!)))
       .map((r) => this.room(input.project, r, human, actor.kind === "agent" ? actor.session ?? actor.id : ""));
+    // An agent's mailbox nobody has opened lately: the mail waits, and the sender knows it may wait for good.
+    const stale = [...recipients.keys()].filter((r) => r.startsWith("agent:") && !this.agentReachable(r.slice(6))).map((r) => {
+      const seen = this.lastSeen(r.slice(6));
+      return `${this.label(r)} has not connected ${seen === null ? "yet" : `since ${when(seen)}`}: the message waits in its mailbox and expires unread after 7 days.`;
+    });
     return {
       id,
       duplicate: false,
       delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => r.startsWith("role:") ? `${r} (held by ${holderText(r)})` : r),
       waiting_for_role: [...recipients.keys()].filter(vacant),
       not_sent: notSent,
-      unattended,
+      unattended: [...unattended, ...stale],
     };
   }
 
@@ -1915,6 +1935,19 @@ export class Hub {
     for (const l of this.db.query("SELECT * FROM leases WHERE ended_at IS NULL AND expires_at < ?").all(t) as LeaseRow[]) {
       this.endLease(l, "expired");
     }
+    // Mail nobody will read: a session that ended a week ago, or an agent that has not connected for a week (or ever)
+    // while the message aged that long. The delivery closes with the outcome 'expired', which the sender sees in the
+    // thread's receipts; nothing is deleted, and presence stops counting it as "to handle".
+    const gone = t - SESSION_LIVE_MS;
+    const expired = this.db.query(
+      `UPDATE deliveries SET acked_at = ?1, outcome = 'expired', note = 'no reader for 7 days: the session ended'
+        WHERE acked_at IS NULL AND recipient IN (SELECT 'session:' || key FROM sessions WHERE ended_at IS NOT NULL AND ended_at < ?2)`,
+    ).run(t, gone).changes + this.db.query(
+      `UPDATE deliveries SET acked_at = ?1, outcome = 'expired', note = 'no reader for 7 days: the agent has not connected'
+        WHERE acked_at IS NULL AND message_id IN (SELECT id FROM messages WHERE created_at < ?2)
+          AND recipient IN (SELECT 'agent:' || id FROM agents WHERE last_seen IS NULL OR last_seen < ?2)`,
+    ).run(t, gone).changes;
+    if (expired) this.event("axos", "delivery.expired", null, { n: expired });
     for (const x of this.db.query("SELECT * FROM subscriptions WHERE ended_at IS NULL AND expires_at < ?").all(t) as SubscriptionRow[]) {
       this.db.query("UPDATE subscriptions SET ended_at = ?, end_reason = 'expired' WHERE id = ?").run(t, x.id);
       const span = x.expires_at - x.created_at;
@@ -1957,6 +1990,65 @@ export class Hub {
         this.notifier.remove(topic, askSequence(a.id)).catch((e) => this.event("axos", "push.remove_failed", null, { human: a.human, error: String(e) }));
       }
     }
+  }
+
+  // ---------------------------------------------------------------- health
+
+  // The product's own measure: did messages reach a reader, and where does mail wait with nobody to read it. The owner
+  // reads it (`axos health`), every brief cites it, and the owner's tick wakes a session on it. Window: since `since`.
+  health(since: number) {
+    this.sweep();
+    const t = this.now();
+    const all = <T>(sql: string, ...args: (string | number)[]) => this.db.query(sql).all(...args) as T[];
+    const one = <T>(sql: string, ...args: (string | number)[]) => this.db.query(sql).get(...args) as T;
+    const kinds = ["session", "agent", "role", "human"] as const;
+    type Reach = { n: number; within_10m: number; within_1h: number; shown: number; handled: number; expired: number };
+    const delivered = kinds.map((kind) => ({ kind, ...one<Reach>(
+      `SELECT COUNT(*) AS n,
+              COALESCE(SUM(d.shown_at IS NOT NULL AND d.shown_at - m.created_at <= 600000), 0) AS within_10m,
+              COALESCE(SUM(d.shown_at IS NOT NULL AND d.shown_at - m.created_at <= 3600000), 0) AS within_1h,
+              COALESCE(SUM(d.shown_at IS NOT NULL), 0) AS shown,
+              COALESCE(SUM(d.acked_at IS NOT NULL AND COALESCE(d.outcome, '') <> 'expired'), 0) AS handled,
+              COALESCE(SUM(COALESCE(d.outcome, '') = 'expired'), 0) AS expired
+         FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE m.created_at >= ? AND d.recipient LIKE ?`, since, `${kind}:%`) }));
+    const open = kinds.map((kind) => ({ kind, ...one<{ n: number; oldest: number | null }>(
+      `SELECT COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d JOIN messages m ON m.id = d.message_id
+        WHERE d.acked_at IS NULL AND d.recipient LIKE ?`, `${kind}:%`) }));
+    // Live sessions that have had mail they were not shown for over an hour: the hooks or the channel are not reaching them.
+    const stuck_sessions = all<{ key: string; name: string | null; project: string; n: number; oldest: number }>(
+      `SELECT s.key, s.name, s.project, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d
+         JOIN messages m ON m.id = d.message_id JOIN sessions s ON 'session:' || s.key = d.recipient
+        WHERE d.acked_at IS NULL AND d.shown_at IS NULL AND s.ended_at IS NULL AND m.created_at < ? GROUP BY s.key ORDER BY oldest`, t - 3_600_000)
+      .map((s) => ({ ...s, label: this.label(`session:${s.key}`) }));
+    // Agents' mailboxes with mail and no reader lately (the mail expires after a week).
+    const unread_agents = all<{ id: string; human: string; name: string; last_seen: number | null; n: number; oldest: number }>(
+      `SELECT a.id, a.human, a.name, a.last_seen, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d
+         JOIN messages m ON m.id = d.message_id JOIN agents a ON 'agent:' || a.id = d.recipient
+        WHERE d.acked_at IS NULL AND (a.last_seen IS NULL OR a.last_seen < ?) GROUP BY a.id ORDER BY n DESC`, t - SESSION_LIVE_MS);
+    // Roles with mail whose holder is nobody or away.
+    const unread_roles = all<{ project: string; role: string; holder: string | null; n: number; oldest: number }>(
+      `SELECT r.project, r.role, r.holder, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM roles r
+         JOIN deliveries d ON d.recipient = 'role:' || r.project || '/' || r.role JOIN messages m ON m.id = d.message_id
+        WHERE d.acked_at IS NULL GROUP BY r.project, r.role ORDER BY oldest`)
+      .filter((r) => !r.holder || !this.isOnline(r.holder))
+      .map((r) => ({ ...r, state: r.holder ? `held by ${this.label(r.holder)}, ${this.whereabouts(r.holder)}` : "held by nobody" }));
+    // Humans with high-priority mail unhandled on their page for over a day.
+    const unread_humans = all<{ human: string; n: number; oldest: number }>(
+      `SELECT substr(d.recipient, 7) AS human, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d JOIN messages m ON m.id = d.message_id
+        WHERE d.recipient LIKE 'human:%' AND d.acked_at IS NULL AND m.priority = 'high' AND m.created_at < ? GROUP BY 1`, t - 86_400_000);
+    const count = (kind: string) => one<{ n: number }>("SELECT COUNT(*) AS n FROM events WHERE kind = ? AND at >= ?", kind, since).n;
+    const names = (kind: string, field: string) => all<{ data_json: string }>("SELECT data_json FROM events WHERE kind = ? AND at >= ?", kind, since)
+      .map((e) => String((JSON.parse(e.data_json) as Record<string, unknown>)[field] ?? "")).filter(Boolean);
+    return {
+      version: VERSION, now: t, since,
+      messages: one<{ n: number }>("SELECT COUNT(*) AS n FROM messages WHERE created_at >= ?", since).n,
+      delivered, open, stuck_sessions, unread_agents, unread_roles, unread_humans,
+      pushes: { sent: count("push.sent"), failed: count("push.failed") },
+      expired_since: count("delivery.expired") ? one<{ n: number }>("SELECT COALESCE(SUM(json_extract(data_json, '$.n')), 0) AS n FROM events WHERE kind = 'delivery.expired' AND at >= ?", since).n : 0,
+      new: { humans: names("human.added", "name").length ? names("human.added", "name") : all<{ actor: string }>("SELECT actor FROM events WHERE kind = 'human.added' AND at >= ?", since).map((e) => e.actor.replace(/^human:/, "")),
+             projects: [...names("project.added", "project"), ...names("project.created", "project")], agents: names("agent.added", "label") },
+      live_sessions: one<{ n: number }>("SELECT COUNT(*) AS n FROM sessions WHERE ended_at IS NULL AND kind = 'session' AND last_seen > ?", t - SESSION_LIVE_MS).n,
+    };
   }
 
   // ---------------------------------------------------------------- audit

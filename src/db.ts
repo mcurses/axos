@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
   via           TEXT NOT NULL,                 -- the address that matched
   acked_at      INTEGER,
   shown_at      INTEGER,                       -- put into a session's context by a hook
-  outcome       TEXT,                          -- what the reader said when acking: done | declined | forwarded | noted
+  outcome       TEXT,                          -- what the reader said when acking: done | declined | forwarded | noted; or 'expired', set by the hub
   note          TEXT,                          -- and its one line about it, e.g. 'forwarded to lane 3'
   PRIMARY KEY (message_id, recipient)
 );

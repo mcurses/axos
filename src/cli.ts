@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { openDb } from "./db.ts";
 import { AxosError, Hub, iso } from "./hub.ts";
+import { ago } from "./render.ts";
 
 // Admin CLI. Runs on the hub host against the same database file (AXOS_DB); installed as /usr/local/bin/axos (deploy/systemd/axos).
 // Tokens and UI keys are printed once and stored only as hashes.
@@ -34,6 +35,8 @@ const USAGE = `axos — hub admin
                                                  report a landing (from a git server's post-receive hook): every
                                                  subscription waiting for these commits on <branch> is told
   axos events [--since <id>]                     audit log as JSON lines
+  axos health [--since <date>] [--json]          did messages reach a reader, and where mail waits with nobody to
+                                                 read it (default: the last 7 days)
 
 A project is '<owner>/<name>', its bare name when that is unambiguous, or its id (prj_…).
 Environment: AXOS_DB (default axos.db), AXOS_PUBLIC_URL (for the links it prints)`;
@@ -97,6 +100,35 @@ The join link works once and expires in 24 hours; axos invite --human ${name} ma
     if (!verb) throw new AxosError("usage: axos backup <file>");
     hub.db.query("VACUUM INTO ?").run(verb);
     console.log(`backed up to ${verb}`);
+    return;
+  }
+
+  if (noun === "health") {
+    const args = [verb, ...rest].filter((x): x is string => x !== undefined);
+    const json = args.includes("--json");
+    const sinceArg = flag(args, "--since");
+    const since = sinceArg ? Date.parse(sinceArg) : Date.now() - 7 * 86_400_000;
+    if (Number.isNaN(since)) throw new AxosError("usage: axos health [--since <YYYY-MM-DD>] [--json]");
+    const h = hub.health(since);
+    if (json) { console.log(hub.display(JSON.stringify(h, null, 2))); return; }
+    const pct = (a: number, b: number) => b ? `${Math.round((a / b) * 100)} %` : "–";
+    const age = (ms: number | null) => ms === null ? "" : `, oldest ${ago(ms, h.now).replace(/ ago$/, "")}`;
+    const lines = [
+      `AXOS health, hub ${h.version}, since ${iso(h.since)}: ${h.messages} message(s) sent, ${h.live_sessions} live session(s).`,
+      "Reached a reader (shown) / handled, by mailbox kind:",
+      ...h.delivered.map((d) => `  ${d.kind.padEnd(8)} ${String(d.n).padStart(4)} delivered; shown ${d.shown} (${pct(d.shown, d.n)}), within 10 min ${d.within_10m}, within 1 h ${d.within_1h}; handled ${d.handled}; expired ${d.expired}`),
+      `Waiting now: ${h.open.map((o) => `${o.kind} ${o.n}${age(o.oldest)}`).join("; ")}.`,
+    ];
+    const nobody = [
+      ...h.stuck_sessions.map((s) => `live session ${s.label} has ${s.n} message(s) not shown for over an hour${age(s.oldest)}`),
+      ...h.unread_agents.map((a) => `agent ${a.human}/${a.name} has ${a.n} unread and has ${a.last_seen === null ? "never connected" : `not connected since ${iso(a.last_seen)}`}`),
+      ...h.unread_roles.map((r) => `role ${r.project}/${r.role} has ${r.n} unread, ${r.state}${age(r.oldest)}`),
+      ...h.unread_humans.map((u) => `${u.human} has ${u.n} high-priority message(s) unhandled on the page for over a day`),
+    ];
+    lines.push(nobody.length ? `Nobody reading (${nobody.length}):` : "Nobody reading: nothing.", ...nobody.map((x) => `  - ${x}`));
+    lines.push(`Phone: ${h.pushes.sent} push(es) sent, ${h.pushes.failed} failed. Expired unread in the window: ${h.expired_since}.`);
+    lines.push(`New in the window: humans ${h.new.humans.join(", ") || "none"}; projects ${h.new.projects.join(", ") || "none"}; agents ${h.new.agents.join(", ") || "none"}.`);
+    out(lines.join("\n"));
     return;
   }
 
