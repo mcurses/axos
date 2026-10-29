@@ -9,6 +9,8 @@ export interface PushAction {
 export interface Notifier {
   // sequence: pushes with the same one replace each other on the phone (a question, then its "answered" notice).
   push(topic: string, msg: { title: string; body: string; clickUrl?: string; priority?: "low" | "default" | "high"; actions?: PushAction[]; sequence?: string }): Promise<void>;
+  // Takes the notification with this sequence off the phone and out of the app's list.
+  remove(topic: string, sequence: string): Promise<void>;
 }
 
 // JSON publishing: UTF-8 titles without header encoding, and up to three answer buttons.
@@ -32,7 +34,13 @@ export function ntfyNotifier(baseUrl: string, token?: string): Notifier {
       const res = await fetch(baseUrl.replace(/\/$/, ""), { method: "POST", headers, body: JSON.stringify(payload) });
       if (!res.ok) throw new Error(`ntfy ${res.status}`);
     },
+    async remove(topic, sequence) {
+      const res = await fetch(`${baseUrl.replace(/\/$/, "")}/${encodeURIComponent(topic)}/${encodeURIComponent(sequence)}`, {
+        method: "DELETE", headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error(`ntfy ${res.status}`);
+    },
   };
 }
 
-export const nullNotifier: Notifier = { async push() {} };
+export const nullNotifier: Notifier = { async push() {}, async remove() {} };

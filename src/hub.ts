@@ -97,6 +97,7 @@ export interface AskRow {
   answer: string | null;
   answered_by: string | null;
   answered_at: number | null;
+  phone_cleared_at: number | null;
 }
 
 export interface SubscriptionRow {
@@ -155,6 +156,7 @@ const MAX_IMAGES = 4; // per question
 const MAX_UNCLAIMED = 8; // uploads per agent not yet on a question
 const IMAGES_KEPT_MS = 30 * 86_400_000;
 const UNCLAIMED_KEPT_MS = 3_600_000;
+const ANSWERED_ON_PHONE_MS = 86_400_000;
 const MAX_WAIT_S = 240;
 const MAX_LEASE_TTL_S = 86_400;
 const MAX_SUBSCRIPTION_TTL_S = 30 * 86_400;
@@ -1724,6 +1726,14 @@ export class Hub {
         `Question: ${a.question}`, "high", a.message_id);
       this.event("axos", "ask.defaulted", a.project, { ask: a.id });
       this.settledOnPhone(a, `Not answered in time: ${a.default_answer}`, `The default went to ${this.senderTitle(addr(a.asker))}.`, a.message_id);
+    }
+    // A settled question's "Answered" notice stays on the phone for a day, then goes.
+    for (const a of this.db.query("SELECT id, human FROM asks WHERE answered_at < ? AND phone_cleared_at IS NULL").all(t - ANSWERED_ON_PHONE_MS) as { id: number; human: string }[]) {
+      this.db.query("UPDATE asks SET phone_cleared_at = ? WHERE id = ?").run(t, a.id);
+      const topic = this.ntfyTopic(a.human);
+      if (topic) {
+        this.notifier.remove(topic, askSequence(a.id)).catch((e) => this.event("axos", "push.remove_failed", null, { human: a.human, error: String(e) }));
+      }
     }
   }
 

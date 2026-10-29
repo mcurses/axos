@@ -498,6 +498,8 @@ HMAC-SHA256 of `ask:<id>` with the hub's link secret.
   button or page, or its default applied at the deadline) the hub publishes a quiet push with the same id, without
   buttons: "Answered: <answer>" or "Not answered in time: <default>". An ntfy server and app that know sequence ids
   replace the question with it; older ones show it as a second notification.
+- A day after the question was settled, the hub deletes that notification (`DELETE /<topic>/axos-ask-<ask id>`), so
+  it leaves the phone and the app's list. Open questions stay until they are settled.
 - Links are only created when the hub knows its public URL.
 
 ## Health

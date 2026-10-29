@@ -140,7 +140,8 @@ CREATE TABLE IF NOT EXISTS asks (
   message_id    INTEGER NOT NULL,
   answer        TEXT,
   answered_by   TEXT,
-  answered_at   INTEGER
+  answered_at   INTEGER,
+  phone_cleared_at INTEGER                     -- its notification deleted from the phone, a day after it was settled
 );
 CREATE TABLE IF NOT EXISTS attachments (     -- images shown with a question on the human's page; kept 30 days
   id            INTEGER PRIMARY KEY,
@@ -250,6 +251,8 @@ function migrate(db: Database): void {
   const sessions = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get() as { sql: string } | null;
   if (sessions && !sessions.sql.includes("framed_at")) db.exec("ALTER TABLE sessions ADD COLUMN framed_at INTEGER");
   if (sessions && !sessions.sql.includes("former_names")) db.exec("ALTER TABLE sessions ADD COLUMN former_names TEXT NOT NULL DEFAULT ''");
+  const asks = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'asks'").get() as { sql: string } | null;
+  if (asks && !asks.sql.includes("phone_cleared_at")) db.exec("ALTER TABLE asks ADD COLUMN phone_cleared_at INTEGER");
   migrateToIds(db);
 }
 

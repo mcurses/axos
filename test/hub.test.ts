@@ -10,6 +10,7 @@ import { ntfyNotifier, type Notifier } from "../src/notify.ts";
 let t: number;
 let hub: Hub;
 let pushes: { topic: string; title: string; body: string; sequence?: string; priority?: string; actions?: number }[];
+let removed: string[];
 // Projects and agents by id, as the hub returns them. Names are labels: alice/shop, alice/dev1.
 let SHOP: string, GAME: string;
 let DEV1: string, DEV3: string, SC: string;
@@ -19,8 +20,10 @@ let A: AgentActor, B: AgentActor, S: AgentActor;
 beforeEach(() => {
   t = Date.parse("2026-10-25T12:00:00Z");
   pushes = [];
+  removed = [];
   const notifier: Notifier = {
     async push(topic, m) { pushes.push({ topic, title: m.title, body: m.body, sequence: m.sequence, priority: m.priority, actions: m.actions?.length }); },
+    async remove(topic, sequence) { removed.push(`${topic} ${sequence}`); },
   };
   hub = new Hub(openDb(":memory:"), { now: () => t, notifier, publicUrl: "https://axos.example", roleTtlS: 3600 });
   hub.addHuman("alice", "alice-topic");
@@ -587,17 +590,22 @@ describe("answer buttons", () => {
 
   test("ntfy gets the sequence id, a quiet priority and the buttons as http actions", async () => {
     const got: unknown[] = [];
-    const server = Bun.serve({ port: 0, async fetch(req) { got.push(await req.json()); return new Response("{}"); } });
+    const server = Bun.serve({ port: 0, async fetch(req) {
+      got.push(req.method === "DELETE" ? `DELETE ${new URL(req.url).pathname}` : await req.json());
+      return new Response("{}");
+    } });
     try {
       const n = ntfyNotifier(`http://127.0.0.1:${server.port}/`);
       await n.push("t", { title: "Q", body: "b", priority: "high", sequence: "axos-ask-7", actions: [{ label: "yes", url: "https://h/a/7/s", body: "yes" }] });
       await n.push("t", { title: "Answered: yes", body: "b", priority: "low", sequence: "axos-ask-7", actions: [] });
+      await n.remove("t", "axos-ask-7");
     } finally {
       server.stop(true);
     }
     expect(got[0]).toMatchObject({ topic: "t", priority: 4, sequence_id: "axos-ask-7", actions: [{ action: "http", method: "POST", url: "https://h/a/7/s", body: "yes" }] });
     expect(got[1]).toMatchObject({ priority: 2, sequence_id: "axos-ask-7" });
     expect(got[1]).not.toHaveProperty("actions");
+    expect(got[2]).toBe("DELETE /t/axos-ask-7");
   });
 
   test("a settled question replaces its notification; tapping the same answer again is no error", async () => {
@@ -618,6 +626,20 @@ describe("answer buttons", () => {
     hub.sweep();
     await Bun.sleep(0);
     expect(pushes.at(-1)).toMatchObject({ sequence: `axos-ask-${late.ask_id}`, title: "Not answered in time: no", body: "The default went to alice/dev1.\nMerge?" });
+  });
+
+  test("a day after it was settled, a question's notification is deleted from the phone, once; open ones stay", () => {
+    const answered = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "A?", options: ["yes"] });
+    const open = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "B?", options: ["yes"] });
+    hub.answerAsk("alice", answered.ask_id, "yes");
+    t += 23 * 3_600_000;
+    hub.sweep();
+    expect(removed).toEqual([]);
+    t += 2 * 3_600_000;
+    hub.sweep();
+    hub.sweep();
+    expect(removed).toEqual([`alice-topic axos-ask-${answered.ask_id}`]);
+    expect(hub.asks({ human: "alice", open: true }).map((a) => a.id)).toEqual([open.ask_id]);
   });
 });
 
@@ -932,6 +954,7 @@ INSERT INTO events (at, actor, kind, project, data_json) VALUES
       expect(db.query("SELECT former_names FROM sessions").all()).toEqual([{ former_names: "" }]);
       expect(db.query("SELECT outcome FROM deliveries LIMIT 1").all()).toEqual([{ outcome: null }]);
       expect(db.query("SELECT COUNT(*) AS n FROM attachments").get()).toEqual({ n: 0 });
+      expect(db.query("SELECT phone_cleared_at FROM asks").all()).toBeArray();
       expect(db.query("SELECT id, project, sender, to_json FROM messages ORDER BY id").all()).toEqual([
         { id: 1, project: E, sender: `session:${M}#abcd1234`, to_json: '["role:shop/r"]' },
         { id: 2, project: F, sender: `agent:${X}`, to_json: '["agent:alice/mac"]' },
