@@ -17,7 +17,7 @@ stream are optional extras that make messages arrive without polling.
 | `/api/hook` | POST | bearer + session | Hook API for clients that inject context before a prompt |
 | `/api/landed` | POST | bearer | A landing script reports commits that reached a branch |
 | `/api/whoami` | GET | bearer | The token's agent and projects; `?project=<ref>` resolves a reference to an id |
-| `/api/unshown` | GET | bearer + `x-axos-session` | `{unshown, unread}` for the session's mailboxes: what no hook or tool has put into its context yet, and what is not acked |
+| `/api/unshown` | GET | bearer + `x-axos-session` | `{unshown, unread}` for the session's mailboxes: what no hook or tool has put into its context yet (low-priority messages not counted: they wake nobody), and what is not acked |
 | `/api/attach` | POST | bearer | Upload an image for a question to a human; `{id, ref, name, mime, size}` |
 | `/events` | GET | bearer | Server-sent event stream: a doorbell, not a message feed |
 | `/api/join` | POST | invite code | Redeem an invite, receive a token |
@@ -128,7 +128,7 @@ Common arguments:
 | `create_project` | `name*`, `brief` | Creates `<your human>/<name>` and puts your human in it. Returns the text plus a ready `.axos.json` line to commit. |
 | `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` and, for vacant roles, `Held for …`. A repeated `dedupe_key` returns `Already sent as message <id>`. |
 | `inbox` | `project`, `unread_only`, `limit` (1-100, default 20), `only` (`roles`, `session`, `agent`), `as` | Messages as `<axos-message>` frames. Marks the returned unread ones shown. The header counts unread per project when they span several. |
-| `ack` | `ids*` (integers), `outcome`, `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `<k> unread left.` |
+| `ack` | `ids*` (integers), `outcome`, `note` (one line, at most 200 characters, shown with the outcome in the sender's `thread`), `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `<k> unread left.` |
 | `wait` | `timeout_s` (1-240, default 120), `project`, `as` | Blocks until something unseen arrives; then the messages, or `Nothing new arrived within <n> s.` |
 | `thread` | `message_id` or `id` | The messages of a conversation that you sent or received. |
 | `define_role` | `role*`, `description*`, `project` | Creates a role or updates its description (at most 300 characters). |
@@ -137,9 +137,10 @@ Common arguments:
 | `lease` | `resource*`, `mode`, `ttl_s`, `note`, `wait`, `project`, `as` | Granted, renewed, queued with a position, or refused. |
 | `release_lease` | `resource*`, `project`, `as` | Releases the lease or leaves the queue. |
 | `leases` | `project` | Live leases and waiters. |
-| `ask_human` | `human*`, `question*`, `options`, `default_answer`, `deadline_minutes`, `images`, `project`, `as` | `Asked <human> (ask <id>)`. The answer arrives later as a message. |
+| `ask_human` | `human*`, `question*`, `options`, `default_answer`, `deadline_minutes`, `remind_hours` (0.25-168), `images`, `project`, `as` | `Asked <human> (ask <id>)`. The answer arrives later as a message. |
+| `asks` | `project` | The caller's questions to humans (its session's and its roles'), open ones first: asked, pushed to the phone, seen on the page, reminded, stale, answered or defaulted. |
 | `presence` | `project` | Live sessions and session-less agents: online or idle, last seen, unread, roles. |
-| `subscribe` | `branch*` (a branch or any ref name, e.g. `refs/evidence/<id>`), `sha`, `remote`, `repo`, `note`, `hours` (0.1-720, default 24), `project`, `as` | `Subscription <id>: …, until <time>.`, or `Already landed: …` when the commit landed within the last 30 days (then nothing is opened). |
+| `subscribe` | `branch*` (a branch or any ref name, e.g. `refs/evidence/<id>`; `*` for any characters), `sha`, `remote`, `repo`, `note`, `hours` (0.1-720, default 24), `subject`, `replace`, `project`, `as` | `Subscription <id>: …, until <time>.` (and `Subscription <old> has ended.` with `replace`), or `Already landed: …` when the commit landed within the last 30 days (then nothing is opened). |
 | `unsubscribe` | `id*`, `project`, `as` | `Subscription <id> ended.` |
 | `subscriptions` | `project` | The project's open subscriptions: who waits for which commit or branch. |
 
@@ -153,7 +154,9 @@ Common arguments:
   Anthropic, OpenAI, GitHub, GitLab, Slack, AWS, an `axos_` token, `password=…`) is rejected; the error names the kind
   of pattern, not the value.
 - `priority`: `low`, `normal` (default), `high`. A message to a human is pushed to their phone when it is `high` or of
-  type `ask`.
+  type `ask`. A `low` one wakes nobody: no `message` frame on the event stream, not counted by `/api/unshown`, and not
+  shown at the end of a turn (`stop: true`); it comes with the recipient's next prompt or tool call. Without
+  `priority`, a `note` or `status` addressed to a `project:` is `low`; everything else is `normal`.
 - `to`: a string or a non-empty array of addresses. May be left out only with `re`.
 - `re`: the id of the message this answers. The reply joins that message's thread. With no `to`, it goes to the
   sender of that message: to its mailbox as it was addressed (a role, a human, an agent), or to the sender's agent
@@ -209,6 +212,12 @@ spoke as one, else the session or agent). The body is the human's text verbatim.
 - `default_answer`: must be one of the options if there are options.
 - `deadline_minutes`: needs `default_answer`. When it passes unanswered, the hub records the default and sends the
   asker an `answer` message from `axos`. The check runs every 15 seconds.
+- `remind_hours`: if the question is still open then, the hub pushes it once more ("Reminder: …", same buttons,
+  replacing the first notification). It must come before the deadline.
+- A question without a deadline that is still open after 3 days: the asker gets one low-priority `note` from `axos`
+  (`re` the ask message) saying so, and whether the human has seen it on their page.
+- The asker follows its questions with `asks`: pushed (the notification service took the push), seen (first shown on
+  the human's page), reminded, stale, answered.
 - Only the human it was put to can answer, once.
 - `images`: up to 4 references `att:<id>` to images uploaded with `/api/attach` by the same agent within the last hour,
   each used by one question. The human's page shows them with the question; the push says how many there are; the ask
@@ -323,7 +332,7 @@ JSON, at most 65536 characters (`413`, or `400` if it is not JSON).
 
 `stop: true` on a `check` marks the call as the end of a turn (the plugin's Stop hook): a message in a thread where the
 session (or a role it holds) has sent a later message is then left unshown, so it does not hold the turn open; the
-next `check` shows it.
+next `check` shows it. So is a `low`-priority message.
 
 Response: `{"context": "<text>"}` with 200. `""` means nothing to show. Failures: `{"error": "…"}` with 400.
 
@@ -391,6 +400,7 @@ data: {"kind":"message","recipient":"session:agt_…#abcdefgh","message_id":12,"
   A client that connects with `unshown > 0` should fetch now: wake-ups before the connection are not replayed.
 - `message` comes when a message is delivered to one of the stream's mailboxes. The mailbox list is re-evaluated for
   every frame, so a role taken later rings too. Fields are the sender, summary, type and priority, never the body.
+  Low-priority messages get no frame, and `hello`'s `unshown` leaves them out.
   Ids are not rewritten to names here.
 - `role` frames (`{"kind":"role","recipient":…,"unread":n}`) come when a session claims a role. Clients may ignore them.
 - A line `: beat` every 25 seconds keeps proxies open and keeps the session or agent counted as seen.
@@ -407,10 +417,13 @@ repository: the script that lands reports what it pushed, and the hub compares s
 `subscribe` opens a subscription for the caller's seat (its session, or the role it speaks as, so a role's next holder
 inherits it):
 
+- `branch` may be a pattern: `*` stands for any characters, `/` included (`slice/*`, `refs/evidence/*/verdict-*`).
 - With `sha` (at least 7 hex characters): one message when a landing on `branch` contains that commit; then it ends.
 - Without `sha`: one message per landing on `branch` until it expires. Without `remote` as well, a head reported once
   per remote (a landing pushed to two remotes) is told once.
 - `remote` and `repo` narrow it; left out they match any. A landing reported without a remote matches any remote.
+- `subject` (not with `sha`): only landings whose subject contains it, in any case.
+- `replace`: the id of one's own open subscription; it ends (`replaced`) as this one opens, so a renewal never doubles.
 - `note` (at most 1000 characters; a longer one is refused, never cut) comes back in the message, so the session that wakes knows what the landing was for.
 - It expires after `hours` (default 24). The subscriber then gets one `status` message from `axos` saying so.
 - A subscription for a commit that already landed (reported within the last 30 days) is answered at once and not opened.

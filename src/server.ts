@@ -82,9 +82,11 @@ function handleEvents(hub: Hub, req: Request, agent: AgentRow, conn: Connection)
         try { controller.enqueue(enc.encode(s)); } catch { cleanup(); }
       };
       hub.streamOpened(who);
-      write(`event: hello\ndata: ${JSON.stringify({ protocol: PROTOCOL, agent: agent.id, session: conn.session ?? null, mailboxes: mailboxes().map((b) => hub.boxKey(b)), unread: hub.unreadCount(mailboxes()), unshown: hub.unshownCount(mailboxes()) })}\n\n`);
+      write(`event: hello\ndata: ${JSON.stringify({ protocol: PROTOCOL, agent: agent.id, session: conn.session ?? null, mailboxes: mailboxes().map((b) => hub.boxKey(b)), unread: hub.unreadCount(mailboxes()), unshown: hub.unshownCount(mailboxes(), true) })}\n\n`);
       const unsubscribe = hub.subscribe("*", (e) => {
         if (!hub.boxSees(mailboxes(), e)) return;
+        // A low-priority message rings no bell: the session reads it at its next step.
+        if (e.kind === "message" && e.priority === "low") return;
         write(`event: ${e.kind}\ndata: ${JSON.stringify({ ...e, unread: hub.unreadCount(mailboxes()) })}\n\n`);
       });
       const beat = setInterval(() => {
@@ -131,9 +133,10 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
     let items = hub.inbox(hub.mailboxes(actor), { unshownOnly: true, limit: 20 });
     // At the end of a turn, a message in a conversation the session has answered since does not hold it back; it is
     // shown with the next prompt instead.
+    // Nor does a low-priority message: it waits for the next prompt or tool call, it never costs a turn of its own.
     if (body.stop) {
       const old = hub.superseded(session, items);
-      items = items.filter((m) => !old.has(m.id));
+      items = items.filter((m) => !old.has(m.id) && m.priority !== "low");
     }
     hub.markShown(hub.mailboxes(actor), items.map((m) => m.id));
     if (!items.length) return "";
@@ -375,7 +378,7 @@ export function makeFetch(hub: Hub) {
         // For a doorbell deciding whether a ring is still news: what waits that no hook has shown yet.
         if (!conn.session) return json({ error: "x-axos-session header is required" }, 400);
         const boxes = hub.mailboxes({ id: agent.id, session: conn.session });
-        return json({ unshown: hub.unshownCount(boxes), unread: hub.unreadCount(boxes) });
+        return json({ unshown: hub.unshownCount(boxes, true), unread: hub.unreadCount(boxes) });
       }
       return handleMcp(hub, req, agent, conn);
     }

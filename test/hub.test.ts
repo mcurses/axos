@@ -578,6 +578,38 @@ describe("sessions", () => {
   });
 });
 
+describe("an asker's view of its questions", () => {
+  test("pushed, seen on the page, reminded once, stale after three days, answered", async () => {
+    const r = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Which logo?", options: ["round", "square"], remind_s: 3600 });
+    await Bun.sleep(0);
+    const row = () => hub.asksOf([DEV1]).find((a) => a.id === r.ask_id)!;
+    expect(row()).toMatchObject({ pushed_at: t, seen_at: null, reminded_at: null });
+    hub.asksSeen("bob", [r.ask_id]);
+    expect(row().seen_at).toBeNull();
+    hub.asksSeen("alice", [r.ask_id]);
+    expect(row().seen_at).toBe(t);
+    t += 3601_000;
+    hub.sweep();
+    hub.sweep();
+    await Bun.sleep(0);
+    expect(pushes.filter((p) => p.title.startsWith("Reminder: alice/dev1"))).toHaveLength(1);
+    expect(pushes.at(-1)).toMatchObject({ sequence: `axos-ask-${r.ask_id}`, actions: 2 });
+    expect(row().reminded_at).toBe(t);
+    t += 3 * 86_400_000;
+    hub.sweep();
+    hub.sweep();
+    const told = hub.inbox(`agent:${DEV1}`).filter((m) => m.summary.startsWith(`Ask ${r.ask_id} to alice has had no answer for 3 days`));
+    expect(told).toHaveLength(1);
+    expect(told[0]!).toMatchObject({ priority: "low", re: r.message_id });
+    expect(told[0]!.body).toContain("alice saw it on their page at");
+    hub.answerAsk("alice", r.ask_id, "round");
+    expect(hub.asksOf([DEV1])[0]).toMatchObject({ id: r.ask_id, answer: "round", stale_at: expect.any(Number) });
+    expect(hub.asksOf([SC])).toEqual([]);
+    expect(refusal(() => hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Q?", options: ["a"], default_answer: "a", deadline_s: 600, remind_s: 900 })))
+      .toContain("reminder would come after the deadline");
+  });
+});
+
 describe("answer buttons", () => {
   test("a signed link answers exactly its ask; a forged one is refused", () => {
     const r = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Rehearse tonight?", options: ["yes", "no"] });
@@ -986,8 +1018,9 @@ INSERT INTO events (at, actor, kind, project, data_json) VALUES
       expect(h.projectId("alice/shop")).toBe(E);
       expect(h.projectId("bob/workshop")).toBe(F);
       expect(h.agentId("alice/mac")).toBe(M);
-      expect(h.inbox(`role:${E}/r`).map((m) => m.id)).toEqual([1, 4]);
-      expect(h.inbox(h.mailboxes({ id: M, session: `${M}#abcd1234` })).map((m) => m.id)).toEqual([1, 2, 3, 4]);
+      // (6: the hub telling the role that its old open question has gone stale)
+      expect(h.inbox(`role:${E}/r`).map((m) => m.id)).toEqual([1, 4, 6]);
+      expect(h.inbox(h.mailboxes({ id: M, session: `${M}#abcd1234` })).map((m) => m.id)).toEqual([1, 2, 3, 4, 6]);
       expect(h.display(`session:${M}#abcd1234 role:${E}/r agent:${X}`)).toBe("session:alice/mac#abcd1234 role:alice/shop/r agent:bob/box");
       expect(h.linkedProjects(E)).toEqual([F]);
       // Tables added since (subscriptions, landings) exist and work on the converted database.
@@ -1174,6 +1207,29 @@ describe("landings and subscriptions", () => {
     sub({ sha: NEXT, note: `${"y".repeat(990)} END` });
     land({ head: NEXT, commits: [NEXT] });
     expect(mail(verifier).at(-1)!.body).toContain(" END\n");
+  });
+
+  test("a subscription renews by replacing an old one; a subject filter and a branch pattern pick landings", () => {
+    const old = sub({ sha: undefined, note: "old" }) as { id: number };
+    const renewed = sub({ sha: undefined, note: "new", replace: old.id }) as { id: number; replaced: number };
+    expect(renewed.replaced).toBe(old.id);
+    expect(hub.subscriptions(SHOP).map((x) => x.id)).toEqual([renewed.id]);
+    expect(refusal(() => sub({ sha: undefined, replace: old.id }))).toContain(`no open subscription ${old.id}`);
+    expect(refusal(() => hub.subscribeLanding(SC, { project: GAME, branch: "staging", replace: renewed.id }))).toContain(`no open subscription ${renewed.id}`);
+    hub.cancelSubscription(DEV3, SHOP, renewed.id, undefined, verifier);
+
+    sub({ sha: undefined, branch: "slice/*", remote: undefined, subject: "SLICE/0600" });
+    expect(refusal(() => sub({ subject: "x" }))).toContain("with sha you wait for one commit");
+    expect(refusal(() => sub({ sha: undefined, branch: "slice/[ab]" }))).toContain("and * for any characters");
+    expect(land({ branch: "slice/0600", subject: "Merge slice/0600: login" }).told).toBe(1);
+    expect(land({ branch: "slice/0601", head: "f".repeat(40), subject: "Merge slice/0601" }).told).toBe(0);
+    expect(land({ branch: "main", head: "e".repeat(40), subject: "Merge slice/0600 into main" }).told).toBe(0);
+    expect(mail(verifier).at(-1)!.summary).toContain("slice/0600");
+    // A pattern with a sha: the commit on any matching ref, also one that landed before.
+    sub({ sha: SHA, branch: "refs/evidence/*/verdict-*", remote: undefined }, coord);
+    expect(land({ branch: "refs/evidence/0600/verdict-pass", head: "a".repeat(40), commits: [SHA] }).told).toBe(1);
+    const again = sub({ sha: SHA, branch: "refs/evidence/*", remote: undefined });
+    expect("landed" in again && again.landed.branch).toBe("refs/evidence/0600/verdict-pass");
   });
 
   test("a commit that landed already is answered at once, without a subscription", () => {

@@ -58,7 +58,7 @@ test("no token, no entry", async () => {
 test("tools are listed and the server explains itself", async () => {
   const c = await connect(tokens.dev1!);
   const names = (await c.listTools()).tools.map((t) => t.name).sort();
-  expect(names).toEqual(["ack", "ask_human", "claim_role", "create_project", "define_role", "inbox", "join", "lease", "leases", "presence", "projects",
+  expect(names).toEqual(["ack", "ask_human", "asks", "claim_role", "create_project", "define_role", "inbox", "join", "lease", "leases", "presence", "projects",
     "release_lease", "release_role", "send", "set_brief", "subscribe", "subscriptions", "thread", "unsubscribe", "wait"]);
   expect(c.getInstructions()).toContain("axos skill");
   await c.close();
@@ -135,6 +135,50 @@ test("the bell's event stream announces a message without its body", async () =>
   ctrl.abort();
   await Bun.sleep(50);
   expect(hub.presence(SHOP).find((a) => a.id === ids.dev3)!.bell).toBe(false);
+});
+
+test("a low-priority message rings no bell and does not hold a stop; a note to a whole project is low by default; ack notes", async () => {
+  const ctrl = new AbortController();
+  const res = await fetch(`${base}/events`, { headers: { Authorization: `Bearer ${tokens.dev3}` }, signal: ctrl.signal });
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  const until = async (needle: string) => {
+    while (!buf.includes(needle)) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error("stream ended");
+      buf += dec.decode(value);
+    }
+  };
+  await until("event: hello");
+  const dev1 = { kind: "agent" as const, id: ids.dev1!, human: "alice" };
+  const quiet = hub.send(dev1, { project: SHOP, to: ["project:shop"], type: "status", summary: "release 2.1 is out" });
+  expect(hub.getMessage(quiet.id)!.priority).toBe("low");
+  expect(hub.getMessage(hub.send(dev1, { project: SHOP, to: ["project:shop"], type: "request", summary: "who has box1?" }).id)!.priority).toBe("normal");
+  hub.send(dev1, { project: SHOP, to: ["alice/dev3"], type: "note", summary: "after the quiet one" });
+  await until("after the quiet one");
+  expect(buf).not.toContain("release 2.1 is out");
+  expect(buf).toContain("who has box1?");
+  ctrl.abort();
+
+  const sid = "10771077-1111-2222-3333-444444444444";
+  const h = { Authorization: `Bearer ${tokens.dev3}`, "x-axos-session": sid, "x-axos-project": "shop", "x-axos-name": "shop-quiet" };
+  const hook = async (extra: Record<string, unknown>) =>
+    (await (await fetch(`${base}/api/hook`, { method: "POST", headers: h, body: JSON.stringify({ event: "check", ...extra }) })).json()) as { context: string };
+  await hook({});
+  const fyi = hub.send(dev1, { project: SHOP, to: ["session:shop-quiet"], type: "note", summary: "fyi: docs moved", priority: "low" });
+  expect((await (await fetch(`${base}/api/unshown`, { headers: h })).json())).toMatchObject({ unshown: 0 });
+  expect((await hook({ stop: true })).context).toBe("");
+  expect((await hook({})).context).toContain("fyi: docs moved");
+
+  const c = await connect(tokens.dev3!, { "x-axos-session": sid, "x-axos-project": "shop" });
+  expect((await call(c, "ack", { ids: [fyi.id], outcome: "forwarded", note: "passed to <lane 3>\nsecond line" })).text).toContain("Acked 1 of 1");
+  expect((await call(c, "ack", { ids: [fyi.id], note: "x".repeat(201) })).text).toContain("at most 200");
+  const sender = await connect(tokens.dev1!, { "x-axos-session": "10781078-1111-2222-3333-444444444444", "x-axos-project": "shop" });
+  const view = (await call(sender, "thread", { id: fyi.id })).text;
+  expect(view).toContain("shop-quiet (alice/dev3#10771077): forwarded (passed to lane 3 second line)");
+  await c.close();
+  await sender.close();
 });
 
 test("the human page: key login, the state document, answering an ask; the app shell from web/dist", async () => {

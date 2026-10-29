@@ -67,7 +67,7 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
           project: hub.projectId(str("project"), hub.projectsOfHuman(human)) ?? str("project"),
           to: str("to").split(",").map((s) => s.trim()).filter(Boolean),
           type: (str("type") || "note") as (typeof MESSAGE_TYPES)[number], summary: str("summary"), body: str("body"),
-          re: b.re ? Number(b.re) : undefined, priority: str("priority") === "high" ? "high" : "normal",
+          re: b.re ? Number(b.re) : undefined, priority: str("priority") === "high" ? "high" : str("priority") === "low" ? "low" : "normal",
         });
         return json({ id: sent.id });
       }
@@ -125,6 +125,7 @@ function state(hub: Hub, human: string) {
     options: JSON.parse(a.options_json) as string[], default_answer: a.default_answer, deadline: a.deadline,
     created_at: hub.getMessage(a.message_id)?.created_at ?? null, images: hub.askImages(a.id).map((i) => ({ id: i.id, name: i.name })),
   }));
+  hub.asksSeen(human, asks.map((a) => a.id));
   const inbox = hub.inbox(`human:${human}`, { limit: 50 }).filter((m) => m.type !== "ask").map((m) => ({
     id: m.id, from: m.sender.startsWith("session:") ? hub.label(m.sender) : m.sender, sender_human: m.sender_human, project: m.project,
     type: m.type, priority: m.priority, created_at: m.created_at, summary: m.summary, body: m.body, re: m.re,

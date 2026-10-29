@@ -98,6 +98,11 @@ export interface AskRow {
   answered_by: string | null;
   answered_at: number | null;
   phone_cleared_at: number | null;
+  pushed_at: number | null;
+  seen_at: number | null;
+  remind_at: number | null;
+  reminded_at: number | null;
+  stale_at: number | null;
 }
 
 export interface SubscriptionRow {
@@ -109,6 +114,7 @@ export interface SubscriptionRow {
   branch: string;
   sha: string | null;
   note: string;
+  subject_filter: string | null;
   created_at: number;
   expires_at: number;
   ended_at: number | null;
@@ -152,12 +158,14 @@ const MAX_SUMMARY = 300;
 const MAX_BODY = 64_000;
 const MAX_BRIEF = 2_000;
 const MAX_NOTE = 1_000; // a subscription's note
+const MAX_ACK_NOTE = 200;
 export const MAX_IMAGE = 5 * 1024 * 1024;
 const MAX_IMAGES = 4; // per question
 const MAX_UNCLAIMED = 8; // uploads per agent not yet on a question
 const IMAGES_KEPT_MS = 30 * 86_400_000;
 const UNCLAIMED_KEPT_MS = 3_600_000;
 const ANSWERED_ON_PHONE_MS = 86_400_000;
+const ASK_STALE_MS = 3 * 86_400_000; // an open question without a deadline
 const MAX_WAIT_S = 240;
 const MAX_LEASE_TTL_S = 86_400;
 const MAX_SUBSCRIPTION_TTL_S = 30 * 86_400;
@@ -1087,12 +1095,14 @@ export class Hub {
     }
     if (!recipients.size) throw new AxosError("nobody to deliver to (the only recipient was yourself)");
 
+    // A note or status to a whole project is news, not a call: it waits for each session's next step.
+    const priority = input.priority ?? ((input.type === "note" || input.type === "status") && (input.to ?? []).some((a) => a.startsWith("project:")) ? "low" : "normal");
     const id = this.db.transaction(() => {
       const res = this.db.query(
         `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(input.project, sender, actor.kind === "agent" ? this.humanOf(actor.id) : actor.name, JSON.stringify(input.to ?? [...recipients.keys()]), input.type, summary, body, thread, input.re ?? null,
-        input.as_of ?? null, input.priority ?? "normal", input.dedupe_key ?? null, this.now());
+        input.as_of ?? null, priority, input.dedupe_key ?? null, this.now());
       const mid = Number(res.lastInsertRowid);
       for (const [recipient, via] of recipients) {
         this.db.query("INSERT INTO deliveries (message_id, recipient, via) VALUES (?, ?, ?)").run(mid, recipient, via);
@@ -1102,7 +1112,7 @@ export class Hub {
     this.event(actor.kind === "agent" ? (actor.session ? `session:${actor.session}` : `agent:${actor.id}`) : sender, "message.sent", input.project,
       { id, type: input.type, to: [...recipients.keys()], ...(sender.startsWith("role:") ? { as: sender } : {}) });
 
-    const ev: HubEvent = { kind: "message", message_id: id, from: sender, summary, type: input.type, priority: input.priority ?? "normal" };
+    const ev: HubEvent = { kind: "message", message_id: id, from: sender, summary, type: input.type, priority };
     for (const recipient of recipients.keys()) {
       this.emit(recipient, ev);
       if (recipient.startsWith("human:") && !input.no_push && (input.priority === "high" || input.type === "ask")) {
@@ -1227,27 +1237,31 @@ export class Hub {
     for (const id of ids) this.db.query(`UPDATE deliveries SET shown_at = ? WHERE message_id = ? AND ${box.sql} AND shown_at IS NULL`).run(t, id, ...box.args);
   }
 
-  unshownCount(boxes: string[]): number {
+  // waking: only messages worth waking an idle session for (low priority ones wait for its next step).
+  unshownCount(boxes: string[], waking = false): number {
     const box = this.boxSql(boxes);
     return (this.db.query(`SELECT COUNT(*) AS n FROM deliveries d JOIN messages m ON m.id = d.message_id
-      WHERE ${box.sql} AND d.acked_at IS NULL AND d.shown_at IS NULL`).get(...box.args) as { n: number }).n;
+      WHERE ${box.sql} AND d.acked_at IS NULL AND d.shown_at IS NULL${waking ? " AND m.priority <> 'low'" : ""}`).get(...box.args) as { n: number }).n;
   }
 
-  ack(recipient: string | string[], ids: number[], outcome?: AckOutcome): number {
-    return this.ackReport(recipient, ids, outcome).acked.length;
+  ack(recipient: string | string[], ids: number[], outcome?: AckOutcome, note?: string): number {
+    return this.ackReport(recipient, ids, outcome, note).acked.length;
   }
 
   // Which ids were acked now, which were acked before, and which are not in these mailboxes (a message of someone
   // else answers exactly like one that does not exist).
-  ackReport(recipient: string | string[], ids: number[], outcome?: AckOutcome): { acked: number[]; earlier: number[]; missing: number[] } {
+  // note: one line for the sender's view of the thread ("forwarded to lane 3"); peer text, kept to one line.
+  ackReport(recipient: string | string[], ids: number[], outcome?: AckOutcome, note?: string): { acked: number[]; earlier: number[]; missing: number[] } {
     if (outcome !== undefined && !ACK_OUTCOMES.includes(outcome)) throw new AxosError(`outcome must be one of ${ACK_OUTCOMES.join(", ")}`);
+    if (note !== undefined && note.length > MAX_ACK_NOTE) throw new AxosError(`the note is ${note.length} characters; at most ${MAX_ACK_NOTE}: say more in a reply`);
+    const line = note?.trim() ? oneLine(note, MAX_ACK_NOTE) : null;
     const boxes = Array.isArray(recipient) ? recipient : [recipient];
     const box = this.boxSql(boxes, "recipient", "(SELECT project FROM messages WHERE id = message_id)");
     const r = { acked: [] as number[], earlier: [] as number[], missing: [] as number[] };
     const t = this.now();
     for (const id of [...new Set(ids)]) {
-      if (this.db.query(`UPDATE deliveries SET acked_at = ?, outcome = ? WHERE ${box.sql} AND message_id = ? AND acked_at IS NULL`)
-        .run(t, outcome ?? null, ...box.args, id).changes) r.acked.push(id);
+      if (this.db.query(`UPDATE deliveries SET acked_at = ?, outcome = ?, note = ? WHERE ${box.sql} AND message_id = ? AND acked_at IS NULL`)
+        .run(t, outcome ?? null, line, ...box.args, id).changes) r.acked.push(id);
       else if (this.db.query(`SELECT 1 FROM deliveries WHERE ${box.sql} AND message_id = ?`).get(...box.args, id)) r.earlier.push(id);
       else r.missing.push(id);
     }
@@ -1256,9 +1270,9 @@ export class Hub {
   }
 
   // Who a message went to and how far each got: unread, read (shown), acked, with the outcome they gave.
-  receipts(messageId: number): { recipient: string; shown_at: number | null; acked_at: number | null; outcome: string | null }[] {
-    return this.db.query("SELECT recipient, shown_at, acked_at, outcome FROM deliveries WHERE message_id = ? ORDER BY rowid")
-      .all(messageId) as { recipient: string; shown_at: number | null; acked_at: number | null; outcome: string | null }[];
+  receipts(messageId: number): { recipient: string; shown_at: number | null; acked_at: number | null; outcome: string | null; note: string | null }[] {
+    return this.db.query("SELECT recipient, shown_at, acked_at, outcome, note FROM deliveries WHERE message_id = ? ORDER BY rowid")
+      .all(messageId) as { recipient: string; shown_at: number | null; acked_at: number | null; outcome: string | null; note: string | null }[];
   }
 
   // The whole thread a message belongs to, if the reader may see that project.
@@ -1455,14 +1469,20 @@ export class Hub {
 
   // "Tell me when <sha> is on <branch>": one message when it lands, or (without sha) one per landing until it expires.
   // A subscription belongs to the seat that made it: the session, or the role it speaks as, so a new holder inherits it.
-  subscribeLanding(agentId: string, input: { project: string; branch: string; sha?: string; remote?: string; repo?: string; note?: string; ttl_s?: number; as?: string; session?: string }):
-    { id: number; expires_at: number } | { landed: LandingRow; sha: string } {
+  // branch may be a pattern: * stands for any characters, slashes too (slice/*, refs/evidence/*/verdict-*).
+  // subject: only landings whose subject contains it. replace: one's own open subscription this one takes over from.
+  subscribeLanding(agentId: string, input: { project: string; branch: string; sha?: string; remote?: string; repo?: string; note?: string; ttl_s?: number; as?: string; session?: string;
+    subject?: string; replace?: number }):
+    { id: number; expires_at: number; replaced?: number } | { landed: LandingRow; sha: string } {
     const subscriber = addr(this.seat(agentId, input.project, input.as, input.session));
     // Refused rather than cut: the note is an instruction to the subscriber's later self.
     if (input.note !== undefined && input.note.length > MAX_NOTE) {
       throw new AxosError(`the note is ${input.note.length} characters; at most ${MAX_NOTE}. Keep the instruction, or point to a file that holds it`);
     }
-    const w = landingTarget(input);
+    const w = landingTarget(input, true);
+    const subject = input.subject?.trim() ? oneLine(input.subject, 200) : null;
+    if (subject && w.sha) throw new AxosError("subject picks among the landings on a branch; with sha you wait for one commit already: leave one out");
+    if (input.replace !== undefined) this.ownSubscription(agentId, input.project, input.replace, input.as, input.session);
     if (w.sha) {
       const l = this.findLanding(input.project, w);
       if (l) return { landed: l, sha: l.matched };
@@ -1472,21 +1492,29 @@ export class Hub {
     const ttl = Math.min(Math.max(input.ttl_s ?? 86_400, 60), MAX_SUBSCRIPTION_TTL_S);
     const t = this.now();
     const note = input.note === undefined ? "" : oneLine(input.note, MAX_NOTE);
-    const res = this.db.query(
-      "INSERT INTO subscriptions (project, subscriber, repo, remote, branch, sha, note, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    ).run(input.project, subscriber, w.repo, w.remote, w.branch, w.sha, note, t, t + ttl * 1000);
-    const id = Number(res.lastInsertRowid);
-    this.event(subscriber, "subscription.opened", input.project, { id, branch: w.branch, sha: w.sha });
-    return { id, expires_at: t + ttl * 1000 };
+    const id = this.db.transaction(() => {
+      const res = this.db.query(
+        "INSERT INTO subscriptions (project, subscriber, repo, remote, branch, sha, note, subject_filter, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(input.project, subscriber, w.repo, w.remote, w.branch, w.sha, note, subject, t, t + ttl * 1000);
+      if (input.replace !== undefined) this.db.query("UPDATE subscriptions SET ended_at = ?, end_reason = 'replaced' WHERE id = ?").run(t, input.replace);
+      return Number(res.lastInsertRowid);
+    })();
+    this.event(subscriber, "subscription.opened", input.project, { id, branch: w.branch, sha: w.sha, ...(input.replace !== undefined ? { replaced: input.replace } : {}) });
+    return { id, expires_at: t + ttl * 1000, ...(input.replace !== undefined ? { replaced: input.replace } : {}) };
   }
 
-  cancelSubscription(agentId: string, project: string, id: number, as?: string, session?: string): void {
+  // Its subscriber may end it: the session or the agent behind it (also from a later session), or the role's holder.
+  private ownSubscription(agentId: string, project: string, id: number, as?: string, session?: string): SubscriptionRow {
     this.requireScope(agentId, project, session);
     const s = this.db.query("SELECT * FROM subscriptions WHERE id = ? AND project = ? AND ended_at IS NULL").get(id, project) as SubscriptionRow | null;
-    // Its subscriber may cancel it: the session or the agent behind it (also from a later session), or the role's holder.
     const mine = s && (this.mailboxes({ id: agentId, session }, project, as).map((b) => this.boxKey(b)).includes(s.subscriber) ||
       (!s.subscriber.startsWith("role:") && holderOf(s.subscriber).split("#")[0] === agentId));
     if (!mine) throw new AxosError(`you have no open subscription ${id} in '${project}'`);
+    return s;
+  }
+
+  cancelSubscription(agentId: string, project: string, id: number, as?: string, session?: string): void {
+    this.ownSubscription(agentId, project, id, as, session);
     this.db.query("UPDATE subscriptions SET ended_at = ?, end_reason = 'cancelled' WHERE id = ?").run(this.now(), id);
     this.event(session ? `session:${session}` : `agent:${agentId}`, "subscription.cancelled", project, { id });
   }
@@ -1524,12 +1552,13 @@ export class Hub {
     let told = 0;
     const due = new Map<string, { s: SubscriptionRow; matched: string | null }[]>();
     const subs = this.db.query(
-      `SELECT * FROM subscriptions WHERE project = ? AND branch = ? AND ended_at IS NULL
+      `SELECT * FROM subscriptions WHERE project = ? AND ? GLOB branch AND ended_at IS NULL
          AND (remote IS NULL OR ? IS NULL OR remote = ?) AND (repo IS NULL OR repo = ?) ORDER BY id`,
     ).all(input.project, w.branch, w.remote, w.remote, w.repo) as SubscriptionRow[];
     for (const s of subs) {
       const matched = s.sha === null ? null : commits.find((c) => c.startsWith(s.sha!) || s.sha!.startsWith(c));
       if (matched === undefined) continue;
+      if (s.subject_filter && !subject.toLowerCase().includes(s.subject_filter.toLowerCase())) continue;
       // A branch watched on any remote hears of a head once, not once per remote it is pushed to.
       if (matched === null && s.remote === null && this.db.query(
         "SELECT 1 FROM landings WHERE project = ? AND repo = ? AND branch = ? AND head = ? AND id <> ? AND at >= ? LIMIT 1",
@@ -1550,7 +1579,7 @@ export class Hub {
   private findLanding(project: string, w: { repo: string | null; remote: string | null; branch: string; sha: string | null }): (LandingRow & { matched: string }) | null {
     return this.db.query(
       `SELECT l.*, c.sha AS matched FROM landings l JOIN landing_commits c ON c.landing = l.id
-       WHERE l.project = ? AND l.branch = ? AND (? IS NULL OR l.remote IS NULL OR l.remote = ?) AND (? IS NULL OR l.repo = ?)
+       WHERE l.project = ? AND l.branch GLOB ? AND (? IS NULL OR l.remote IS NULL OR l.remote = ?) AND (? IS NULL OR l.repo = ?)
          AND (c.sha LIKE ? || '%' OR ? LIKE c.sha || '%')
        ORDER BY l.id DESC LIMIT 1`,
     ).get(project, w.branch, w.remote, w.remote, w.repo, w.repo, w.sha, w.sha) as (LandingRow & { matched: string }) | null;
@@ -1576,7 +1605,7 @@ export class Hub {
 
   // ---------------------------------------------------------------- asks to humans
 
-  askHuman(agentId: string, input: { project: string; human: string; question: string; options?: string[]; default_answer?: string; deadline_s?: number; summary?: string; as?: string; session?: string; images?: string[] }):
+  askHuman(agentId: string, input: { project: string; human: string; question: string; options?: string[]; default_answer?: string; deadline_s?: number; remind_s?: number; summary?: string; as?: string; session?: string; images?: string[] }):
     { ask_id: number; message_id: number; pushed: boolean } {
     const asker = this.seat(agentId, input.project, input.as, input.session);
     if (!this.humanInProject(input.human, input.project)) throw new AxosError(`human '${input.human}' is not in project '${input.project}'`);
@@ -1596,21 +1625,47 @@ export class Hub {
       project: input.project, to: [`human:${input.human}`], type: "ask", summary, body, priority: "high", no_push: true,
     });
     const deadline = input.deadline_s ? this.now() + input.deadline_s * 1000 : null;
+    const remind = input.remind_s ? this.now() + input.remind_s * 1000 : null;
+    if (remind && deadline && remind >= deadline) throw new AxosError("the reminder would come after the deadline; leave it out or make it sooner");
     const res = this.db.query(
-      `INSERT INTO asks (project, asker, human, question, options_json, default_answer, deadline, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(input.project, asker, input.human, input.question, JSON.stringify(options), input.default_answer ?? null, deadline, sent.id);
+      `INSERT INTO asks (project, asker, human, question, options_json, default_answer, deadline, remind_at, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(input.project, asker, input.human, input.question, JSON.stringify(options), input.default_answer ?? null, deadline, remind, sent.id);
     const askId = Number(res.lastInsertRowid);
     for (const i of images) this.db.query("UPDATE attachments SET ask_id = ? WHERE id = ?").run(askId, i.id);
     const topic = this.ntfyTopic(input.human);
+    this.pushAsk(askId, false);
+    return { ask_id: askId, message_id: sent.id, pushed: !!topic };
+  }
+
+  // The question on the phone, with up to three options as buttons; a reminder is the same push again, replacing it.
+  private pushAsk(askId: number, reminder: boolean): void {
+    const a = this.db.query("SELECT * FROM asks WHERE id = ?").get(askId) as AskRow;
+    const options = JSON.parse(a.options_json) as string[];
+    const images = this.askImages(askId).length;
+    const summary = this.getMessage(a.message_id)?.summary ?? a.question;
     const link = this.publicUrl ? `${this.publicUrl}/a/${askId}/${this.askSignature(askId)}` : "";
     const actions: PushAction[] = link ? options.slice(0, 3).map((o) => ({ label: o.slice(0, 40), url: link, body: o })) : [];
-    const sender = addr(asker);
     const tail = (options.length > 3 ? `\n(${options.length - 3} more options on the page)` : "") +
-      (images.length ? `\n(${images.length === 1 ? "an image" : `${images.length} images`} on the page)` : "") +
-      (input.default_answer !== undefined && deadline ? `\n(default "${input.default_answer}", chosen by the agent, at ${iso(deadline)})` : "");
-    void this.pushToHuman(input.human, `${this.senderTitle(sender)} (${this.projectName(input.project)})`, `${summary}${tail}`, `#m${sent.id}`, actions,
-      { sequence: askSequence(askId) });
-    return { ask_id: askId, message_id: sent.id, pushed: !!topic };
+      (images ? `\n(${images === 1 ? "an image" : `${images} images`} on the page)` : "") +
+      (a.default_answer !== null && a.deadline ? `\n(default "${a.default_answer}", chosen by the agent, at ${iso(a.deadline)})` : "");
+    const title = `${reminder ? "Reminder: " : ""}${this.senderTitle(addr(a.asker))} (${this.projectName(a.project)})`;
+    void this.pushToHuman(a.human, title, `${summary}${tail}`, `#m${a.message_id}`, actions, { sequence: askSequence(askId) }).then((ok) => {
+      if (ok && !reminder) this.db.query("UPDATE asks SET pushed_at = ? WHERE id = ? AND pushed_at IS NULL").run(this.now(), askId);
+    });
+  }
+
+  // The asked human's page showed the question: the asker can tell it was seen.
+  asksSeen(human: string, ids: number[]): void {
+    const t = this.now();
+    for (const id of ids) this.db.query("UPDATE asks SET seen_at = ? WHERE id = ? AND human = ? AND seen_at IS NULL").run(t, id, human);
+  }
+
+  // An asker's own questions, newest first, with how far each got.
+  asksOf(askers: string[], limit = 20): (AskRow & { created_at: number })[] {
+    if (!askers.length) return [];
+    this.sweep();
+    return this.db.query(`SELECT a.*, m.created_at FROM asks a JOIN messages m ON m.id = a.message_id
+      WHERE a.asker IN (${askers.map(() => "?").join(", ")}) ORDER BY a.answer IS NOT NULL, a.id DESC LIMIT ?`).all(...askers, limit) as (AskRow & { created_at: number })[];
   }
 
   // Stored verbatim. Only the asked human answers.
@@ -1686,16 +1741,18 @@ export class Hub {
   }
 
   private async pushToHuman(human: string, title: string, body: string, anchor: string, actions?: PushAction[],
-    opts: { sequence?: string; priority?: "low" | "high" } = {}): Promise<void> {
+    opts: { sequence?: string; priority?: "low" | "high" } = {}): Promise<boolean> {
     const topic = this.ntfyTopic(human);
-    if (!topic) return;
+    if (!topic) return false;
     try {
       await this.notifier.push(topic, {
         title, body, clickUrl: this.publicUrl ? `${this.publicUrl}/ui${anchor}` : undefined, priority: opts.priority ?? "high", actions, sequence: opts.sequence,
       });
       this.event("axos", "push.sent", null, { human });
+      return true;
     } catch (e) {
       this.event("axos", "push.failed", null, { human, error: String(e) });
+      return false;
     }
   }
 
@@ -1740,6 +1797,21 @@ export class Hub {
       this.event("axos", "ask.defaulted", a.project, { ask: a.id });
       this.settledOnPhone(a, `Not answered in time: ${a.default_answer}`, `The default went to ${this.senderTitle(addr(a.asker))}.`, a.message_id);
     }
+    for (const a of this.db.query("SELECT id FROM asks WHERE answer IS NULL AND remind_at < ? AND reminded_at IS NULL").all(t) as { id: number }[]) {
+      this.db.query("UPDATE asks SET reminded_at = ? WHERE id = ?").run(t, a.id);
+      this.pushAsk(a.id, true);
+      this.event("axos", "ask.reminded", null, { ask: a.id });
+    }
+    // A question without a deadline never settles by itself: after a few days its asker hears that it is still open.
+    for (const a of this.db.query(`SELECT a.* FROM asks a JOIN messages m ON m.id = a.message_id
+      WHERE a.answer IS NULL AND a.deadline IS NULL AND a.stale_at IS NULL AND m.created_at < ?`).all(t - ASK_STALE_MS) as AskRow[]) {
+      this.db.query("UPDATE asks SET stale_at = ? WHERE id = ?").run(t, a.id);
+      this.systemMessage(a.project, this.liveBox(addr(a.asker)), "note",
+        `Ask ${a.id} to ${a.human} has had no answer for ${Math.round(ASK_STALE_MS / 86_400_000)} days; it stays open`,
+        `Question: ${a.question}\n${a.seen_at ? `${a.human} saw it on their page at ${iso(a.seen_at)}.` : `${a.human} has not opened it on their page.`} ` +
+        "Ask again in other words, decide without it if you can, or tell your human.", "low", a.message_id);
+      this.event("axos", "ask.stale", a.project, { ask: a.id });
+    }
     // A settled question's "Answered" notice stays on the phone for a day, then goes.
     for (const a of this.db.query("SELECT id, human FROM asks WHERE answered_at < ? AND phone_cleared_at IS NULL").all(t - ANSWERED_ON_PHONE_MS) as { id: number; human: string }[]) {
       this.db.query("UPDATE asks SET phone_cleared_at = ? WHERE id = ?").run(t, a.id);
@@ -1763,13 +1835,16 @@ export class Hub {
 }
 
 // A subscription's or landing's place, validated: names as git allows them, a sha as hex.
-function landingTarget(input: { repo?: string; remote?: string; branch: string; sha?: string }): { repo: string | null; remote: string | null; branch: string; sha: string | null } {
-  const name = (what: string, v: string | undefined): string | null => {
+// pattern: the branch may hold * (a subscription's); a reported landing names one branch.
+function landingTarget(input: { repo?: string; remote?: string; branch: string; sha?: string }, pattern = false): { repo: string | null; remote: string | null; branch: string; sha: string | null } {
+  const name = (what: string, v: string | undefined, star = false): string | null => {
     if (v === undefined || v === "") return null;
-    if (!REF_RE.test(v)) throw new AxosError(`${what} '${oneLine(v, 60)}' is not a name git would allow (letters, digits, . _ - / @ +)`);
+    if (!REF_RE.test(star ? v.replaceAll("*", "x") : v)) {
+      throw new AxosError(`${what} '${oneLine(v, 60)}' is not a name git would allow (letters, digits, . _ - / @ +${star ? ", and * for any characters" : ""})`);
+    }
     return v;
   };
-  const branch = name("branch", input.branch);
+  const branch = name("branch", input.branch, pattern);
   if (!branch) throw new AxosError("branch is required");
   const sha = input.sha === undefined || input.sha === "" ? null : input.sha.toLowerCase();
   if (sha !== null && !SHA_RE.test(sha)) throw new AxosError("sha must be a commit sha, at least its first 7 hex characters");

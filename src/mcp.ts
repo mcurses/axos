@@ -166,7 +166,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       re: z.number().int().optional().describe("The message id this replies to"),
       thread: z.number().int().optional(),
       as_of: z.string().optional().describe("The state this is based on, e.g. a commit sha, so a reader can tell if it is stale"),
-      priority: z.enum(PRIORITIES).optional().describe("high: a message to a human is pushed to their phone; use it rarely"),
+      priority: z.enum(PRIORITIES).optional().describe("low: wakes nobody, read at the recipient's next step (the default for a note or status to a whole project); high: a message to a human is pushed to their phone, use it rarely"),
       dedupe_key: z.string().optional().describe("Sending twice with the same key delivers once"),
       as: asArg,
     }),
@@ -221,11 +221,12 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     inputSchema: strict({
       ids: z.array(z.number().int()).min(1),
       outcome: z.enum(ACK_OUTCOMES).optional().describe("What became of it, shown to the sender in thread: done | declined | forwarded | noted"),
+      note: z.string().optional().describe("One line for the sender's thread view, e.g. 'forwarded to lane 3' (at most 200 characters); saves a reply"),
       project: projectArg, as: asArg,
     }),
-  }, tool(({ ids, outcome, project: p, as }) => {
+  }, tool(({ ids, outcome, note, project: p, as }) => {
     const mb = boxes(p, as);
-    const r = hub.ackReport(mb, ids, outcome);
+    const r = hub.ackReport(mb, ids, outcome, note);
     const n = r.acked.length + r.earlier.length + r.missing.length;
     return [
       `Acked ${r.acked.length} of ${n}.`,
@@ -255,7 +256,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     // On the reader's own messages: how far each recipient got.
     const mine = new Set([me, ...boxes().map((b) => hub.boxKey(b)), ...hub.projectsOf(agent.id).flatMap((p) => conn.session ? hub.rolesHeldBy(me, p).map((r) => `role:${p}/${r}`) : [])]);
     const rows = hub.thread(actor, m).map((row) => mine.has(row.sender) ? { ...row, receipts: hub.receipts(row.id).map((d) =>
-      `${d.recipient.startsWith("session:") ? hub.label(d.recipient) : d.recipient}: ${d.acked_at ? d.outcome ?? "acked" : d.shown_at ? "read" : "unread"}`).join("; ") } : row);
+      `${d.recipient.startsWith("session:") ? hub.label(d.recipient) : d.recipient}: ${d.acked_at ? `${d.outcome ?? "acked"}${d.note ? ` (${d.note})` : ""}` : d.shown_at ? "read" : "unread"}`).join("; ") } : row);
     return render(rows, `Thread of message ${m}:`);
   }));
 
@@ -333,18 +334,20 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       "lands (`axos landed`), not by agents. A commit that already landed is answered at once.",
     inputSchema: strict({
       project: projectArg,
-      branch: z.string().describe("e.g. staging, main; any ref name works too, e.g. refs/evidence/<id>"),
+      branch: z.string().describe("e.g. staging, main; any ref name works too, e.g. refs/evidence/<id>; * stands for any characters, e.g. slice/* or refs/evidence/*/verdict-*"),
       sha: z.string().optional().describe("The commit to wait for, at least 7 characters; leave out for every landing"),
       remote: z.string().optional().describe("e.g. gitlab; leave out for any remote"),
       repo: z.string().optional().describe("The repository's name (last part of its remote URL); leave out for any"),
       note: z.string().optional().describe("Handed back with the message: what to do then, e.g. 'remove worktree review-3'"),
       hours: z.number().min(0.1).max(720).optional().describe("Default 24; you get a message if it expires first"),
+      subject: z.string().optional().describe("Only landings whose commit subject contains this (any case), e.g. 'slice/0600'; not with sha"),
+      replace: z.number().int().optional().describe("The id of your open subscription this one takes over from (renewing it); that one ends"),
       as: asArg,
     }),
   }, tool((a) => {
     const pr = project(a.project);
     const r = hub.subscribeLanding(agent.id, {
-      project: pr, branch: a.branch, sha: a.sha, remote: a.remote, repo: a.repo, note: a.note,
+      project: pr, branch: a.branch, sha: a.sha, remote: a.remote, repo: a.repo, note: a.note, subject: a.subject, replace: a.replace,
       ttl_s: a.hours === undefined ? undefined : Math.round(a.hours * 3600), as: a.as, session: conn.session,
     });
     const at = `${a.remote ? `${a.remote}/` : ""}${a.branch}`;
@@ -354,7 +357,8 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
         `${l.subject ? `: ${l.subject}` : ""}. No subscription needed.`;
     }
     return `Subscription ${r.id}: ${a.sha ? `one message when ${a.sha.slice(0, 10)} lands on ${at}` : `a message for every landing on ${at}`}` +
-      `, until ${iso(r.expires_at)}.`;
+      `${a.subject?.trim() ? ` whose subject contains "${a.subject.trim()}"` : ""}, until ${iso(r.expires_at)}.` +
+      `${r.replaced !== undefined ? ` Subscription ${r.replaced} has ended.` : ""}`;
   }));
 
   server.registerTool("unsubscribe", {
@@ -368,7 +372,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }, tool(({ project: p }) => {
     return hub.subscriptions(project(p)).map((s) =>
       `- ${s.id}: ${hub.label(s.subscriber)} waits for ${s.sha ? s.sha.slice(0, 10) : "every landing"} on ${s.remote ? `${s.remote}/` : ""}${s.branch}` +
-      `${s.repo ? ` (${s.repo})` : ""} until ${iso(s.expires_at)}${s.note ? ` — ${s.note}` : ""}`,
+      `${s.repo ? ` (${s.repo})` : ""}${s.subject_filter ? ` with "${s.subject_filter}" in the subject` : ""} until ${iso(s.expires_at)}${s.note ? ` — ${s.note}` : ""}`,
     ).join("\n") || "No open subscriptions.";
   }));
 
@@ -383,6 +387,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       options: z.array(z.string()).optional().describe("Short answers; the first three become buttons on the phone, all show on the page"),
       default_answer: z.string().optional().describe("Your recommendation; with a deadline, what applies if nobody answers"),
       deadline_minutes: z.number().int().min(1).optional().describe("Needs default_answer"),
+      remind_hours: z.number().min(0.25).max(168).optional().describe("Push the question once more after this many hours if it is still open"),
       images: z.array(z.string()).max(4).optional().describe(
         "Up to 4 images shown with the question on their page (a screenshot, a diagram): paths of PNG, JPEG, GIF or WebP files " +
         "inside your repo, up to 5 MB each; the AXOS plugin uploads them. Kept 30 days."),
@@ -392,11 +397,34 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const pr = project(a.project);
     const r = hub.askHuman(agent.id, {
       project: pr, human: a.human, question: a.question, options: a.options, images: a.images,
-      default_answer: a.default_answer, deadline_s: a.deadline_minutes ? a.deadline_minutes * 60 : undefined, as: a.as, session: conn.session,
+      default_answer: a.default_answer, deadline_s: a.deadline_minutes ? a.deadline_minutes * 60 : undefined,
+      remind_s: a.remind_hours ? Math.round(a.remind_hours * 3600) : undefined, as: a.as, session: conn.session,
     });
     const to = addr(hub.seat(agent.id, pr, a.as, conn.session));
     return `Asked ${a.human} (ask ${r.ask_id})${r.pushed ? ", pushed to their phone" : ""}. ` +
       `The answer arrives in ${to.startsWith("role:") ? `the ${to.slice(5)} mailbox` : "your inbox"}. Do not wait for it: carry on.`;
+  }));
+
+  server.registerTool("asks", {
+    description: "Your questions to humans and how far each got: pushed to the phone, seen on their page, reminded, answered. Open ones first.",
+    inputSchema: strict({ project: projectArg }),
+  }, tool(({ project: p }) => {
+    const pr = project(p);
+    const askers = [conn.session ?? agent.id, ...(conn.session ? hub.rolesHeldBy(me, pr).map((r) => `role:${pr}/${r}`) : [])];
+    const rows = hub.asksOf(askers);
+    if (!rows.length) return "You have asked no questions here.";
+    return rows.map((a) => {
+      const steps = [
+        `asked ${iso(a.created_at)}`,
+        a.pushed_at ? "pushed to the phone" : "no push on record (no phone set up, the push failed, or asked before 0.14)",
+        a.seen_at ? `seen on the page ${iso(a.seen_at)}` : "",
+        a.reminded_at ? `reminded ${iso(a.reminded_at)}` : a.remind_at && a.answer === null ? `reminder at ${iso(a.remind_at)}` : "",
+      ].filter(Boolean);
+      const state = a.answer !== null
+        ? a.answered_by?.startsWith("default") ? `the default applied ${iso(a.answered_at!)}: ${a.answer}` : `answered ${iso(a.answered_at!)}: ${a.answer.split("\n")[0]}`
+        : a.stale_at ? "open, stale (no answer for days)" : a.deadline ? `open, default "${a.default_answer}" at ${iso(a.deadline)}` : "open";
+      return `- ask ${a.id} to ${a.human}: ${a.question.split("\n")[0]!.slice(0, 120)}\n  ${state}; ${steps.join(", ")}`;
+    }).join("\n");
   }));
 
   server.registerTool("presence", {

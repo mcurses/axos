@@ -74,6 +74,7 @@ export function Composer({ state, onSent }: { state: State; onSent: () => void }
           <PromptInputSelect value={priority} onValueChange={setPriority}>
             <PromptInputSelectTrigger><PromptInputSelectValue /></PromptInputSelectTrigger>
             <PromptInputSelectContent>
+              <PromptInputSelectItem value="low">low: wakes nobody</PromptInputSelectItem>
               <PromptInputSelectItem value="normal">normal</PromptInputSelectItem>
               <PromptInputSelectItem value="high">high</PromptInputSelectItem>
             </PromptInputSelectContent>

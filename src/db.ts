@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
   acked_at      INTEGER,
   shown_at      INTEGER,                       -- put into a session's context by a hook
   outcome       TEXT,                          -- what the reader said when acking: done | declined | forwarded | noted
+  note          TEXT,                          -- and its one line about it, e.g. 'forwarded to lane 3'
   PRIMARY KEY (message_id, recipient)
 );
 CREATE INDEX IF NOT EXISTS deliveries_unread ON deliveries(recipient, acked_at);
@@ -141,7 +142,12 @@ CREATE TABLE IF NOT EXISTS asks (
   answer        TEXT,
   answered_by   TEXT,
   answered_at   INTEGER,
-  phone_cleared_at INTEGER                     -- its notification deleted from the phone, a day after it was settled
+  phone_cleared_at INTEGER,                    -- its notification deleted from the phone, a day after it was settled
+  pushed_at     INTEGER,                       -- the push reached the notification service
+  seen_at       INTEGER,                       -- first shown on the asked human's page
+  remind_at     INTEGER,                       -- when to push it once more if still open
+  reminded_at   INTEGER,
+  stale_at      INTEGER                        -- no deadline and no answer for days: the asker was told
 );
 CREATE TABLE IF NOT EXISTS attachments (     -- images shown with a question on the human's page; kept 30 days
   id            INTEGER PRIMARY KEY,
@@ -182,10 +188,11 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   branch        TEXT NOT NULL,
   sha           TEXT,                          -- a commit (or its first 7+ characters); null: every landing, until it expires
   note          TEXT NOT NULL DEFAULT '',      -- the subscriber's own words, handed back with the message
+  subject_filter TEXT,                         -- only landings whose subject contains this (any case); null: all
   created_at    INTEGER NOT NULL,
   expires_at    INTEGER NOT NULL,
   ended_at      INTEGER,
-  end_reason    TEXT                           -- 'landed' | 'expired' | 'cancelled'
+  end_reason    TEXT                           -- 'landed' | 'expired' | 'cancelled' | 'replaced'
 );
 CREATE INDEX IF NOT EXISTS subscriptions_open ON subscriptions(project, branch, ended_at);
 CREATE TABLE IF NOT EXISTS landings (
@@ -244,6 +251,7 @@ function migrate(db: Database): void {
   const deliveries = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'deliveries'").get() as { sql: string } | null;
   if (deliveries && !deliveries.sql.includes("shown_at")) db.exec("ALTER TABLE deliveries ADD COLUMN shown_at INTEGER");
   if (deliveries && !deliveries.sql.includes("outcome")) db.exec("ALTER TABLE deliveries ADD COLUMN outcome TEXT");
+  if (deliveries && !/\bnote\b/.test(deliveries.sql)) db.exec("ALTER TABLE deliveries ADD COLUMN note TEXT");
   const messages = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get() as { sql: string } | null;
   if (messages && !messages.sql.includes("sender_human")) db.exec("ALTER TABLE messages ADD COLUMN sender_human TEXT");
   const leases = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'leases'").get() as { sql: string } | null;
@@ -251,8 +259,12 @@ function migrate(db: Database): void {
   const sessions = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get() as { sql: string } | null;
   if (sessions && !sessions.sql.includes("framed_at")) db.exec("ALTER TABLE sessions ADD COLUMN framed_at INTEGER");
   if (sessions && !sessions.sql.includes("former_names")) db.exec("ALTER TABLE sessions ADD COLUMN former_names TEXT NOT NULL DEFAULT ''");
+  const subscriptions = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'subscriptions'").get() as { sql: string } | null;
+  if (subscriptions && !subscriptions.sql.includes("subject_filter")) db.exec("ALTER TABLE subscriptions ADD COLUMN subject_filter TEXT");
   const asks = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'asks'").get() as { sql: string } | null;
-  if (asks && !asks.sql.includes("phone_cleared_at")) db.exec("ALTER TABLE asks ADD COLUMN phone_cleared_at INTEGER");
+  for (const col of ["phone_cleared_at", "pushed_at", "seen_at", "remind_at", "reminded_at", "stale_at"]) {
+    if (asks && !asks.sql.includes(col)) db.exec(`ALTER TABLE asks ADD COLUMN ${col} INTEGER`);
+  }
   migrateToIds(db);
 }
 
