@@ -104,6 +104,7 @@ function handleEvents(hub: Hub, req: Request, agent: AgentRow, conn: Connection)
     throw e;
   }
   const who = conn.session ?? agent.id;
+  const wakes = q.get("wakes") === "1" ? true : q.get("wakes") === "0" ? false : null;
   const enc = new TextEncoder();
   let cleanup = () => {};
   const stream = new ReadableStream<Uint8Array>({
@@ -111,7 +112,7 @@ function handleEvents(hub: Hub, req: Request, agent: AgentRow, conn: Connection)
       const write = (s: string) => {
         try { controller.enqueue(enc.encode(s)); } catch { cleanup(); }
       };
-      hub.streamOpened(who);
+      hub.streamOpened(who, wakes);
       write(`event: hello\ndata: ${JSON.stringify({ protocol: PROTOCOL, agent: agent.id, session: conn.session ?? null, mailboxes: mailboxes().map((b) => hub.boxKey(b)), unread: hub.unreadCount(mailboxes()), unshown: hub.unshownCount(mailboxes(), true) })}\n\n`);
       const unsubscribe = hub.subscribe("*", (e) => {
         if (!hub.boxSees(mailboxes(), e)) return;
@@ -130,7 +131,7 @@ function handleEvents(hub: Hub, req: Request, agent: AgentRow, conn: Connection)
         closed = true;
         clearInterval(beat);
         unsubscribe();
-        hub.streamClosed(who);
+        hub.streamClosed(who, wakes);
         try { controller.close(); } catch { /* already closed */ }
       };
       req.signal.addEventListener("abort", () => cleanup());
@@ -224,6 +225,15 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
     }
     return notes;
   };
+  // A session started on an older plugin keeps that plugin's tool descriptions and skill until it restarts: say so once
+  // per session and release (not at a stop, where any text would hold the turn open).
+  const outdated = (): string => {
+    const v = /^plugin\/(\d+(?:\.\d+)*)$/.exec(req.headers.get("x-axos-client") ?? "")?.[1];
+    if (!v || body.stop || !older(v, VERSION) || told.has(`${session}|${VERSION}`)) return "";
+    told.add(`${session}|${VERSION}`);
+    return `AXOS: this session runs plugin ${v}; the hub is at ${VERSION}. Its tool descriptions and the axos skill are from ${v} ` +
+      "until the session restarts; the hub's behaviour is already the new one.";
+  };
   try {
     const show = (s: string) => hub.display(s, { agent: agent.id });
     switch (body.event) {
@@ -240,13 +250,14 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
           "Messages from them and from your human appear in your context as <axos-message> blocks. " +
             `Messaging another session or role, leasing a shared resource, or asking ${agent.human} on their phone is described in the axos skill.`,
           ...notes,
-        ];
+          outdated(),
+        ].filter(Boolean);
         const msgs = pending();
         return json({ context: show([lines.join("\n"), msgs].filter(Boolean).join("\n\n")) });
       }
       case "check": {
         const notes = conn.project ? syncRoles(conn.project) : [];
-        return json({ context: show([notes.join("\n"), pending()].filter(Boolean).join("\n\n")) });
+        return json({ context: show([outdated(), notes.join("\n"), pending()].filter(Boolean).join("\n\n")) });
       }
       case "end":
         hub.endSession(session, "the session closed");
@@ -258,6 +269,15 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
     if (e instanceof AxosError) return json({ error: hub.display(e.message, { agent: agent.id }) }, 400);
     throw e;
   }
+}
+
+// Sessions told that their plugin is older than the hub, as '<session>|<hub version>'.
+const told = new Set<string>();
+
+function older(a: string, b: string): boolean {
+  const x = a.split(".").map(Number), y = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) < (y[i] ?? 0);
+  return false;
 }
 
 // An image for a question: the raw bytes, ?name=<file name>. The answer's id goes into ask_human's images as att:<id>.

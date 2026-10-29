@@ -227,6 +227,9 @@ export class Hub {
   private onlineWindowMs: number;
   private listeners = new Map<string, Set<(e: HubEvent) => void>>();
   private streams = new Map<string, number>();
+  // Of those streams, how many said that the host behind them wakes on a message (?wakes=1), and how many said not.
+  private wakers = new Map<string, number>();
+  private sleepers = new Map<string, number>();
   private sendLog = new Map<string, number[]>();
   private linkSecret: string;
 
@@ -678,15 +681,33 @@ export class Hub {
     return s?.name ? `${s.name} (${key}${s.profile ? `, ${s.profile}` : ""})` : key;
   }
 
-  streamOpened(agentId: string): void {
-    this.streams.set(agentId, (this.streams.get(agentId) ?? 0) + 1);
+  // wakes: whether the client says its host wakes on a ring (a Claude Code session with the channel, a Codex bridge);
+  // null when it does not say (older plugins).
+  streamOpened(agentId: string, wakes: boolean | null = null): void {
+    const add = (m: Map<string, number>) => m.set(agentId, (m.get(agentId) ?? 0) + 1);
+    add(this.streams);
+    if (wakes === true) add(this.wakers);
+    if (wakes === false) add(this.sleepers);
     this.touch(agentId);
   }
 
-  streamClosed(agentId: string): void {
-    const n = (this.streams.get(agentId) ?? 1) - 1;
-    if (n <= 0) this.streams.delete(agentId);
-    else this.streams.set(agentId, n);
+  streamClosed(agentId: string, wakes: boolean | null = null): void {
+    const drop = (m: Map<string, number>) => {
+      const n = (m.get(agentId) ?? 1) - 1;
+      if (n <= 0) m.delete(agentId);
+      else m.set(agentId, n);
+    };
+    drop(this.streams);
+    if (wakes === true) drop(this.wakers);
+    if (wakes === false) drop(this.sleepers);
+  }
+
+  // 'wakes': a stream whose host wakes on a ring; 'no': streams open, but each said its host does not wake;
+  // 'unknown': a stream that did not say; null: no stream.
+  private wake(id: string): "wakes" | "no" | "unknown" | null {
+    if (!this.streams.has(id)) return null;
+    if (this.wakers.has(id)) return "wakes";
+    return (this.sleepers.get(id) ?? 0) >= (this.streams.get(id) ?? 0) ? "no" : "unknown";
   }
 
   // Live sessions in the project, then agents that connect without sessions (plain MCP clients).
@@ -698,7 +719,7 @@ export class Hub {
       const agent = this.db.query("SELECT human FROM agents WHERE id = ?").get(s.agent_id) as { human: string };
       return {
         id: s.key, address: `session:${s.key}`, name: s.name, profile: s.profile, human: agent.human, last_seen: s.last_seen as number | null,
-        bell: this.streams.has(s.key), online: this.streams.has(s.key) || t - s.last_seen < this.onlineWindowMs,
+        bell: this.streams.has(s.key), wake: this.wake(s.key), online: this.streams.has(s.key) || t - s.last_seen < this.onlineWindowMs,
         unread: this.unreadCount(`session:${s.key}`), roles: rolesOf(s.key),
       };
     });
@@ -711,7 +732,7 @@ export class Hub {
       .filter((a) => !withSessions.has(a.id) && a.last_seen !== null && t - a.last_seen < SESSION_LIVE_MS)
       .map((r) => ({
         id: r.id, address: `agent:${r.id}`, name: null as string | null, profile: null as string | null, human: r.human, last_seen: r.last_seen,
-        bell: this.streams.has(r.id), online: this.streams.has(r.id) || (r.last_seen !== null && t - r.last_seen < this.onlineWindowMs),
+        bell: this.streams.has(r.id), wake: this.wake(r.id), online: this.streams.has(r.id) || (r.last_seen !== null && t - r.last_seen < this.onlineWindowMs),
         unread: this.unreadCount(`agent:${r.id}`), roles: rolesOf(r.id),
       }));
     return [...sessions, ...agents];

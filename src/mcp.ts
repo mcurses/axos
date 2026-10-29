@@ -433,7 +433,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }, tool(({ project: p }) => {
     const now = hub.now();
     return hub.presence(project(p)).map((a) =>
-      `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "idle"}${a.bell ? " (wakes on messages)" : ""}, seen ${ago(a.last_seen, now)}, ${a.unread} unread${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`,
+      `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "idle"}${a.wake === "wakes" ? " (wakes on messages)" : a.wake === "no" ? " (listening, but does not wake on messages)" : a.wake === "unknown" ? " (listening; whether it wakes is not known)" : ""}, seen ${ago(a.last_seen, now)}, ${a.unread} unread${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`,
     ).join("\n") || "Nobody is live.";
   }));
 

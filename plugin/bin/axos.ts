@@ -269,6 +269,7 @@ function headers(id: Identity): Record<string, string> {
     Authorization: `Bearer ${id.token}`,
     "x-axos-session": id.sessionId,
     "x-axos-profile": encodeURIComponent(profile()),
+    "x-axos-client": `plugin/${PLUGIN_VERSION}`,
   };
   if (id.project) h["x-axos-project"] = encodeURIComponent(id.project);
   if (id.name) h["x-axos-name"] = encodeURIComponent(id.name);
@@ -433,7 +434,8 @@ async function forward(id: Identity, msg: { id?: unknown; method?: string; param
 // A ring carries no message: the client reads its inbox. Reconnects with backoff; without an identity it waits.
 const BELL_SETTLE_MS = Number(process.env.AXOS_BELL_SETTLE_MS ?? 1500);
 
-async function doorbell(connect: () => { url: string; headers: Record<string, string> } | null, ring: () => void): Promise<void> {
+// wakes: told to the hub, so presence can say whether this session really wakes (null: not known).
+async function doorbell(connect: () => { url: string; headers: Record<string, string> } | null, ring: () => void, wakes: boolean | null = null): Promise<void> {
   let backoff = 2000;
   for (;;) {
     const to = connect();
@@ -442,7 +444,7 @@ async function doorbell(connect: () => { url: string; headers: Record<string, st
       continue;
     }
     try {
-      const res = await fetch(`${to.url.replace(/\/$/, "")}/events`, { headers: to.headers });
+      const res = await fetch(`${to.url.replace(/\/$/, "")}/events${wakes === null ? "" : `?wakes=${wakes ? 1 : 0}`}`, { headers: to.headers });
       if (!res.ok || !res.body) throw new Error(`events ${res.status}`);
       backoff = 2000;
       const reader = res.body.getReader();
@@ -494,9 +496,11 @@ function bell(): Promise<void> {
       content: "AXOS: a new message is waiting for this session. It is shown at your next step; or call inbox now.", meta: { source: "axos" },
     } });
   };
+  // A ring wakes this session only if Claude Code was started with the AXOS channel.
+  const off = wakeupOff();
   return doorbell(to, () => {
     if (!timer) timer = setTimeout(() => void notify(), BELL_SETTLE_MS);
-  });
+  }, off === null ? null : !off);
 }
 
 async function mcp(): Promise<void> {
@@ -791,7 +795,7 @@ async function codexBell(args: string[]): Promise<void> {
     }, 2000);
   };
   console.error(`Listening for AXOS messages of ${session ? `session ${session}` : "this machine's agent"} in ${project}; nudging Codex session ${thread}.`);
-  await doorbell(() => ({ url: c.url, headers: h }), ring);
+  await doorbell(() => ({ url: c.url, headers: h }), ring, true);
 }
 
 // The hub says which project a reference means for this machine's agent; the link stores its id, so a rename or a second

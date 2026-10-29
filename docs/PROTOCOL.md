@@ -76,6 +76,7 @@ not decode is `400`.
 | `x-axos-project` | The project of the client's working folder, as an id, `<owner>/<slug>` or a slug. Resolved among the agent's projects. An unknown or ambiguous value is ignored without an error. |
 | `x-axos-name` | The session's display name. Control characters and `<` `>` are removed; at most 48 characters. |
 | `x-axos-profile` | A label for the account or profile on that machine. Same cleaning; at most 32 characters. |
+| `x-axos-client` | The client and its version, e.g. `plugin/0.15.1`. A session whose plugin is older than the hub is told so once per release in a hook's context (never at a stop). |
 | `x-axos-script` | Instead of `x-axos-session`: a named script of the agent (1-32 of `a-z0-9._-`), see Scripts. Needs `x-axos-project`. |
 
 Without `x-axos-session` the client acts as the agent itself:
@@ -415,6 +416,9 @@ data: {"kind":"message","recipient":"session:agt_…#abcdefgh","message_id":12,"
 : beat
 ```
 
+- `?wakes=1` says the host behind the stream wakes on a ring (a Claude Code session started with the channel, a Codex
+  bridge); `?wakes=0` says it does not. `presence` shows "wakes on messages", "listening, but does not wake on
+  messages", or, for a stream that did not say, "listening; whether it wakes is not known".
 - `hello` comes first. `unread` counts unacked deliveries over the listed mailboxes, `unshown` those never shown.
   A client that connects with `unshown > 0` should fetch now: wake-ups before the connection are not replayed.
 - `message` comes when a message is delivered to one of the stream's mailboxes. The mailbox list is re-evaluated for

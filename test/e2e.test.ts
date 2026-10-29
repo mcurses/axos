@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { openDb } from "../src/db.ts";
 import { Hub } from "../src/hub.ts";
 import { makeFetch } from "../src/server.ts";
+import { VERSION } from "../src/version.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -179,6 +180,34 @@ test("a low-priority message rings no bell and does not hold a stop; a note to a
   expect(view).toContain("shop-quiet (alice/dev3#10771077): forwarded (passed to lane 3 second line)");
   await c.close();
   await sender.close();
+});
+
+test("presence tells a session that wakes from one that only listens; an older plugin hears so once", async () => {
+  const open = async (sid: string, wakes: string | null) => {
+    const ctrl = new AbortController();
+    const res = await fetch(`${base}/events${wakes === null ? "" : `?wakes=${wakes}`}`, {
+      headers: { Authorization: `Bearer ${tokens.dev3}`, "x-axos-session": sid, "x-axos-project": "shop", "x-axos-name": `w-${sid.slice(0, 4)}` }, signal: ctrl.signal });
+    await res.body!.getReader().read();
+    return ctrl;
+  };
+  const streams = [await open("aaaa0001-1111-2222-3333-444444444444", "1"), await open("aaaa0002-1111-2222-3333-444444444444", "0"),
+    await open("aaaa0003-1111-2222-3333-444444444444", null)];
+  const c = await connect(tokens.dev1!, { "x-axos-session": "aaaa0004-1111-2222-3333-444444444444", "x-axos-project": "shop" });
+  const p = (await call(c, "presence")).text;
+  expect(p).toMatch(/w-aaaa[^\n]*\(wakes on messages\)/);
+  expect(p).toMatch(/w-aaaa[^\n]*\(listening, but does not wake on messages\)/);
+  expect(p).toMatch(/w-aaaa[^\n]*\(listening; whether it wakes is not known\)/);
+  streams.forEach((x) => x.abort());
+  await c.close();
+
+  const hook = async (client: string, extra: Record<string, unknown> = {}) => ((await (await fetch(`${base}/api/hook`, {
+    method: "POST", body: JSON.stringify({ event: "check", ...extra }),
+    headers: { Authorization: `Bearer ${tokens.dev3}`, "x-axos-session": "aaaa0005-1111-2222-3333-444444444444", "x-axos-project": "shop", "x-axos-client": client },
+  })).json()) as { context: string }).context;
+  expect(await hook("plugin/0.1.0", { stop: true })).not.toContain("runs plugin");
+  expect(await hook("plugin/0.1.0")).toContain(`this session runs plugin 0.1.0; the hub is at ${VERSION}`);
+  expect(await hook("plugin/0.1.0")).not.toContain("runs plugin");
+  expect(await hook(`plugin/${VERSION}`)).not.toContain("runs plugin");
 });
 
 test("the human page: key login, the state document, answering an ask; the app shell from web/dist", async () => {
