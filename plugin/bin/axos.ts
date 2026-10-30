@@ -26,7 +26,7 @@
 // in the config (a folder path, or a git remote that `axos link` wrote), or through a committed .axos.json ({"hub": "<url>", "project": "<owner>/<name>", "id": "prj_…"}) at or
 // above it, once the person on this machine has trusted that file: a cloned repo must not steer sessions into a project.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -299,9 +299,74 @@ function stateFile(sessionId: string): string {
   return join(dir, `${sessionId}.json`);
 }
 
+// Quoting the human. A session may pass on what its human typed (send with quotes_human: true); the hub marks the
+// message quotes-human=<name>, and it stays the session's message with the session's trust. The check that the words
+// are really the human's happens here, on their machine: the prompt hook keeps the session's last prompts (24 hours, at
+// most 20, next to the config, readable by the user only; never sent to the hub), and such a send is forwarded only
+// when the body is a run of whole lines of one prompt and the summary, if given, one of its lines. This is an honesty
+// check against paraphrase, not proof: the session runs as the user and could write this file; that is why the hub
+// never gives a quote the human's own sender (security review of 2026-10-30).
+const PROMPTS_KEEP = 20;
+const PROMPTS_MS = 6 * 3_600_000;
+// Claude Code also delivers what the harness injects as a "prompt": channel wake-ups (which carry peer messages), task
+// notifications, teammate messages, system reminders. None of it was typed by the person: a prompt that is such a block
+// is not recorded, and such blocks inside a typed prompt are cut out before it is. (Security re-check of 2026-10-30.)
+const HARNESS_TAGS = "channel|task-notification|teammate-message|system-reminder|command-[a-z-]+|local-command-[a-z-]+|axos-message|axos-digest";
+export function cleanPrompt(text: string): string {
+  if (new RegExp(`^\\s*<(${HARNESS_TAGS})\\b`).test(text)) return "";
+  return text.replace(new RegExp(`<(${HARNESS_TAGS})\\b[^>]*>[\\s\\S]*?</\\1>`, "g"), "").replace(new RegExp(`<(${HARNESS_TAGS})\\b[^>]*/?>`, "g"), "");
+}
+function promptsDir(): string {
+  const dir = join(dirname(CONFIG_PATH), "prompts");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+function promptsFile(sessionId: string): string {
+  return join(promptsDir(), `${encodeURIComponent(sessionId)}.jsonl`);
+}
+export function readPrompts(sessionId: string, now = Date.now()): { t: number; text: string }[] {
+  const f = promptsFile(sessionId);
+  if (!existsSync(f)) return [];
+  const since = now - PROMPTS_MS;
+  return readFileSync(f, "utf8").split("\n").filter(Boolean).flatMap((l) => {
+    try {
+      const p = JSON.parse(l) as { t: number; text: string };
+      // A line dated in the future would never expire: it is not one the hook wrote.
+      return typeof p.t === "number" && p.t >= since && p.t <= now + 60_000 && typeof p.text === "string" ? [p] : [];
+    } catch { return []; }
+  });
+}
+export function recordPrompt(sessionId: string, raw: string, now = Date.now()): void {
+  const text = cleanPrompt(raw);
+  if (!text.trim()) return;
+  const kept = [...readPrompts(sessionId, now), { t: now, text }].slice(-PROMPTS_KEEP);
+  writeFileSync(promptsFile(sessionId), `${kept.map((p) => JSON.stringify(p)).join("\n")}\n`, { mode: 0o600 });
+  // Other sessions' files older than a day hold nothing the check may use: drop them.
+  for (const f of readdirSync(promptsDir())) {
+    const path = join(promptsDir(), f);
+    try { if (now - statSync(path).mtimeMs > PROMPTS_MS) unlinkSync(path); } catch { /* gone already */ }
+  }
+}
+const squeeze = (s: string) => s.replace(/\s+/g, " ").trim();
+const lines = (s: string) => s.split("\n").map(squeeze).filter(Boolean);
+// The body is a run of whole lines of one prompt the human typed in this session (whitespace aside; no fragment of a
+// line, nothing stitched from two prompts), and the summary, when given, is one of the body's own lines.
+export function quotesHuman(prompts: string[], body: string, summary?: string): boolean {
+  const want = lines(body);
+  if (!want.length) return false;
+  if (summary !== undefined && !want.includes(squeeze(summary))) return false;
+  return prompts.some((p) => {
+    const have = lines(p);
+    return have.some((_, i) => want.every((l, k) => have[i + k] === l));
+  });
+}
+const NOT_HUMAN_WORDS = "Not sent: quotes_human means the body is what your human typed to this session, as whole lines of one of their recent " +
+  "prompts, and the summary (if given) one of the body's lines. Quote them exactly, or send in your own words without quotes_human.";
+
 // Whether the Claude Code process this hook runs under was started without the AXOS channel, so an idle session is
 // not woken by a message. null: no Claude Code process found among the ancestors (another client, or ps failed).
-function wakeupOff(argsOf = (pid: number) => Bun.spawnSync(["ps", "-o", "ppid=,args=", "-p", String(pid)], { stderr: "ignore" }).stdout.toString()): boolean | null {
+// The command line of the claude process this plugin runs under, found by walking up the parents; null when not found.
+function claudeArgs(argsOf = (pid: number) => Bun.spawnSync(["ps", "-o", "ppid=,args=", "-p", String(pid)], { stderr: "ignore" }).stdout.toString()): string | null {
   let pid = process.ppid;
   for (let i = 0; i < 6 && pid > 1; i++) {
     const m = /^\s*(\d+)\s+(.*)$/s.exec(argsOf(pid).trim());
@@ -309,12 +374,18 @@ function wakeupOff(argsOf = (pid: number) => Bun.spawnSync(["ps", "-o", "ppid=,a
     const args = m[2]!;
     // The executable is claude, or an interpreter running it (node, a wrapper script).
     const [a0 = "", a1 = ""] = args.split(/\s+/);
-    if (basename(a0) === "claude" || (/^(node|bun|bash|sh|zsh)$/.test(basename(a0)) && (basename(a1) === "claude" || a1.includes("@anthropic-ai/claude-code")))) {
-      return !/--(dangerously-load-development-channels|channels)[ =]\S*plugin:axos@/.test(args);
-    }
+    if (basename(a0) === "claude" || (/^(node|bun|bash|sh|zsh)$/.test(basename(a0)) && (basename(a1) === "claude" || a1.includes("@anthropic-ai/claude-code")))) return args;
     pid = Number(m[1]);
   }
   return null;
+}
+function wakeupOff(argsOf?: (pid: number) => string): boolean | null {
+  const args = claudeArgs(argsOf);
+  return args === null ? null : !/--(dangerously-load-development-channels|channels)[ =]\S*plugin:axos@/.test(args);
+}
+// A headless run (claude -p / --print) is fed its prompt by a program, not typed by a person.
+export function headless(args: string | null): boolean {
+  return args !== null && /(^|\s)(-p|--print)(\s|$)/.test(args);
 }
 
 const WAKEUP_OFF = "Idle wake-up is off for this session: Claude Code was started without " +
@@ -322,8 +393,13 @@ const WAKEUP_OFF = "Idle wake-up is off for this session: Claude Code was starte
   "Tell your user if they expect messages while you are idle.";
 
 async function hook(kind: string): Promise<void> {
-  const input = (await Bun.stdin.json().catch(() => ({}))) as { session_id?: string; cwd?: string; stop_hook_active?: boolean; session_title?: string };
+  const input = (await Bun.stdin.json().catch(() => ({}))) as { session_id?: string; cwd?: string; stop_hook_active?: boolean; session_title?: string; prompt?: string };
   const id = identity(input.session_id, input.cwd, input.session_title);
+  // Only a person's prompts are recorded: a headless run (the owner tick, scripts) sets AXOS_NO_PROMPT_LOG or AXOS_OWNER_TICK.
+  if (kind === "prompt" && id && !id.quiet && id.project && typeof input.prompt === "string" && !process.env.AXOS_OWNER_TICK && !process.env.AXOS_NO_PROMPT_LOG &&
+    !headless(claudeArgs())) {
+    recordPrompt(id.sessionId, input.prompt);
+  }
   if (id && !id.quiet && !id.project && id.untrusted && kind === "start") {
     // Said once per session, and only in a folder whose repo asks to join a project.
     const f = id.untrusted.file; // validated: only a project name or id
@@ -407,7 +483,8 @@ async function uploadImages(id: Identity, paths: unknown[]): Promise<string[]> {
 }
 
 async function forward(id: Identity, msg: { id?: unknown; method?: string; params?: { name?: string; arguments?: Record<string, unknown> } }): Promise<void> {
-  const args = msg.method === "tools/call" && msg.params?.name === "ask_human" ? msg.params.arguments : undefined;
+  const call = msg.method === "tools/call" ? msg.params : undefined;
+  const args = call?.name === "ask_human" ? call.arguments : undefined;
   if (args && Array.isArray(args.images)) {
     try {
       args.images = await uploadImages(id, args.images);
@@ -416,10 +493,19 @@ async function forward(id: Identity, msg: { id?: unknown; method?: string; param
       return;
     }
   }
+  const extra: Record<string, string> = {};
+  if (call?.name === "send" && call.arguments?.quotes_human === true) {
+    const a = call.arguments;
+    if (typeof a.body !== "string" || !quotesHuman(readPrompts(id.sessionId).map((p) => p.text), a.body, typeof a.summary === "string" ? a.summary : undefined)) {
+      write({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: NOT_HUMAN_WORDS }], isError: true } });
+      return;
+    }
+    extra["x-axos-human-words"] = "checked";
+  }
   try {
     const res = await fetch(`${id.c.url.replace(/\/$/, "")}/mcp`, {
       method: "POST",
-      headers: { ...headers(id), "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      headers: { ...headers(id), ...extra, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
       body: JSON.stringify(msg),
     });
     if (res.status === 202 || msg.id === undefined) return;
@@ -1035,6 +1121,8 @@ async function whoami(): Promise<void> {
 
 // ---------------------------------------------------------------- main
 
+// Run as a program; imported (by a test) it only offers its functions.
+if (import.meta.main) {
 const [cmd, arg] = process.argv.slice(2);
 if (cmd === "mcp") await mcp();
 else if (cmd === "hook" && arg) await hook(arg).catch(() => {});
@@ -1083,4 +1171,5 @@ else if (cmd === "trust") {
 } else {
   console.error("usage: axos join <invite link> | link [<project>] | unlink | trust | whoami | landed <remote>/<branch> | send --name <script> … | inbox --name <script> … | codex [<codex args>] | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
   process.exit(2);
+}
 }

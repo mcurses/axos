@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS messages (
   dedupe_key    TEXT,
   created_at    INTEGER NOT NULL,
   sent_by       TEXT,                          -- who wrote it when that is not the sender: a script speaking for a role
+  quotes_human  TEXT,                          -- the human whose typed words the body holds, as the sender's plugin checked; the message stays the sender's
   UNIQUE (sender, dedupe_key)
 );
 CREATE TABLE IF NOT EXISTS deliveries (
@@ -267,6 +268,7 @@ function migrate(db: Database): void {
   if (sessions && !sessions.sql.includes("former_names")) db.exec("ALTER TABLE sessions ADD COLUMN former_names TEXT NOT NULL DEFAULT ''");
   if (sessions && !/\bkind\b/.test(sessions.sql)) db.exec("ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'session'");
   if (messages && !messages.sql.includes("sent_by")) db.exec("ALTER TABLE messages ADD COLUMN sent_by TEXT");
+  if (messages && !messages.sql.includes("quotes_human")) db.exec("ALTER TABLE messages ADD COLUMN quotes_human TEXT");
   if (sessions && !/\bwakes\b/.test(sessions.sql)) db.exec("ALTER TABLE sessions ADD COLUMN wakes INTEGER");
   const subscriptions = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'subscriptions'").get() as { sql: string } | null;
   if (subscriptions && !subscriptions.sql.includes("subject_filter")) db.exec("ALTER TABLE subscriptions ADD COLUMN subject_filter TEXT");

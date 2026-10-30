@@ -46,11 +46,12 @@ const asArg = z.string().optional().describe("Only for scripts and clients witho
 export interface Connection {
   session?: string; // session key, when the client sent one
   project?: string; // the project the client's working directory belongs to
+  human_words?: boolean; // the client compared a send with quotes_human against what the human typed (the plugin does)
 }
 
 export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {}, signal?: AbortSignal): McpServer {
   const server = new McpServer({ name: "axos", version: VERSION }, { instructions: INSTRUCTIONS });
-  const actor: Actor & { kind: "agent" } = { kind: "agent", id: agent.id, human: agent.human, session: conn.session };
+  const actor: Actor & { kind: "agent" } = { kind: "agent", id: agent.id, human: agent.human, session: conn.session, human_words: conn.human_words };
   const me = conn.session ? `session:${conn.session}` : `agent:${agent.id}`;
 
   const rolesOf = (sender: string, p: string) => hub.rolesHeldBy(sender, p);
@@ -78,6 +79,13 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   };
   const boxes = (p?: string, as?: string) => hub.mailboxes(actor, as ? project(p) : p && ref(p), as);
   const render = (items: Parameters<typeof renderMessages>[0], header: string) => renderMessages(items, header, rolesOf, nameOf);
+  // A session named in a reply or a receipt: its label, unless it is another person's session in a linked project,
+  // which is "a session of <human>" (its name, machine and profile stay on their side of the link).
+  const peer = (address: string, messageProject: string): string => {
+    if (!address.startsWith("session:")) return address;
+    const s = hub.session(address.slice(8));
+    return hub.labelFor(address, agent.human, !!s?.project && s.project !== messageProject);
+  };
 
   server.registerTool("join", {
     description: "Who you are on AXOS, the project brief, its roles and who holds them, live sessions, leases, and what is waiting for you.",
@@ -106,7 +114,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       }));
     }
     lines.push("", "## Live sessions");
-    lines.push(...hub.presence(pr).map((a) => `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "idle"}, seen ${ago(a.last_seen, now)}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`));
+    lines.push(...hub.presence(pr).map((a) => `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "away"}, seen ${ago(a.last_seen, now)}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`));
     const ls = hub.leases(pr);
     lines.push("", "## Leases");
     lines.push(...(ls.live.length ? ls.live.map((l) => `- ${l.resource}: ${hub.label(l.holder)} (${l.mode}) until ${when(l.expires_at)}${l.note ? ` — ${l.note}` : ""}`) : ["(none)"]));
@@ -156,7 +164,8 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     description: "Send a message. Addresses: role:<role>, session:<session name>, human:<name>, project (every live session in the project), " +
       "or next (held for the next session of your human that starts in this project: a handoff before a restart). " +
       "A linked project (see join) is reached with role:<project>/<role>, session:<name> or project:<project>. " +
-      "Mail to a role waits for whoever holds it; if nobody is reading it right now (vacant, or its holder away) the result says so and who else is in the room.",
+      "Mail to a role waits for whoever holds it; if nobody is reading it right now (vacant, or its holder away) the result says so and who else is in the room. " +
+      "To pass on what your human typed, send with quotes_human: true and their words as the body: the message stays yours, marked quotes-human=<name>.",
     inputSchema: strict({
       project: projectArg,
       to: z.union([z.string(), z.array(z.string()).min(1)]).optional().describe("One address or a list; leave out when replying with re: the reply goes to whoever sent that message"),
@@ -168,6 +177,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       as_of: z.string().optional().describe("The state this is based on, e.g. a commit sha, so a reader can tell if it is stale"),
       priority: z.enum(PRIORITIES).optional().describe("low: wakes nobody, read at the recipient's next step (the default for a note or status to a whole project); high: a message to a human is pushed to their phone, use it rarely"),
       dedupe_key: z.string().optional().describe("Sending twice with the same key delivers once"),
+      quotes_human: z.boolean().optional().describe("The body is what your human typed to this session, verbatim, as whole lines of one prompt (the summary, if given, one of those lines); the plugin compares it with their recent prompts. Readers see quotes-human=<name> and weigh it as your word; the message stays yours"),
       queue: z.union([z.boolean(), z.string()]).optional().describe("No effect (kept for older sessions): mail to a role always waits for its holder"),
       as: asArg,
     }),
@@ -182,7 +192,8 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     });
     if (r.duplicate) return `Already sent as message ${r.id}; not sent again.`;
     const parts = [`Sent message ${r.id} (${body ? `summary and a ${body.length}-character body` : "summary only, no body"}).`];
-    if (r.delivered_to.length) parts.push(`Delivered to ${r.delivered_to.map((d) => d.startsWith("session:") ? hub.label(d) : d).join(", ")}.`);
+    const sentIn = across ? conn.project! : project(a.project);
+    if (r.delivered_to.length) parts.push(`Delivered to ${r.delivered_to.map((d) => peer(d, sentIn)).join(", ")}.`);
     const roles = r.waiting_for_role.filter((w) => w.startsWith("role:"));
     if (roles.length) parts.push(`Held for ${roles.join(", ")} until someone takes the role.`);
     if (r.waiting_for_role.some((w) => w.startsWith("next:"))) parts.push(`Held for the next session of ${agent.human} that starts in this project.`);
@@ -260,7 +271,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     // On the reader's own messages: how far each recipient got.
     const mine = new Set([me, ...boxes().map((b) => hub.boxKey(b)), ...hub.projectsOf(agent.id).flatMap((p) => conn.session ? hub.rolesHeldBy(me, p).map((r) => `role:${p}/${r}`) : [])]);
     const rows = hub.thread(actor, m).map((row) => mine.has(row.sender) ? { ...row, receipts: hub.receipts(row.id).map((d) =>
-      `${d.recipient.startsWith("session:") ? hub.label(d.recipient) : d.recipient}: ${d.acked_at ? `${d.outcome ?? "acked"}${d.note ? ` (${d.note})` : ""}` : d.shown_at ? "read" : "unread"}`).join("; ") } : row);
+      `${peer(d.recipient, row.project)}: ${d.acked_at ? `${d.outcome ?? "acked"}${d.note ? ` (${d.note})` : ""}` : d.shown_at ? "read" : "unread"}`).join("; ") } : row);
     return render(rows, `Thread of message ${m}:`);
   }));
 
@@ -420,7 +431,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     return rows.map((a) => {
       const steps = [
         `asked ${when(a.created_at)}`,
-        a.pushed_at ? "pushed to the phone" : "no push on record (no phone set up, the push failed, or asked before 0.14)",
+        a.pushed_at ? "pushed to the phone" : "no push on record (no phone set up, or the push failed)",
         a.seen_at ? `seen on the page ${when(a.seen_at)}` : "",
         a.reminded_at ? `reminded ${when(a.reminded_at)}` : a.remind_at && a.answer === null ? `reminder at ${when(a.remind_at)}` : "",
       ].filter(Boolean);
@@ -437,7 +448,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }, tool(({ project: p }) => {
     const now = hub.now();
     return hub.presence(project(p)).map((a) =>
-      `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "idle"}${a.wake === "wakes" ? " (wakes on messages)" : a.wake === "no" ? " (listening, but does not wake on messages)" : a.wake === "unknown" ? " (listening; whether it wakes is not known)" : ""}, seen ${ago(a.last_seen, now)}, ${a.unread ? `${a.unread} to handle (${a.unseen} not read yet)` : "nothing to handle"}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`,
+      `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "away"}${a.wake === "wakes" ? " (wakes on messages)" : a.wake === "no" ? " (listening, but does not wake on messages)" : a.wake === "unknown" ? " (listening; whether it wakes is not known)" : ""}, seen ${ago(a.last_seen, now)}, ${a.unread ? `${a.unread} to handle (${a.unseen} not read yet)` : "nothing to handle"}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`,
     ).join("\n") || "Nobody is live.";
   }));
 

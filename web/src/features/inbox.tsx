@@ -93,6 +93,7 @@ export function InboxItem({ m, now, onDone }: { m: InboxMessage; now: number; on
         <span className="text-muted-foreground text-xs">{m.project} · {ago(m.created_at, now)}</span>
       </div>
       <MessageContent className="w-full">
+        {m.quotes_human && <p className="text-xs text-amber-900">The sender says this is what {m.quotes_human} typed to it; that is the sender's word.</p>}
         <p className="font-semibold">{m.summary}</p>
         {m.body && <MessageResponse>{m.body}</MessageResponse>}
       </MessageContent>
@@ -107,7 +108,8 @@ export function SentItem({ m, now }: { m: SentMessage; now: number }) {
   return (
     <Message from="user" className="max-w-full">
       <div className="ml-auto flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <Sender label={m.from} /> → {m.readers.join(", ")} · {m.project} · {ago(m.created_at, now)}
+        <Sender label={m.from} /> → {m.readers.length ? m.readers.join(", ") : "your own sessions"} · {m.project} · {ago(m.created_at, now)}
+        {m.quotes_human && <span className="rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-900" title="This session says the body is what you typed to it. If not, tell it.">said in your words</span>}
       </div>
       <MessageContent>
         <details>

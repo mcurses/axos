@@ -131,10 +131,11 @@ function state(hub: Hub, human: string) {
   hub.markShown([`human:${human}`], items.map((m) => m.id));
   const inbox = items.filter((m) => m.type !== "ask").map((m) => ({
     id: m.id, from: m.sender.startsWith("session:") ? hub.label(m.sender) : m.sender, sender_human: m.sender_human, project: m.project,
-    type: m.type, priority: m.priority, created_at: m.created_at, summary: m.summary, body: m.body, re: m.re,
+    type: m.type, priority: m.priority, created_at: m.created_at, summary: m.summary, body: m.body, re: m.re, quotes_human: m.quotes_human,
   }));
   const sent = hub.sentToOthers(human, 50).map((m) => ({
     id: m.id, from: hub.senderTitle(m.sender), readers: m.readers, project: m.project, created_at: m.created_at, summary: m.summary, body: m.body,
+    quotes_human: m.quotes_human, // "said in your words by <from>": the page shows every quote, whoever read it
   }));
   const projects = mine.map((p) => {
     const leases = hub.leases(p);

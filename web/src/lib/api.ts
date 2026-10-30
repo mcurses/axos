@@ -6,9 +6,9 @@ export interface Ask {
 }
 export interface InboxMessage {
   id: number; from: string; sender_human: string | null; project: string; type: string; priority: string;
-  created_at: number; summary: string; body: string; re: number | null;
+  created_at: number; summary: string; body: string; re: number | null; quotes_human: string | null; // quotes_human: the sender says the body is this human's typed words
 }
-export interface SentMessage { id: number; from: string; readers: string[]; project: string; created_at: number; summary: string; body: string }
+export interface SentMessage { id: number; from: string; readers: string[]; project: string; created_at: number; summary: string; body: string; quotes_human: string | null }
 export interface Session {
   label: string; name: string | null; human: string; profile: string | null; online: boolean; bell: boolean;
   unread: number; unseen: number; roles: string[]; last_seen: number | null; // unread: not acked; unseen: not read yet

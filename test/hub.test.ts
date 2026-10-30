@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { openDb } from "../src/db.ts";
 import { AxosError, Hub } from "../src/hub.ts";
 import { ntfyNotifier, type Notifier } from "../src/notify.ts";
+import { renderDigest, renderMessage } from "../src/render.ts";
 
 let t: number;
 let hub: Hub;
@@ -1208,6 +1209,31 @@ describe("delivery and coordination", () => {
     expect(hub.leases(SHOP).live.map((l) => l.holder)).toEqual([three]);
   });
 
+  test("a session that takes a second role still owns its lease and its place in a queue", () => {
+    hub.defineRole(SHOP, "reviewer");
+    hub.defineRole(SHOP, "deployer");
+    const s = hub.openSession(DEV3, { client_session: "5ea75ea7-0000-0000-0000-000000000000", project: SHOP, name: "shop-rv" });
+    hub.claimRole(DEV3, SHOP, "reviewer", undefined, s);
+    const first = hub.lease(DEV3, { project: SHOP, resource: "server:staging", ttl_s: 600, session: s });
+    expect(first.granted).toBe(true);
+    expect(hub.leases(SHOP).live[0]!.holder).toBe(`role:${SHOP}/reviewer`);
+    hub.claimRole(DEV3, SHOP, "deployer", undefined, s); // two roles: the session speaks as itself now
+    expect(hub.lease(DEV3, { project: SHOP, resource: "server:staging", session: s })).toMatchObject({ granted: true, renewed: true });
+    expect(hub.leases(SHOP).waiting).toEqual([]);
+    expect(hub.releaseLease(DEV3, SHOP, "server:staging", undefined, s)).toEqual({ released: true, left_queue: false });
+    // The same for a place in a queue.
+    hub.lease(DEV1, { project: SHOP, resource: "db:main", ttl_s: 600 });
+    const q = hub.openSession(DEV3, { client_session: "5ea75ea8-0000-0000-0000-000000000000", project: SHOP, name: "shop-q" });
+    hub.defineRole(SHOP, "tester");
+    hub.claimRole(DEV3, SHOP, "tester", undefined, q);
+    expect(hub.lease(DEV3, { project: SHOP, resource: "db:main", session: q })).toMatchObject({ granted: false, position: 1 });
+    hub.defineRole(SHOP, "ops");
+    hub.claimRole(DEV3, SHOP, "ops", undefined, q);
+    expect(hub.lease(DEV3, { project: SHOP, resource: "db:main", session: q })).toMatchObject({ granted: false, position: 1 });
+    expect(hub.leases(SHOP).waiting.length).toBe(1);
+    expect(hub.releaseLease(DEV3, SHOP, "db:main", undefined, q)).toEqual({ released: false, left_queue: true });
+  });
+
   test("a renewal keeps the lease's length and mode", () => {
     hub.lease(DEV1, { project: SHOP, resource: "version:studio", ttl_s: 3600 });
     t += 600_000;
@@ -1541,5 +1567,70 @@ describe("mailboxes nobody reads", () => {
     expect(h.open.find((o) => o.kind === "agent")).toMatchObject({ n: 2 });
     expect(h.stuck_sessions).toEqual([]);
     expect(h.new.agents.length).toBe(3);
+  });
+});
+
+describe("a session quoting its human", () => {
+  let desk: string, coord: string;
+  const nameOf = (s: string) => (s.startsWith("session:") ? hub.session(s.slice(8))?.name ?? null : null);
+  beforeEach(() => {
+    desk = hub.openSession(DEV1, { client_session: "d0d0d0d0-1111-2222-3333-444444444444", project: SHOP, name: "desk-shop" });
+    coord = hub.openSession(DEV3, { client_session: "c0c0c0c0-1111-2222-3333-444444444444", project: SHOP, name: "shop-coord" });
+    hub.defineRole(SHOP, "coordinator");
+    hub.claimRole(DEV3, SHOP, "coordinator", undefined, coord);
+  });
+  // The desk, as the plugin presents it after checking the words against the human's prompts.
+  const D = (): AgentActor & { human_words: boolean } => ({ ...A, session: desk, human_words: true });
+  const quote = (summary: string, extra: Record<string, unknown> = {}) => ({ ...note(["role:coordinator"], summary), quotes_human: true, ...extra });
+
+  test("without the plugin's check, or without a session, a quote is refused with the reason", () => {
+    expect(refusal(() => hub.send({ ...A, session: desk }, quote("ship it")))).toMatch(/plugin's check/);
+    expect(refusal(() => hub.send({ ...A, human_words: true }, quote("ship it")))).toMatch(/plugin's check/);
+    expect(hub.inbox(`role:${SHOP}/coordinator`)).toEqual([]);
+  });
+
+  test("the message stays the session's, marked with whose words it quotes; nobody gets the human's own sender", () => {
+    const r = hub.send(D(), quote("ship the studio tonight"));
+    const m = hub.getMessage(r.id)!;
+    expect(m.sender).toBe(`session:${desk}`);
+    expect(m.sender_human).toBe("alice");
+    expect(m.quotes_human).toBe("alice");
+    expect(m.sent_by).toBeNull();
+    const frame = renderMessage(hub.inbox(`role:${SHOP}/coordinator`)[0]!, undefined, nameOf);
+    expect(frame).toContain(`from="session:${desk}"`);
+    expect(frame).toContain('sender-human="alice"');
+    expect(frame).toContain('quotes-human="alice"');
+    // A reply goes back to the desk alone: the human's page is not opened by a quote.
+    const a = hub.send({ ...B, session: coord }, { project: SHOP, type: "answer", summary: "shipping at 20:00", re: r.id });
+    expect(a.delivered_to).toEqual([`session:${desk}`]);
+    expect(hub.inbox("human:alice")).toEqual([]);
+    expect(pushes.length).toBe(0);
+  });
+
+  test("a desk holding a role quotes as the role; a message that quotes nobody has no mark", () => {
+    hub.defineRole(SHOP, "desk-shop");
+    hub.claimRole(DEV1, SHOP, "desk-shop", undefined, desk);
+    const r = hub.send(D(), quote("ship the studio tonight"));
+    expect(hub.getMessage(r.id)!).toMatchObject({ sender: `role:${SHOP}/desk-shop`, quotes_human: "alice" });
+    const plain = hub.send(D(), note(["role:coordinator"], "my own summary"));
+    expect(hub.getMessage(plain.id)!.quotes_human).toBeNull();
+  });
+
+  test("the human's page lists every quote in their name, whoever read it", () => {
+    hub.send(D(), quote("drop the staging database and redeploy"));
+    const sent = hub.sentToOthers("alice");
+    expect(sent.length).toBe(1);
+    expect(sent[0]).toMatchObject({ sender: `session:${desk}`, quotes_human: "alice", readers: [] });
+    expect(hub.sentToOthers("alice").find((m) => m.quotes_human === null)).toBeUndefined();
+  });
+
+  test("a digest line names the quoted human", () => {
+    const r = hub.send(D(), quote("ship the studio tonight"));
+    expect(renderDigest([hub.getMessage(r.id)!])).toContain(`from session:${desk}, note quoting alice: ship the studio tonight`);
+  });
+
+  test("there is no human seat", () => {
+    expect(refusal(() => hub.send({ ...A, session: desk, as: "human", human_words: true }, note(["role:coordinator"], "x")))).toMatch(/no "human" seat/);
+    expect(refusal(() => hub.mailboxes({ id: DEV1, session: desk }, SHOP, "human"))).toMatch(/no "human" seat/);
   });
 });

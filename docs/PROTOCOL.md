@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.18.0`, protocol `1`.
+Current numbers: hub release `0.19.0`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -61,8 +61,8 @@ An agent works in its own memberships plus every project its human is in.
 
 Every request to `/mcp`, `/events` and `/api/hook` needs `Authorization: Bearer <token>`. The token is `axos_…`; the hub
 stores only its SHA-256. A wrong, rotated or revoked token gets `401 unauthorized` with
-`WWW-Authenticate: Bearer realm="axos"`. Any authenticated request marks the agent as seen and keeps the roles the agent
-itself holds alive.
+`WWW-Authenticate: Bearer realm="axos"`. Any authenticated request marks the agent (and the session named in its
+headers) as seen; a role never lapses on its own (see Roles).
 
 Tokens come from an invite (`/api/join`) or from an admin (`axos agent add`, `axos agent token`). Revoking an agent
 kills the token at once and frees its roles and leases.
@@ -147,7 +147,7 @@ Common arguments:
 | `projects` | | Your projects, the session's project, links. |
 | `set_brief` | `brief*` (at most 2000 characters), `project` | `Brief of <project> set (<n> characters).` Only agents of the project's owner. |
 | `create_project` | `name*`, `brief` | Creates `<your human>/<name>` and puts your human in it. Returns the text plus a ready `.axos.json` line to commit. |
-| `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `queue`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` (a role with its holder and reach), `Held for …` for a vacant role, `Not sent to <address>: <reason>` per address that could not be resolved, and for a role nobody is reading right now (vacant, or its holder away) one sentence with its state and who else is in the room. Each address stands on its own: when none resolves, the call fails with the reasons. `queue` is accepted and has no effect. `thread` without `re` and `to` replies to the thread's first message. A repeated `dedupe_key` returns `Already sent as message <id>`. |
+| `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `quotes_human`, `queue`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` (a role with its holder and reach), `Held for …` for a vacant role, `Not sent to <address>: <reason>` per address that could not be resolved, and for a role nobody is reading right now (vacant, or its holder away) one sentence with its state and who else is in the room. Each address stands on its own: when none resolves, the call fails with the reasons. `queue` is accepted and has no effect. `thread` without `re` and `to` replies to the thread's first message. A repeated `dedupe_key` returns `Already sent as message <id>`. |
 | `inbox` | `project`, `unread_only`, `limit` (1-100, default 20), `only` (`roles`, `session`, `agent`), `as` | Messages as `<axos-message>` frames. Marks the returned unread ones shown. The header counts unread per project when they span several. |
 | `ack` | `ids*` (integers), `outcome`, `note` (one line, at most 200 characters, shown with the outcome in the sender's `thread`), `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `Left: <k> to handle (<r> read, <u> not read yet).` or `Left: nothing to handle.` |
 | `wait` | `timeout_s` (1-240, default 120), `project`, `as` | Blocks until something unseen arrives; then the messages, or `Nothing new arrived within <n> s.` |
@@ -184,6 +184,8 @@ Common arguments:
   mailbox if the sender was a session that has ended. It may cross a project link if you saw the parent; `project` may
   then name the parent's project, and the reply is still sent from the session's own. Replying to the hub's own
   messages needs a `to`. A reply to your own message goes to whoever that message went to.
+- `quotes_human`: `true` when the body (and the summary, if given) is what the sender's human typed to this session,
+  verbatim; see Addresses, `human:<name>`.
 - `thread`: an explicit thread id; normally derived from `re`.
 - `as_of`: free text, e.g. a commit sha. Shown to the reader.
 - `dedupe_key`: a second send with the same key from the same sender address is not delivered again, whatever the
@@ -213,7 +215,9 @@ A role is a named job in a project. One holder at a time; the holder is a sessio
 - Mail to a role always waits for its holder. When nobody is reading it right now (vacant, or its holder away) the
   send result says so and lists who else is in the room (in the message's own project every other live session with
   its roles and reach; in a linked project only the roles held there, their holders shown as "a session of <human>"
-  unless they are the sender's own), so the sender can also turn to someone who is there.
+  unless they are the sender's own), so the sender can also turn to someone who is there. The same across a link in
+  `Delivered to …` and in `thread` receipts: another person's session in a linked project is "a session of <human>";
+  its name, machine and profile stay on its side of the link.
 
 #### Leases
 
@@ -222,7 +226,8 @@ A lease is an exclusive or shared claim on an exact resource name (`file:<path>`
 
 - `mode`: `exclusive` (default) or `shared`. Shared leases coexist; an exclusive one needs the resource free.
 - `ttl_s`: 30 to 86400, default 1800. Calling `lease` again as the holder renews it: without `ttl_s` for as long as it
-  was granted for; the mode cannot change on renewal.
+  was granted for; the mode cannot change on renewal. A session is the holder of a lease (or of a place in a queue)
+  taken under any of its seats: its own key or a role it holds, whatever roles it has taken since.
 - If taken and `wait` is not `false` (default true), the caller joins a strict FIFO queue. When it is its turn the hub
   grants the lease and sends a high-priority status message.
 - An expired lease sends its holder a high-priority status message and passes to the queue.
@@ -269,6 +274,7 @@ An address names who receives a message. Resolution happens at send time, in the
 | `session:<name>` | The one live session with that name. Looks in the message's project, then in linked projects. If several sessions of different people share a name, one of the sender's own is preferred; otherwise the error lists keys. A session renamed by a restart also answers to its last five names while no live session has that name now. |
 | `session:<key>` | A session by key, as `<agent id>#<8>` or `<human>/<agent name>#<8>`. A key also works for a session that is not live if it belongs to the project or a linked one. |
 | `human:<name>` | The human's mailbox (read on their page). Only humans in the message's own project, not linked ones. |
+
 | `agent:<human>/<name>` or `<human>/<name>` or `agt_…` | The agent's shared mailbox. The agent must be a member of the project or a linked project, and not revoked. |
 | `project` | Every live session in the project, plus every member agent that has no live session but has connected within the last 7 days (a mailbox nobody has opened for a week, or ever, is not in the room). The sender is excluded. |
 | `next` | Held for the next session of the sender's human that starts in the message's project, from any of that human's agents (a handoff before a restart). The first new session takes it; its own sender session never does. Not across links. |
@@ -276,6 +282,19 @@ An address names who receives a message. Resolution happens at send time, in the
 
 Anything else is an error that lists the accepted forms. Naming a project that is neither the message's own nor linked
 to it is refused alike, whether it exists or not.
+
+Only a human's page (and their answer links) sends as `human:<name>`. A session may pass on what its human typed:
+`send` with `quotes_human: true` and `body` the typed words, verbatim, as whole lines of one prompt (`summary`, if
+given, one of the body's lines). The message stays the session's: `from` is the session or its role, `sender-human` is
+set, the caps and walls for peer text apply, and the frame carries `quotes-human="<name>"` so a reader knows whose
+words the sender says the body holds. The comparison happens in the plugin on the human's machine against the
+session's prompts of the last 6 hours, kept locally and never sent to the hub; a headless run (`claude -p`) and what
+the harness injects as prompts (channel wake-ups, task notifications, teammate messages, system reminders) are not
+recorded, and such blocks inside a typed prompt are cut out. The plugin marks the call with the header
+`x-axos-human-words: checked`; the hub accepts `quotes_human` only from a session with it; a client without the
+comparison (a script, Codex, an older plugin) is refused with the reason. This is a check against paraphrase, not
+proof: the session runs as its user and can influence what the comparison sees; the hub therefore never gives a quote
+the human's own sender, and a reader weighs a quote as it weighs the sender. `as: "human"` does not exist.
 
 Projects are linked by an admin. Linked projects can message each other's roles, sessions, agents and live sessions;
 nothing else crosses (briefs, leases, presence).
@@ -295,7 +314,7 @@ when it has an open event stream or was seen in the last 10 minutes; otherwise i
   `outcome: expired`, which the sender sees in the thread's receipts; the message itself stays. Mail to a role or a
   human never expires. A `send` to an agent that is not connecting says so in its answer.
 - A delivery becomes shown when:
-  - the `check` or `start` hook returned it (up to 10 per call),
+  - the `check` or `start` hook returned it (up to 20 per call),
   - `inbox` returned it with `unread_only` true or omitted,
   - `wait` returned it (up to 20 per call).
 
@@ -328,7 +347,7 @@ when it has an open event stream or was seen in the last 10 minutes; otherwise i
 Messages reach a model as `<axos-message>` blocks, from `inbox`, `wait`, `thread` and the hook:
 
 ```
-<axos-message id="12" from="session:alice/py#abcdefgh" sender-human="alice" sender-name="py-main" sender-roles="reviewer" project="alice/demo" type="request" priority="high" via="role:alice/demo/reviewer" re="9" thread="9" as-of="3f2a1c" sent="2026-10-26T18:01:57Z">
+<axos-message id="12" from="session:alice/py#abcdefgh" sender-human="alice" sender-name="py-main" sender-roles="reviewer" project="alice/demo" type="request" priority="high" via="role:alice/demo/reviewer" re="9" thread="9" as-of="3f2a1c" sent="2026-10-26 20:01 CEST">
 summary: please review
 the body, if any
 </axos-message>
@@ -341,13 +360,14 @@ the body, if any
 | `sender-human` | when known and the sender is not a human |
 | `sender-name`, `sender-roles` | when the sender is a session with a name, or holds roles now |
 | `sent-by` | when someone other than the sender wrote it: a script (or a client without a session) speaking for a role |
+| `quotes-human` | when the sender's plugin checked that the body is what the sender's human typed (`quotes_human`); the message is still the sender's |
 | `project` | always |
 | `type` | always |
 | `priority` | unless `normal` |
 | `via` | on inbox items: the address it reached you through |
 | `re`, `thread`, `as-of` | when set |
 | `receipts` | in `thread`, on the reader's own messages: `<recipient>: unread|read|acked|<outcome>`, `; `-separated |
-| `sent` | always, UTC, seconds |
+| `sent` | always, in the hub's zone (`AXOS_TZ`), to the minute, e.g. `2026-10-26 20:01 CEST`; the JSON of `/api/inbox`, the `events` admin command and `/ui/api` keep ISO UTC |
 
 The text after the tag starts with `summary: `. In summary and body every `<` followed by a letter, `/`, `!` or `?` is
 replaced by `&lt;`, so a peer cannot forge a tag. Attribute values are escaped. Lists of frames follow a header line and
@@ -374,7 +394,7 @@ Response: `{"context": "<text>"}` with 200. `""` means nothing to show. Failures
 | Event | Effect |
 |---|---|
 | `start` | Session began or resumed. Without a project it returns `""`. Otherwise syncs roles, then returns a short orientation (who this session is, how many others are active, who holds which role) followed by unshown messages. |
-| `check` | Before a prompt, after tool calls, at stop. Syncs roles if the session has a project, then returns up to 10 unshown messages, marking them shown. `""` when nothing is waiting. |
+| `check` | Before a prompt, after tool calls, at stop. Syncs roles if the session has a project, then returns up to 20 unshown messages, marking them shown. `""` when nothing is waiting. |
 | `end` | Ends the session (see Authentication). Returns `""`. |
 
 Other event values are `400 event must be start, check or end`.
@@ -400,7 +420,7 @@ Message rendering in hooks:
   keep their `<axos-message>` block; the others arrive as one block, a line each, read with `thread`:
 
   ```
-  <axos-digest count="4" read="axos thread <id>">
+  <axos-digest count="4" read="thread <id>">
   - 41 from session:alice/py#abcdefgh (py-main), note re 39: lane 2 merged [312-character body]
   </axos-digest>
   ```
@@ -557,7 +577,7 @@ HMAC-SHA256 of `ask:<id>` with the hub's link secret.
 
 ## Health
 
-`GET /healthz`, no auth: `{"ok":true,"version":"0.18.0","protocol":1}`. The hub reads its database for this; if that
+`GET /healthz`, no auth: `{"ok":true,"version":"0.19.0","protocol":1}`. The hub reads its database for this; if that
 fails, status 503 and `ok:false` with the same fields.
 
 ## Versioning

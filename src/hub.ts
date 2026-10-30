@@ -22,7 +22,8 @@ export type Priority = (typeof PRIORITIES)[number];
 // Roles are held by sessions. A session that holds a role in a project speaks as that role: it reads the role's mailbox,
 // replies come back to the role, and its leases and questions belong to the role, so the next holder inherits them.
 // Clients without sessions act as the agent, or as a role it holds with `as`.
-export type Actor = { kind: "agent"; id: string; human: string; as?: string; session?: string } | { kind: "human"; name: string };
+// human_words: the client checked that a send with quotes_human carries words the human typed (the plugin's header).
+export type Actor = { kind: "agent"; id: string; human: string; as?: string; session?: string; human_words?: boolean } | { kind: "human"; name: string };
 
 export interface SessionRow {
   key: string;
@@ -67,6 +68,7 @@ export interface MessageRow {
   priority: Priority;
   created_at: number;
   sent_by: string | null;
+  quotes_human: string | null; // the human whose typed words the body holds (checked by the sender's plugin); the message stays the sender's
 }
 
 export interface InboxItem extends MessageRow {
@@ -877,7 +879,6 @@ export class Hub {
     }[];
   }
 
-  // A role is held until released, until its holder is silent for the role TTL, or until a forced takeover.
   // A role stays with its holder until it releases it, its session ends, or another session takes it over. Taking it
   // from one's own holder that is away (a sleeping laptop, a dropped connection) needs nothing; from one that is online
   // it needs force: the human's words, logged verbatim. The displaced holder is told either way.
@@ -929,6 +930,7 @@ export class Hub {
   seat(agentId: string, project: string, as?: string, session?: string): string {
     this.requireScope(agentId, project, session);
     const me = session ?? agentId;
+    if (as === "human") throw new AxosError('there is no "human" seat: to pass on what your human typed, send with quotes_human: true and their words as the body');
     if (!as) {
       if (!session) return agentId;
       const held = this.rolesHeldBy(`session:${session}`, project);
@@ -952,6 +954,15 @@ export class Hub {
 
   roleUnread(project: string, role: string): number {
     return this.unreadCount(`role:${project}/${role}`);
+  }
+
+  // Every seat a caller may be known by in a project: the seat it speaks as now, its own key, and every role it holds.
+  // A lease (or a place in a queue) taken under any of them is its own, whatever roles it holds since.
+  seatsOf(agentId: string, project: string, as?: string, session?: string): string[] {
+    const me = session ?? agentId;
+    const seats = new Set([this.seat(agentId, project, as, session), me]);
+    if (session) for (const r of this.rolesHeldBy(`session:${session}`, project)) seats.add(`role:${project}/${r}`);
+    return [...seats];
   }
 
   rolesHeldBy(sender: string, project: string): string[] {
@@ -1121,10 +1132,22 @@ export class Hub {
     priority?: Priority;
     dedupe_key?: string;
     no_push?: boolean;
+    quotes_human?: boolean; // the body is what the sender's human typed, as the plugin checked (actor.human_words)
     queue?: boolean; // accepted and ignored since 0.18.0: mail to a role always waits
   }): { id: number; duplicate: boolean; delivered_to: string[]; waiting_for_role: string[]; not_sent: { to: string; reason: string }[]; unattended: string[] } {
     this.requireActorInProject(actor, input.project);
     const sender = actor.kind === "agent" ? addr(this.seat(actor.id, input.project, actor.as, actor.session)) : `human:${actor.name}`;
+    // A session may quote its human: the body is what the human typed, checked by the plugin on the human's machine.
+    // The message stays the session's (its trust, its walls, its caps); quotes_human only says whose words the body
+    // holds. Only the human's own page speaks as human:<name>. (Security review of 2026-10-30.)
+    let quotes: string | null = null;
+    if (input.quotes_human) {
+      if (actor.kind !== "agent" || !actor.session || !actor.human_words) {
+        throw new AxosError("quotes_human needs the plugin's check of the words against what your human typed to this session; " +
+          "this client has no such check (a script, Codex, or an older plugin): send their words as a quote in your own message instead");
+      }
+      quotes = this.humanOf(actor.id);
+    }
     if (!MESSAGE_TYPES.includes(input.type)) throw new AxosError(`type must be one of ${MESSAGE_TYPES.join(", ")}`);
     const summary = input.summary.trim();
     const body = input.body ?? "";
@@ -1211,10 +1234,10 @@ export class Hub {
     const priority = input.priority ?? ((input.type === "note" || input.type === "status") && (input.to ?? []).some((a) => a === "project" || a.startsWith("project:")) ? "low" : "normal");
     const id = this.db.transaction(() => {
       const res = this.db.query(
-        `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at, sent_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at, sent_by, quotes_human)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(input.project, sender, human, JSON.stringify(input.to?.filter((a) => !notSent.some((x) => x.to === a)) ?? [...recipients.keys()]), input.type, summary, body, thread, re ?? null,
-        input.as_of ?? null, priority, input.dedupe_key ?? null, this.now(), sentBy);
+        input.as_of ?? null, priority, input.dedupe_key ?? null, this.now(), sentBy, quotes);
       const mid = Number(res.lastInsertRowid);
       for (const [recipient, via] of recipients) {
         this.db.query("INSERT INTO deliveries (message_id, recipient, via) VALUES (?, ?, ?)").run(mid, recipient, via);
@@ -1474,7 +1497,8 @@ export class Hub {
         else if (r.startsWith("role:")) others(r.slice(5).split("/")[0]!).forEach((h) => readers.add(h));
         else if (this.humanOfHolder(r) !== human) readers.add(this.humanOfHolder(r));
       }
-      if (readers.size) out.push({ ...m, readers: [...readers].sort() });
+      // A message that quotes the human is listed whoever read it: they must be able to see what was said in their words.
+      if (readers.size || m.quotes_human) out.push({ ...m, readers: [...readers].sort() });
       if (out.length >= limit) break;
     }
     return out;
@@ -1529,6 +1553,7 @@ export class Hub {
   lease(agentId: string, input: { project: string; resource: string; mode?: "exclusive" | "shared"; ttl_s?: number; note?: string; wait?: boolean; as?: string; session?: string }):
     { granted: boolean; lease_id?: number; expires_at?: number; renewed?: boolean; position?: number; holders: { holder: string; mode: string; note: string; expires_at: number }[] } {
     const holder = this.seat(agentId, input.project, input.as, input.session);
+    const mine = this.seatsOf(agentId, input.project, input.as, input.session);
     this.sweep();
     const mode = input.mode ?? "exclusive";
     const ttl = Math.min(Math.max(input.ttl_s ?? 1800, 30), MAX_LEASE_TTL_S);
@@ -1539,7 +1564,7 @@ export class Hub {
     const live = this.liveLeases(input.project, resource);
     const holders = live.map((l) => ({ holder: l.holder, mode: l.mode, note: l.note, expires_at: l.expires_at }));
 
-    const own = live.find((l) => l.holder === holder);
+    const own = live.find((l) => mine.includes(l.holder));
     if (own) {
       // A renewal extends; it does not change the mode, and without ttl_s it runs as long as the lease was granted for.
       if (input.mode && input.mode !== own.mode) {
@@ -1555,24 +1580,24 @@ export class Hub {
       return { granted: true, lease_id: id, expires_at: t + ttl * 1000, holders };
     }
     if (input.wait ?? true) {
-      let w = queue.find((q) => q.agent_id === holder);
+      let w = queue.find((q) => mine.includes(q.agent_id));
       if (!w) {
         this.db.query("INSERT INTO lease_waiters (project, resource, agent_id, mode, note, ttl_s, queued_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
           .run(input.project, resource, holder, mode, input.note ?? "", ttl, t);
         this.event(addr(holder), "lease.queued", input.project, { resource, mode });
       }
-      const position = this.waiters(input.project, resource).findIndex((q) => q.agent_id === holder) + 1;
+      const position = this.waiters(input.project, resource).findIndex((q) => mine.includes(q.agent_id)) + 1;
       return { granted: false, position, holders };
     }
     return { granted: false, holders };
   }
 
   releaseLease(agentId: string, project: string, resource: string, as?: string, session?: string): { released: boolean; left_queue: boolean } {
-    const holder = this.seat(agentId, project, as, session);
-    const own = this.liveLeases(project, resource).find((l) => l.holder === holder);
+    const mine = this.seatsOf(agentId, project, as, session);
+    const own = this.liveLeases(project, resource).find((l) => mine.includes(l.holder));
     if (own) this.endLease(own, "released");
-    const left = this.db.query("UPDATE lease_waiters SET done_at = ? WHERE project = ? AND resource = ? AND agent_id = ? AND done_at IS NULL")
-      .run(this.now(), project, resource, holder).changes > 0;
+    const left = this.db.query(`UPDATE lease_waiters SET done_at = ? WHERE project = ? AND resource = ? AND agent_id IN (${mine.map(() => "?").join(", ")}) AND done_at IS NULL`)
+      .run(this.now(), project, resource, ...mine).changes > 0;
     if (!own && !left) throw new AxosError(`you hold no lease on '${resource}' and are not waiting for it`);
     if (left && !own) this.grantWaiters(project, resource);
     return { released: !!own, left_queue: left };

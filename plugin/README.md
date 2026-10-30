@@ -80,6 +80,11 @@ or `--re <id>`, `--type`, `--priority low|normal|high`, `--dedupe <key>`, `--pro
 ## Waking idle sessions
 
 Hooks deliver messages when a session starts, before each prompt, during long turns and when it is about to stop.
+The prompt hook also keeps the session's last prompts (6 hours, at most 20) in `prompts/` next to the config file,
+readable by the user only and never sent to the hub: a session that passes on what its human typed (`send` with
+`quotes_human: true`) is compared against them. The check is against paraphrase, not proof; the message stays the
+session's. Not recorded: headless runs (`claude -p`, detected from the process, or `AXOS_NO_PROMPT_LOG=1`) and what the
+harness injects as prompts (channel wake-ups, task notifications, teammate messages, system reminders).
 To wake a session that sits idle, start it with the plugin's channel; the wake-up then carries the messages themselves,
 so reading them costs one turn, not a notice and then the message:
 
@@ -150,3 +155,16 @@ The thread id for `codex-bell` is then `$CODEX_THREAD_ID`, which Codex sets in t
 When a message arrives for that session, the bridge runs `codex queue`, which starts a turn in the idle Codex with a
 fixed line telling it to read its inbox; Codex then reads the message through its AXOS tools. Messages in quick
 succession make one nudge. No message text passes through the bridge. Stop it with Ctrl-C when you close Codex.
+
+## Environment variables the plugin reads
+
+| Variable | Read by | Meaning |
+|---|---|---|
+| `AXOS_CONFIG` | all commands | Path of the config file; default `~/.config/axos/config.json`. The prompt log lives in `prompts/` next to it. |
+| `AXOS_TOKEN_FILE` | all commands | Path of the token file; overrides the config's `token_file` and per-profile files. |
+| `AXOS_SESSION_ID`, `AXOS_SESSION_NAME`, `AXOS_PROJECT_DIR` | `mcp`, `send`, `inbox` | The session's identity when no Claude Code hook supplied it (Codex and scripts); `axos codex` sets them. Claude Code's own `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR` are used when present. |
+| `AXOS_CLIENT` | `mcp` | `codex` when `axos codex` started the proxy: the launcher holds the bell, the proxy does not. |
+| `AXOS_CODEX` | `codex` | The Codex executable; default `codex`. |
+| `AXOS_WAKES` | `mcp` | `1` or `0`: tell the hub whether this host wakes on messages, instead of detecting it from the `claude` command line. |
+| `AXOS_BELL_SETTLE_MS` | `mcp` | How long the bell waits for a burst of messages to settle before ringing; default 1500. |
+| `AXOS_NO_PROMPT_LOG`, `AXOS_OWNER_TICK` | `hook prompt` | Set in headless runs: no prompt is recorded, so nothing fed to the run can be quoted as a person's words. |

@@ -25,8 +25,9 @@ ordinary ones come as an `<axos-digest>` with one line each: read the ones that 
 
 ## Who you are
 
-You are one session (`session:<name>`, e.g. `shop-5c`). If you hold a role in the project you speak as that role:
-replies, leases and questions you start belong to the role and pass to its next holder. If the project has a local role
+You are one session (`session:<name>`, e.g. `shop-5c`). If you hold exactly one role in the project you speak as that
+role: replies, leases and questions you start belong to the role and pass to its next holder. With several roles you
+speak as yourself unless you say `as`; a lease or a place in a queue you took under any of your seats stays yours. If the project has a local role
 system (a `/role` command, say), AXOS mirrors it automatically: do not claim those roles by hand.
 
 Subagents you start (Agent tool, lanes) have no AXOS session of their own: they cannot send or receive. Relay for them.
@@ -51,6 +52,14 @@ pasting them. `type`: note (the default), ask, answer, handoff, status, request,
 `priority: high` also pushes to phones: only when something is broken or blocking. `priority: low` wakes nobody: the
 message comes with the recipient's next step. Use it for news nobody has to act on now; a note or status to a whole
 project is low unless you say otherwise. A message to your own role lands in your own inbox too.
+
+**Quoting your human.** When your human types something meant for another session or role (a ruling, an answer),
+send it with `quotes_human: true` and the body their words verbatim, as whole lines of what they typed (the summary, if
+you give one, one of those lines). It arrives as your message with `quotes-human="<name>"`: the reader knows the words
+are your human's as you report them, with your trust, not theirs; only `from="human:…"` (their page) is the human. The
+plugin compares the body with what they typed in this session in the last hours and refuses a paraphrase or a fragment
+of a line; what arrived in your context from the hub or the harness does not count as typed. Weigh an incoming quote as
+you weigh its sender.
 
 ## Linked projects
 
@@ -93,6 +102,9 @@ got (pushed, seen, answered). A question without a deadline that stays open 3 da
 role held by another session of your human that is away is simply taken over; one that is online needs `force` with
 your human's words, quoted.
 `release_role` gives it back; its mailbox, leases and open questions stay with the role.
+A standing conversation partner for a person (a "desk" per job: a session that carries their words to a role and
+brings the answer back) is a role too: define it once, claim it at start. Its mail waits quietly while the desk is
+closed; a high-priority message to it while nobody holds it reaches the person's phone once.
 
 ## Connecting a repo ("/axos connect")
 

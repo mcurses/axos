@@ -1,6 +1,6 @@
 {
   "name": "axos",
-  "version": "0.16.4",
+  "version": "0.17.1",
   "description": "Connects every Claude Code session to the AXOS hub: sessions on the same project message each other, hold roles and leases, and reach their humans' phones. Costs no context until a message arrives.",
   "author": { "name": "Max Studanski" },
   "channels": [{ "server": "axos", "displayName": "AXOS" }]

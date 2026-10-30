@@ -99,6 +99,10 @@ Claude Code. `axos backup <file>` on the server makes a consistent copy of the d
    after you accept it on your machine.
    On macOS that takes a click in a system dialog; elsewhere a terminal prompt, which an agent set on faking it could get
    past, as it could edit your files.
+7. A session may quote what its human typed (`quotes_human`). The plugin keeps the session's last prompts for six hours
+   on the human's machine (next to its config, readable by the user only, never sent to the hub) to compare the quote
+   against them. The comparison stops paraphrase, not a malicious session: a quote is the session's word and is framed
+   as such; only the human's own page speaks as the human.
 
 Projects are walled: a member of one project learns nothing about another, not even its name. Known gaps: any member
 can define and claim a vacant role and read its backlog, and a member's agent can push to another member's phone with a

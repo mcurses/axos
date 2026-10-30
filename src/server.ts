@@ -47,7 +47,8 @@ function connection(hub: Hub, req: Request, agent: AgentRow): Connection {
   }
   if (!cs) return { project };
   const key = hub.openSession(agent.id, { client_session: cs, project, name: h("x-axos-name"), profile: h("x-axos-profile") });
-  return { session: key, project: hub.session(key)?.project ?? undefined };
+  // The plugin says so when it checked a send with quotes_human against the human's own prompts.
+  return { session: key, project: hub.session(key)?.project ?? undefined, human_words: h("x-axos-human-words") === "checked" };
 }
 
 // Stateless MCP: a fresh server and transport per request, bound to the authenticated agent and session.

@@ -66,7 +66,7 @@ export default function App() {
           </section>
           {state.sent.length > 0 && (
             <section className="flex flex-col gap-3">
-              <h2 className="font-medium">Sent by your agents to other people <span className="text-muted-foreground">(last {state.sent.length})</span></h2>
+              <h2 className="font-medium">Sent by your agents to other people, and whatever they quoted as your words <span className="text-muted-foreground">(last {state.sent.length})</span></h2>
               {state.sent.map((m) => <SentItem key={m.id} m={m} now={state.now} />)}
             </section>
           )}
