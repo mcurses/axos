@@ -176,6 +176,7 @@ const MAX_SUMMARY = 300;
 const MAX_BODY = 64_000;
 const MAX_BRIEF = 2_000;
 const MAX_REPO = 300; // where a project's code is: one git address
+const INVITE_SETTLED_SHOWN_MS = 7 * 86_400_000; // a used or expired invite stays in the maker's list this long, unless cleared
 const MAX_NOTE = 1_000; // a subscription's note
 const MAX_ACK_NOTE = 200;
 export const MAX_IMAGE = 5 * 1024 * 1024;
@@ -626,11 +627,25 @@ export class Hub {
     return { code, expires_at: t + ttlS * 1000, id: Number(r.lastInsertRowid) };
   }
 
-  // The invites a person made on their page, newest first: pending, used (by whom) or expired.
-  invitesBy(human: string): { id: number; human: string; project: string | null; created_at: number; expires_at: number; used_at: number | null; withdrawn: boolean }[] {
-    return (this.db.query("SELECT id, human, project, created_at, expires_at, used_at FROM invites WHERE invited_by = ? AND kind = 'machine' ORDER BY id DESC LIMIT 50").all(human) as
-      { id: number; human: string; project: string | null; created_at: number; expires_at: number; used_at: number | null }[])
-      .map((i) => ({ ...i, project: i.project ? this.projectName(i.project) : null, withdrawn: !i.used_at && i.expires_at < i.created_at }));
+  // The invites a person made on their page, newest first: the open ones, and the settled ones (used, expired,
+  // withdrawn) for seven days after they settled unless the maker cleared them. gone: the person was removed since.
+  invitesBy(human: string): { id: number; human: string; project: string | null; created_at: number; expires_at: number; used_at: number | null; withdrawn: boolean; gone: boolean }[] {
+    const t = this.now();
+    return (this.db.query(`SELECT i.id, i.human, i.project, i.created_at, i.expires_at, i.used_at, (h.name IS NULL) AS gone FROM invites i LEFT JOIN humans h ON h.name = i.human
+      WHERE i.invited_by = ? AND i.kind = 'machine' AND i.dismissed_at IS NULL
+      AND ((i.used_at IS NULL AND i.expires_at > ?) OR COALESCE(i.used_at, i.expires_at) > ?) ORDER BY i.id DESC LIMIT 50`).all(human, t, t - INVITE_SETTLED_SHOWN_MS) as
+      { id: number; human: string; project: string | null; created_at: number; expires_at: number; used_at: number | null; gone: number }[])
+      .map((i) => ({ ...i, project: i.project ? this.projectName(i.project) : null, withdrawn: !i.used_at && i.expires_at < i.created_at, gone: !!i.gone }));
+  }
+
+  // The maker clears a settled invite from their list (one, or all settled); an open one is withdrawn instead.
+  dismissInvites(by: string, id: number | null): number {
+    const t = this.now();
+    const r = id === null
+      ? this.db.query("UPDATE invites SET dismissed_at = ? WHERE invited_by = ? AND kind = 'machine' AND dismissed_at IS NULL AND (used_at IS NOT NULL OR expires_at <= ?)").run(t, by, t)
+      : this.db.query("UPDATE invites SET dismissed_at = ? WHERE id = ? AND invited_by = ? AND kind = 'machine' AND dismissed_at IS NULL AND (used_at IS NOT NULL OR expires_at <= ?)").run(t, id, by, t);
+    if (id !== null && !r.changes) throw new AxosError(`no settled invite ${id} of yours (an open one is withdrawn, not cleared)`);
+    return r.changes;
   }
 
   // Withdrawing sets the link to expired at once.

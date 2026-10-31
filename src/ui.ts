@@ -194,6 +194,8 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
         if (!other) return json({ error: `no linked project '${str("other")}'` }, 400);
         hub.unlinkByOwner(human, p, other);
         return json({ ok: true });
+      } else if (url.pathname === "/ui/api/invite/dismiss") {
+        return json({ cleared: hub.dismissInvites(human, b.all === true ? null : Number(b.id)) });
       } else if (url.pathname === "/ui/api/invite/withdraw") {
         hub.withdrawInvite(Number(b.id), human);
         return json({ ok: true });
@@ -265,7 +267,8 @@ function asset(path: string): Response {
 
 // Everything the page shows, as one document. Ids stay ids here; the caller turns them into names the human may see.
 function state(hub: Hub, human: string) {
-  const mine = hub.projectsOfHuman(human);
+  // A pair whose other person was removed is kept for its history but is nothing to show.
+  const mine = hub.projectsOfHuman(human).filter((p) => !hub.isPair(p) || hub.projectHumans(p).length > 1);
   const asks = hub.asks({ human, open: true }).map((a) => ({
     id: a.id, message_id: a.message_id, from: hub.label(a.asker), project: a.project, question: a.question,
     options: JSON.parse(a.options_json) as string[], default_answer: a.default_answer, deadline: a.deadline,
@@ -289,7 +292,7 @@ function state(hub: Hub, human: string) {
   const people = hub.people(human).map((h) => ({ name: h, pair: mine.find((p) => hub.isPair(p) && hub.projectHumans(p).includes(h)) ?? null }));
   // Share and link requests waiting for this person; the project names are the asker's, which the person may see.
   const pending = hub.pendingFor(human).map((r) => ({ ...r, project: hub.projectName(r.project) ?? r.project }));
-  const invites = hub.invitesBy(human).map((i) => ({ id: i.id, name: i.human, project: i.project, created_at: i.created_at, expires_at: i.expires_at, used_at: i.used_at }));
+  const invites = hub.invitesBy(human).map((i) => ({ id: i.id, name: i.human, project: i.project, created_at: i.created_at, expires_at: i.expires_at, used_at: i.used_at, gone: i.gone }));
   const me = { operator: hub.isOperator(human), logins: hub.logins(human), password: hub.hasPassword(human) };
   const projects = mine.map((p) => {
     const leases = hub.leases(p);

@@ -46,9 +46,13 @@ export function People({ state, onChange }: { state: State; onChange: () => void
             })}
             {!state.people.length && <div className="empty-state"><UserPlusIcon /><h4>Work is better together</h4><p>Invite someone to connect your agents and share a project.</p></div>}
           </div>
-          {state.invites.length > 0 && <div className="mt-6"><h4 className="eyebrow mb-2">Invitations</h4><ul className="divide-y divide-border">{state.invites.map((i) => <li key={i.id} className="entity-row">
-            <div className="min-w-0 flex-1"><p className="font-medium">{i.name}</p><p className="supporting-text">{i.project ?? "Hub invitation"} · {i.used_at ? `Joined ${ago(i.used_at, state.now)}` : i.expires_at <= state.now ? "Expired" : `Sent ${ago(i.created_at, state.now)}`}</p></div>
-            {!i.used_at && i.expires_at > state.now ? <Button variant="ghost" disabled={busy} onClick={() => run(async () => { await post("invite/withdraw", { id: i.id }); })}>Withdraw</Button> : <span className="text-xs text-muted-foreground">{i.used_at ? "Accepted" : "Expired"}</span>}
+          {state.invites.length > 0 && <div className="mt-6"><div className="mb-2 flex items-center justify-between gap-3"><h4 className="eyebrow">Invitations</h4>
+            {state.invites.some((i) => i.used_at || i.expires_at <= state.now) && <Button variant="ghost" size="sm" disabled={busy} title="Settled invitations leave this list by themselves after a week" onClick={() => run(async () => { await post("invite/dismiss", { all: true }); })}>Clear settled</Button>}</div>
+            <ul className="divide-y divide-border">{state.invites.map((i) => <li key={i.id} className="entity-row">
+            <div className="min-w-0 flex-1"><p className="font-medium">{i.name}</p><p className="supporting-text">{i.project ?? "Hub invitation"} · {i.used_at ? `${i.gone ? "Joined, since removed" : "Joined"} ${ago(i.used_at, state.now)}` : i.expires_at <= state.now ? "Expired" : `Sent ${ago(i.created_at, state.now)}`}</p></div>
+            {!i.used_at && i.expires_at > state.now
+              ? <Button variant="ghost" disabled={busy} onClick={() => run(async () => { await post("invite/withdraw", { id: i.id }); })}>Withdraw</Button>
+              : <Button variant="ghost" size="sm" disabled={busy} title="Clear from this list" onClick={() => run(async () => { await post("invite/dismiss", { id: i.id }); })}>{i.used_at ? "Accepted" : "Expired"} ×</Button>}
           </li>)}</ul></div>}
         </div>
       </section>

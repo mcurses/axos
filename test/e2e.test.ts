@@ -1392,6 +1392,22 @@ test("an invite that carries the work: the page and the script say the project a
   const caraCookie = (await fetch(`${base}/ui/login/${caraLink}`, { method: "POST", redirect: "manual" })).headers.get("set-cookie")!.split(";")[0]!;
   expect((await post("project/repo", { project: "alice/workshop", repo: "x" }, caraCookie)).status).toBe(400);
   expect((await post("invite", { name: "dan", project: "alice/workshop" }, caraCookie)).status).toBe(400);
+  // A second newcomer, dora, says hello and is removed again (cara owns a project now, so she cannot be): her pair with
+  // alice carried the hello, so it stays as history, but alice's page no longer lists it; the used invite says she is
+  // gone, and alice clears it from the page.
+  const dora = await (await post("invite", { name: "dora" })).json() as { link: string };
+  const rd = await (await fetch(`${base}/api/join`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: dora.link.split("/join/")[1], machine: "doras-laptop" }) })).json() as { token: string };
+  const doraClient = await connect(rd.token, { "x-axos-session": "dora-hello", "x-axos-name": "hello" });
+  expect((await call(doraClient, "send", { to: "human:alice", summary: "hello from dora" })).isError).toBe(false);
+  await doraClient.close();
+  expect(hub.removeHuman("dora").projects_removed).toEqual([]);
+  const after = await (await fetch(`${base}/ui/api/state`, { headers: { cookie } })).json() as { projects: { id: string }[]; people: { name: string }[]; invites: { id: number; name: string; gone: boolean }[] };
+  expect(after.projects.map((p) => p.id)).not.toContain("alice/dora");
+  expect(after.people.map((p) => p.name)).not.toContain("dora");
+  expect(after.invites.find((i) => i.name === "dora")).toMatchObject({ gone: true });
+  expect((await post("invite/dismiss", { all: true })).status).toBe(200);
+  const cleared = await (await fetch(`${base}/ui/api/state`, { headers: { cookie } })).json() as { invites: { name: string }[] };
+  expect(cleared.invites.map((i) => i.name)).not.toContain("dora");
   hub.setOperator("alice", false); // the next test starts from a hub without an operator
 }, 30_000);
 

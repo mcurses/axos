@@ -1866,6 +1866,23 @@ describe("the second person's path (0.21.0)", () => {
     expect(hub.removeHuman("gil").projects_removed).toEqual([]);
     expect(hub.projectName(pair2)).not.toBeNull();
     expect(hub.projectHumans(pair2)).toEqual(["alice"]);
+    // Her list says the person is gone; she clears settled entries one by one or all at once; an open one is not cleared.
+    const gilRows = hub.invitesBy("alice").filter((i) => i.human === "gil");
+    expect(gilRows.every((i) => i.gone)).toBe(true);
+    const open = hub.createInvite("hal", null, undefined, "alice");
+    expect(refusal(() => hub.dismissInvites("alice", open.id))).toContain("not cleared");
+    expect(refusal(() => hub.dismissInvites("bob", gilRows[0]!.id))).toContain("no settled invite");
+    hub.dismissInvites("alice", gilRows[0]!.id);
+    expect(hub.invitesBy("alice").map((i) => i.id)).not.toContain(gilRows[0]!.id);
+    expect(hub.dismissInvites("alice", null)).toBeGreaterThan(0);
+    expect(hub.invitesBy("alice").map((i) => i.id)).toEqual([open.id]);
+    // A settled one leaves the list by itself after seven days.
+    hub.withdrawInvite(open.id, "alice");
+    expect(hub.invitesBy("alice").map((i) => i.id)).toEqual([open.id]);
+    const was = t;
+    t += 8 * 86_400_000;
+    expect(hub.invitesBy("alice")).toEqual([]);
+    t = was;
     hub.addProject("bob/own");
     expect(refusal(() => hub.removeHuman("bob"))).toContain("owns bob/own");
   });

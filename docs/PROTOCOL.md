@@ -539,7 +539,9 @@ id.
 A one-time link brings a machine onto the hub, and a new person with it. The hub's operator makes one on their page
 ("Invite someone", `POST /ui/api/invite {"name"}`), the admin with `axos invite` (or `axos init` for the first one);
 anyone makes one for another machine of their own on the page. It is valid 7 days and works once; the maker can
-withdraw it (`POST /ui/api/invite/withdraw {"id"}`); at most five open ones per person. A page invite for a person
+withdraw it (`POST /ui/api/invite/withdraw {"id"}`); at most five open ones per person. A settled invite (used,
+expired, withdrawn) stays in the maker's list for seven days, or until they clear it (`POST /ui/api/invite/dismiss
+{"id"}`, or `{"all": true}` for every settled one); the list marks a person removed since. A page invite for a person
 who is here already is refused (sharing a project is the way to them). One made for a new name is refused at
 redemption if someone has the name by then. The code looks like `axosinv_…`; only its hash is stored.
 

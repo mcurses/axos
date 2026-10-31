@@ -208,7 +208,8 @@ CREATE TABLE IF NOT EXISTS invites (     -- one-time links that set up a machine
   kind          TEXT NOT NULL DEFAULT 'machine', -- machine (a code), share (a person into a project), link (two projects)
   target_project TEXT,                         -- link: the project the other side picked
   decided_at    INTEGER,                       -- share and link: when the other side joined, linked or declined
-  decision      TEXT                           -- 'accepted' | 'declined'
+  decision      TEXT,                          -- 'accepted' | 'declined'
+  dismissed_at  INTEGER                        -- the maker cleared it from their list (a settled one)
 );
 -- "Tell me when it lands": a mailbox waiting for a commit to reach a branch, or for every landing there. The hub never
 -- sees a repository; the script that lands reports what it pushed, and the hub compares strings.
@@ -336,6 +337,7 @@ function migrate(db: Database): void {
   column("login_links", "code_hash", "TEXT");
   column("login_links", "made_by", "INTEGER");
   column("projects", "repo", "TEXT NOT NULL DEFAULT ''");
+  column("invites", "dismissed_at", "INTEGER");
 }
 
 // Databases from before ids (2026-10-26) keyed projects and agents by their names, and stored addresses carried the
