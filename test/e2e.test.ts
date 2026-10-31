@@ -1346,3 +1346,24 @@ test("the second person's path: invite from the page, the setup script, the one-
   // Inviting a person who is here already is refused: sharing is the way.
   expect(await (await post("invite", { name: "ben" })).json()).toMatchObject({ error: expect.stringContaining("here already") });
 });
+
+test("the login form: a password set on the page logs a device in; a cross-site post and a wrong password are refused", async () => {
+  const login = await fetch(`${base}/ui?key=${uiKey}`, { redirect: "manual" });
+  const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
+  expect((await fetch(`${base}/ui/api/password`, { method: "POST", body: JSON.stringify({ password: "a long enough password" }), headers: { cookie, "Content-Type": "application/json" } })).status).toBe(200);
+  const form = (body: unknown, headers: Record<string, string> = {}) => fetch(`${base}/ui/login`, { method: "POST", body: JSON.stringify(body), headers: { "Content-Type": "application/json", ...headers } });
+  expect((await form({ name: "alice", password: "a long enough password" }, { origin: "https://evil.example" })).status).toBe(403);
+  expect((await form({ name: "alice", password: "not it" })).status).toBe(401);
+  const ok = await form({ name: "Alice", password: "a long enough password" });
+  expect(ok.status).toBe(200);
+  const fresh = ok.headers.get("set-cookie")!.split(";")[0]!;
+  const state = await (await fetch(`${base}/ui/api/state`, { headers: { cookie: fresh } })).json() as { human: string; me: { password: boolean } };
+  expect(state.human).toBe("alice");
+  expect(state.me.password).toBe(true);
+  // Over HTTP, a change without the current password is refused (a stolen logged-in device cannot take over); with it, it goes.
+  const change = (body: unknown) => fetch(`${base}/ui/api/password`, { method: "POST", body: JSON.stringify(body), headers: { cookie: fresh, "Content-Type": "application/json" } });
+  expect((await change({ password: "a thief's new password" })).status).toBe(400);
+  expect((await change({ password: "a thief's new password", current: "wrong" })).status).toBe(400);
+  expect((await change({ password: "the owner's new password", current: "a long enough password" })).status).toBe(200);
+  expect((await form({ name: "alice", password: "the owner's new password" })).status).toBe(200);
+});

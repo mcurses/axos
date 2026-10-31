@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS humans (
   ntfy_topic    TEXT,
   ui_key_hash   TEXT UNIQUE,
   created_at    INTEGER NOT NULL,
-  operator      INTEGER NOT NULL DEFAULT 0     -- may invite new people onto the hub from the page
+  operator      INTEGER NOT NULL DEFAULT 0,    -- may invite new people onto the hub from the page
+  password_hash TEXT                           -- argon2id; the third way in, for a device with no login and no link
 );
 -- A device's login to the page, made from a one-time login link; the key lives in that device's cookie only.
 CREATE TABLE IF NOT EXISTS logins (
@@ -319,6 +320,7 @@ function migrate(db: Database): void {
   column("invites", "invited_by", "TEXT");
   column("invites", "new_human", "INTEGER");
   column("push_devices", "login_id", "INTEGER");
+  column("humans", "password_hash", "TEXT");
 }
 
 // Databases from before ids (2026-10-26) keyed projects and agents by their names, and stored addresses carried the

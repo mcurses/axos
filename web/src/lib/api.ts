@@ -22,7 +22,7 @@ export interface Project {
 // push: the hub's key this browser subscribes with (null: the hub cannot push) and the devices registered so far.
 export interface Person { name: string; pair: string | null }
 export interface Invite { id: number; name: string; created_at: number; expires_at: number; used_at: number | null }
-export interface Me { operator: boolean; logins: { id: number; label: string; created_at: number; last_seen: number | null }[] }
+export interface Me { operator: boolean; password: boolean; logins: { id: number; label: string; created_at: number; last_seen: number | null }[] }
 export interface State { human: string; me: Me; people: Person[]; invites: Invite[]; push: { key: string | null; devices: { label: string; created_at: number; last_ok: number | null }[] }; now: number; types: string[]; asks: Ask[]; inbox: InboxMessage[]; sent: SentMessage[]; projects: Project[] }
 
 export class NotLoggedIn extends Error {}
@@ -34,7 +34,7 @@ export async function loadState(): Promise<State> {
   return res.json();
 }
 
-export async function post(action: "answer" | "ack" | "send" | "push/subscribe" | "push/unsubscribe" | "invite" | "invite/withdraw" | "login-link" | "login/remove" | "logout-all", body: Record<string, unknown>): Promise<unknown> {
+export async function post(action: "answer" | "ack" | "send" | "push/subscribe" | "push/unsubscribe" | "invite" | "invite/withdraw" | "login-link" | "login/remove" | "logout-all" | "password", body: Record<string, unknown>): Promise<unknown> {
   const res = await fetch(`/ui/api/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const out = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new Error(out.error ?? `the hub answered ${res.status}`);

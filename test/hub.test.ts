@@ -1932,3 +1932,52 @@ describe("the second person's path: the security review's fixes", () => {
     expect(hub.presence(pair).filter((x) => !x.address.startsWith("session:"))).toEqual([]);
   });
 });
+
+describe("passwords", () => {
+  test("a password set on the page logs any device in; wrong tries are counted and locked; the answer never says which part was wrong", () => {
+    expect(refusal(() => hub.setPassword("alice", "short"))).toContain("at least 10");
+    expect(refusal(() => hub.loginWithPassword("alice", "nothing-set-yet"))).toBe("wrong name or password");
+    hub.setPassword("alice", "correct horse battery staple");
+    expect(hub.hasPassword("alice")).toBe(true);
+    expect(hub.hasPassword("bob")).toBe(false);
+    const l = hub.loginWithPassword("alice", "correct horse battery staple", "Mac, Chrome");
+    expect(hub.authenticateLogin(l.key)).toMatchObject({ human: "alice" });
+    expect(hub.logins("alice").map((x) => x.label)).toContain("Mac, Chrome");
+    expect(refusal(() => hub.loginWithPassword("nobody", "correct horse battery staple"))).toBe("wrong name or password");
+    for (let i = 0; i < 5; i++) expect(refusal(() => hub.loginWithPassword("alice", `wrong ${i}`))).toBe("wrong name or password");
+    expect(refusal(() => hub.loginWithPassword("alice", "correct horse battery staple"))).toContain("too many tries");
+    t += 16 * 60_000;
+    expect(hub.loginWithPassword("alice", "correct horse battery staple").human).toBe("alice");
+    // Changing it needs the current one; a stolen logged-in device cannot take the account over.
+    expect(refusal(() => hub.setPassword("alice", "a thief's new password"))).toContain("current one");
+    hub.setPassword("alice", "a better horse battery staple", { current: "correct horse battery staple" });
+    expect(refusal(() => hub.setPassword("alice", "another new one", { current: "not the current", label: "iPhone, Safari" }))).toContain("current one");
+    hub.setPassword("alice", "set by the admin while locked out", { admin: true });
+    hub.setPassword("alice", "a better horse battery staple", { current: "set by the admin while locked out" });
+    expect(hub.loginWithPassword("alice", "a better horse battery staple").human).toBe("alice");
+    // Setting one tells the phone; the refusal event never stores what was typed as an unknown name.
+    expect(pushes.some((p) => p.title.includes("password was changed"))).toBe(true);
+    expect(refusal(() => hub.loginWithPassword("hunter2-typed-in-the-wrong-field", "x"))).toBe("wrong name or password");
+    expect(JSON.stringify(hub.events(0, 1000).filter((e) => e.kind === "login.refused"))).not.toContain("hunter2");
+    expect(refusal(() => hub.loginWithPassword("alice", "x".repeat(201)))).toBe("wrong name or password");
+    // Sign out everywhere clears it: the panic button also ends a password a thief set.
+    hub.signOutAll("alice");
+    expect(hub.authenticateLogin(l.key)).toBeNull();
+    expect(hub.hasPassword("alice")).toBe(false);
+    hub.rotateHumanKey("alice"); // a page key again, as on an older setup
+    hub.setPassword("alice", "set again after the panic");
+    hub.removeLogin("alice", 0); // ending the page key clears the password too
+    expect(hub.hasPassword("alice")).toBe(false);
+  });
+
+  test("a lock set by a guesser ends with a link login; fifty wrong tries from one address lock that address, nobody else", () => {
+    hub.setPassword("alice", "correct horse battery staple");
+    for (let i = 0; i < 5; i++) refusal(() => hub.loginWithPassword("alice", `wrong ${i}`));
+    expect(refusal(() => hub.loginWithPassword("alice", "correct horse battery staple"))).toContain("too many tries");
+    hub.redeemLoginLink(hub.createLoginLink("alice").token, "Mac");
+    expect(hub.loginWithPassword("alice", "correct horse battery staple").human).toBe("alice");
+    for (let i = 0; i < 50; i++) refusal(() => hub.loginWithPassword(`guess${i}`, "x", "", "203.0.113.9"));
+    expect(refusal(() => hub.loginWithPassword("alice", "correct horse battery staple", "", "203.0.113.9"))).toContain("too many tries");
+    expect(hub.loginWithPassword("alice", "correct horse battery staple", "", "198.51.100.2").human).toBe("alice"); // another address is not locked
+  });
+});

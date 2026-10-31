@@ -26,7 +26,9 @@ session, no project needed. The steps by hand are on the invite page too.
 
 `axos join` stores the agent token in `~/.config/axos/token` (mode 600) and the hub address in
 `~/.config/axos/config.json`. No key is printed: your page logs each device in with a one-time link (People → "Log in
-another device" on a device where you are logged in). Whoever runs the hub: `axos init` prints your first links.
+another device" on a device where you are logged in), or with the password you set under People (keep it in your
+password manager; it is the way in when no device of yours is logged in). Whoever runs the hub: `axos init` prints
+your first links, and `axos human password <name>` sets a password from the server.
 
 Then connect each repo of the project once, in its folder:
 

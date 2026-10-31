@@ -11,6 +11,8 @@ export function People({ state, onChange }: { state: State; onChange: () => void
   const [name, setName] = useState("");
   const [shown, setShown] = useState<{ id: number; link: string } | null>(null);
   const [device, setDevice] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [current, setCurrent] = useState("");
   const [busy, setBusy] = useState(false);
   const run = async (f: () => Promise<void>) => {
     setBusy(true);
@@ -66,6 +68,13 @@ export function People({ state, onChange }: { state: State; onChange: () => void
             {device && <span className="text-muted-foreground">Open this on the other device within ten minutes; it works once.</span>}
           </div>
           {device && <div className="flex items-center gap-2"><code className="break-all">{device}</code><Button size="sm" variant="outline" onClick={() => copy(device)}>Copy</Button></div>}
+          <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (password.length < 10) { toast.error("At least 10 characters."); return; }
+            void run(async () => { await post("password", { password, current }); setPassword(""); setCurrent(""); toast.success("Password set. Keep it in your password manager."); }); }}>
+            {state.me.password && <input className="flex-1 rounded-md border bg-background px-3 py-2 text-sm" type="password" autoComplete="current-password" placeholder="current password" value={current} onChange={(e) => setCurrent(e.target.value)} />}
+            <input className="flex-1 rounded-md border bg-background px-3 py-2 text-sm" type="password" name="new-password" autoComplete="new-password" placeholder={state.me.password ? "new password" : "set a password (for logging in with no link at hand)"} value={password} onChange={(e) => setPassword(e.target.value)} />
+            <Button type="submit" size="sm" variant="outline" disabled={busy}>{state.me.password ? "Change" : "Set password"}</Button>
+          </form>
+          <p className="text-muted-foreground">{state.me.password ? "A password is set: name and password log any device in. Changing it needs the current one; \"sign out every device\" clears it." : "No password yet; links are the only way in."}</p>
           {state.me.logins.length > 0 && (
             <ul className="flex flex-col gap-1">
               {state.me.logins.map((l) => (

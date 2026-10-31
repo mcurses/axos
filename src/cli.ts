@@ -17,6 +17,7 @@ const USAGE = `axos — hub admin
   axos human ntfy <name> <topic|->               set or clear the ntfy topic
   axos human devices <name> [--clear]            the devices the page registered for pushes; --clear forgets them all
   axos human operator <name> [--off]             let <name> invite new people from their page (the first person is one)
+  axos human password <name>                     set <name>'s page password from stdin (when no device of theirs is logged in)
   axos project add <owner>/<name> [--brief <file|->]
                                                  add a project (- reads the brief from stdin); prints its id
   axos project list                              every project with its id, people and links
@@ -167,6 +168,14 @@ The join link works once and expires in 7 days; axos invite --human ${name} make
       out("ok");
       return;
     }
+    case "human password": {
+      need(1);
+      // At a terminal: typed twice with echo off; piped: one line (`read -rs pw; printf '%s' "$pw" | axos human password <name>`).
+      const pw = process.stdin.isTTY ? await secretTwice() : (await readText("/dev/stdin")).replace(/\r?\n$/, "");
+      hub.setPassword(rest[0]!, pw, { admin: true });
+      out(`password set for ${rest[0]}; they log in with their name and it on any device.`);
+      return;
+    }
     case "human operator": {
       need(1);
       hub.setOperator(rest[0]!, !rest.includes("--off"));
@@ -302,4 +311,33 @@ try {
     process.exit(1);
   }
   throw e;
+}
+
+// A secret typed at the terminal, echo off, twice. One buffered reader (two lines pasted at once are two answers);
+// echo comes back whatever happens, an interrupt included.
+async function secretTwice(): Promise<string> {
+  const echo = (on: boolean) => { Bun.spawnSync(["stty", on ? "echo" : "-echo"], { stdin: "inherit" }); };
+  const restore = () => { echo(true); process.stdout.write("\n"); process.exit(130); };
+  process.on("SIGINT", restore);
+  let buffer = "";
+  process.stdin.setEncoding("utf8");
+  const nextLine = () => new Promise<string>((res) => {
+    const take = () => { const i = buffer.indexOf("\n"); if (i < 0) return false; const line = buffer.slice(0, i).replace(/\r$/, ""); buffer = buffer.slice(i + 1); res(line); return true; };
+    if (take()) return;
+    const on = (d: string) => { buffer += d; if (take()) process.stdin.off("data", on); };
+    process.stdin.on("data", on);
+  });
+  try {
+    echo(false);
+    process.stdout.write("Password (not shown): ");
+    const a = await nextLine();
+    process.stdout.write("\nAgain: ");
+    const b = await nextLine();
+    process.stdout.write("\n");
+    if (a !== b) throw new AxosError("the two did not match");
+    return a;
+  } finally {
+    echo(true);
+    process.off("SIGINT", restore);
+  }
 }

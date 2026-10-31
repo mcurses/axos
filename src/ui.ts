@@ -83,6 +83,28 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
       throw e;
     }
   }
+  // The login form: name and password (JSON), from the page itself; this device gets a login of its own.
+  if (url.pathname === "/ui/login" && req.method === "POST") {
+    const origin = req.headers.get("origin");
+    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+    if (origin && host && new URL(origin).host !== host) return json({ error: "bad origin" }, 403);
+    const b = (await req.json().catch(() => ({}))) as { name?: unknown; password?: unknown };
+    try {
+      // The proxy's own view of the client: X-Real-IP, else the last X-Forwarded-For entry (nginx appends the real
+      // address to whatever the client sent; the first entry is the client's to forge).
+      const forwarded = (req.headers.get("x-forwarded-for") ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+      const client = req.headers.get("x-real-ip") || forwarded.at(-1) || "direct";
+      const r = hub.loginWithPassword(String(b.name ?? "").trim().toLowerCase(), String(b.password ?? ""), deviceLabel(req.headers.get("user-agent") ?? ""), client);
+      const secure = url.protocol === "https:" || req.headers.get("x-forwarded-proto") === "https" ? "; Secure" : "";
+      return new Response(JSON.stringify({ ok: true }), { headers: {
+        "Content-Type": "application/json", "Cache-Control": "no-store",
+        "Set-Cookie": `${COOKIE}=${encodeURIComponent(r.key)}; Path=/ui; HttpOnly; SameSite=Strict; Max-Age=31536000${secure}`,
+      } });
+    } catch (e) {
+      if (e instanceof AxosError) return json({ error: e.message }, 401);
+      throw e;
+    }
+  }
   const auth = hub.authenticateLogin(cookie(req, COOKIE) ?? "");
   const human = auth?.human ?? null;
 
@@ -106,6 +128,9 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
         return json({ link: `${hub.publicUrl || url.origin}/ui/login/${l.token}`, expires_at: l.expires_at });
       } else if (url.pathname === "/ui/api/login/remove") {
         hub.removeLogin(human, Number(b.id));
+        return json({ ok: true });
+      } else if (url.pathname === "/ui/api/password") {
+        hub.setPassword(human, str("password"), { current: str("current") || undefined, label: deviceLabel(req.headers.get("user-agent") ?? "") });
         return json({ ok: true });
       } else if (url.pathname === "/ui/api/logout-all") {
         hub.signOutAll(human);
@@ -209,7 +234,7 @@ function state(hub: Hub, human: string) {
   const people = [...new Set(mine.flatMap((p) => hub.projectHumans(p)))].filter((h) => h !== human).sort()
     .map((h) => ({ name: h, pair: mine.find((p) => hub.isPair(p) && hub.projectHumans(p).includes(h)) ?? null }));
   const invites = hub.invitesBy(human).map((i) => ({ id: i.id, name: i.human, created_at: i.created_at, expires_at: i.expires_at, used_at: i.used_at }));
-  const me = { operator: hub.isOperator(human), logins: hub.logins(human) };
+  const me = { operator: hub.isOperator(human), logins: hub.logins(human), password: hub.hasPassword(human) };
   const projects = mine.map((p) => {
     const leases = hub.leases(p);
     return {

@@ -185,6 +185,11 @@ const UNCLAIMED_KEPT_MS = 3_600_000;
 const ANSWERED_ON_PHONE_MS = 86_400_000;
 const INVITE_TTL_S = 7 * 86_400; // an invite link lives a week (the operator's choice, 2026-10-31), or until withdrawn
 const MAX_OPEN_INVITES = 5; // per person, from the page
+const LOGIN_TRIES = 5;
+const LOGIN_TRIES_ALL = 50; // from one client address, over all names
+const LOGIN_LOCK_MS = 15 * 60_000;
+// Verified against when a name has no password, so the answer takes as long as a wrong password.
+const DUMMY_HASH = Bun.password.hashSync("nobody has this password", { algorithm: "argon2id" });
 const OTHER_PUSH_CAP = 10; // pushes to a phone from one other person's side per ten minutes; the rest wait on the page
 const OTHER_PUSH_WINDOW_MS = 600_000;
 const SCRIPT_KEPT_MS = 30 * 86_400_000;
@@ -355,12 +360,69 @@ export class Hub {
       this.db.query("UPDATE login_links SET used_at = ? WHERE token_hash = ?").run(t, hashSecret(token));
       this.db.query("INSERT INTO logins (human, key_hash, label, created_at, last_seen) VALUES (?, ?, ?, ?, ?)").run(l.human, hashSecret(key), oneLine(label, 120), t, t);
     })();
+    this.loginTries.delete(l.human); // a link login proves the person; a lock set by a guesser ends
     this.event(`human:${l.human}`, "login.added", null, { label });
     return { human: l.human, key };
   }
 
   // Every way into this person's page: id 0 is the page key (from before per-device logins), which every device that
   // used it shares; the others are devices.
+  // A password, kept in the person's password manager: the way in when no device is logged in to make a link.
+  // Changing one needs the current one (a stolen logged-in device cannot take the account over); setting one tells
+  // the person's phone; "sign out every device" and ending the page key clear it (security review, p14).
+  // admin: the server's own command, which needs no current password (the person is locked out everywhere); label:
+  // the device the change came from, for the notice only.
+  setPassword(human: string, password: string, opts: { current?: string; admin?: boolean; label?: string } = {}): void {
+    if (password.length < 10) throw new AxosError("a password has at least 10 characters");
+    if (password.length > 200) throw new AxosError("a password has at most 200 characters");
+    const h = this.db.query("SELECT password_hash FROM humans WHERE name = ?").get(human) as { password_hash: string | null } | null;
+    if (!h) throw new AxosError(`no human '${human}'`);
+    if (h.password_hash && !opts.admin && !(opts.current && Bun.password.verifySync(opts.current, h.password_hash))) {
+      throw new AxosError("to change the password, give the current one; forgotten: sign out every device, which clears it, then log in through a link");
+    }
+    const by = opts.admin ? "the admin command" : oneLine(opts.label ?? "", 120) || "a device of yours";
+    this.db.query("UPDATE humans SET password_hash = ? WHERE name = ?").run(Bun.password.hashSync(password, { algorithm: "argon2id" }), human);
+    this.event(`human:${human}`, "password.set", null, { by });
+    void this.pushToHuman(human, h.password_hash ? "Your AXOS password was changed" : "An AXOS password was set for you",
+      `From ${by}. Not you? Open your page and press "Sign out every device": that clears the password too.`, "", [], { priority: "high" });
+  }
+
+  clearPassword(human: string): void {
+    this.db.query("UPDATE humans SET password_hash = NULL WHERE name = ?").run(human);
+  }
+
+  hasPassword(human: string): boolean {
+    return !!(this.db.query("SELECT password_hash FROM humans WHERE name = ?").get(human) as { password_hash: string | null } | null)?.password_hash;
+  }
+
+  // Name and password from the login form: this device gets a login of its own. Five wrong tries lock the name for
+  // fifteen minutes; the answer is the same for a wrong name, a wrong password and no password set.
+  private loginTries = new Map<string, number[]>();
+  // Also a ceiling over all names (a guesser cycling names), and an unknown name or a person without a password cost
+  // the same verify as a wrong password (p15); the refusal event never stores what was typed (p16).
+  // client: the caller's address, so a guesser cycling names locks only itself out (p19), never everyone.
+  loginWithPassword(name: string, password: string, label = "", client = ""): { human: string; key: string } {
+    const t = this.now();
+    const tries = (this.loginTries.get(name) ?? []).filter((x) => t - x < LOGIN_LOCK_MS);
+    const all = (this.loginTries.get(`@${client}`) ?? []).filter((x) => t - x < LOGIN_LOCK_MS);
+    if (tries.length >= LOGIN_TRIES || all.length >= LOGIN_TRIES_ALL) throw new AxosError("too many tries; wait fifteen minutes");
+    const h = password.length <= 200 ? this.db.query("SELECT password_hash FROM humans WHERE name = ?").get(name) as { password_hash: string | null } | null : null;
+    const ok = Bun.password.verifySync(password.slice(0, 200), h?.password_hash ?? DUMMY_HASH) && !!h?.password_hash;
+    if (!ok) {
+      tries.push(t);
+      this.loginTries.set(name, tries);
+      all.push(t);
+      this.loginTries.set(`@${client}`, all);
+      this.event("axos", "login.refused", null, { name: h ? name : "unknown name" });
+      throw new AxosError("wrong name or password");
+    }
+    this.loginTries.delete(name);
+    const key = newSecret("axosui");
+    this.db.query("INSERT INTO logins (human, key_hash, label, created_at, last_seen) VALUES (?, ?, ?, ?, ?)").run(name, hashSecret(key), oneLine(label, 120), t, t);
+    this.event(`human:${name}`, "login.added", null, { label, by: "password" });
+    return { human: name, key };
+  }
+
   logins(human: string): { id: number; label: string; created_at: number; last_seen: number | null }[] {
     const h = this.db.query("SELECT ui_key_hash, created_at FROM humans WHERE name = ?").get(human) as { ui_key_hash: string | null; created_at: number } | null;
     const rows = this.db.query("SELECT id, label, created_at, last_seen FROM logins WHERE human = ? ORDER BY created_at").all(human) as
@@ -372,7 +434,7 @@ export class Hub {
   // Id 0 ends the page key, so every device that used it must log in again through a link.
   removeLogin(human: string, id: number): void {
     if (id === 0) {
-      const r = this.db.query("UPDATE humans SET ui_key_hash = NULL WHERE name = ? AND ui_key_hash IS NOT NULL").run(human);
+      const r = this.db.query("UPDATE humans SET ui_key_hash = NULL, password_hash = NULL WHERE name = ? AND ui_key_hash IS NOT NULL").run(human);
       if (!r.changes) throw new AxosError("no page key is in use");
       this.db.query("DELETE FROM push_devices WHERE human = ? AND login_id IS NULL").run(human);
     } else {
@@ -386,7 +448,7 @@ export class Hub {
   // Every device out, pushes off, the page key dead: the device this is done from logs in again through a link.
   signOutAll(human: string): void {
     this.db.query("DELETE FROM logins WHERE human = ?").run(human);
-    this.db.query("UPDATE humans SET ui_key_hash = NULL WHERE name = ?").run(human);
+    this.db.query("UPDATE humans SET ui_key_hash = NULL, password_hash = NULL WHERE name = ?").run(human);
     this.db.query("DELETE FROM push_devices WHERE human = ?").run(human);
     this.event(`human:${human}`, "login.removed_all", null, {});
   }

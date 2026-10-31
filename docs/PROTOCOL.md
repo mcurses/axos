@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.21.0`, protocol `1`.
+Current numbers: hub release `0.21.1`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -567,7 +567,15 @@ plugin, links the `axos` command, runs `axos join <link>`, which opens the page.
   uses nothing up (a chat's link preview fetches it); the tap is a same-origin `POST` that sets the page's cookie with
   a key of that device's own. A person made by an invite has no page key at all. Any logged-in device makes another
   such link (`POST /ui/api/login-link`); a device is signed out with `POST /ui/api/login/remove {"id"}` (its pushes
-  end with it; id 0 ends the page key of an older setup); `POST /ui/api/logout-all` signs every device out.
+  end with it; id 0 ends the page key of an older setup); `POST /ui/api/logout-all` signs every device out. The third
+  way in, for a device with no login and no link at hand: a password the person set on their page
+  (`POST /ui/api/password {"password"}`, at least 10 characters, kept as argon2id) or that the admin set
+  (`axos human password <name>`, typed twice with echo off, or one line on stdin); changing one on the page needs the
+  current one (`"current"`), setting or changing one pushes a notice to the person's phone, and "sign out every device"
+  or ending the page key clears it, so a stolen logged-in device cannot keep the account. `POST /ui/login
+  {"name","password"}` then logs that device in (five wrong tries lock the name for fifteen minutes, fifty from one client address over all
+  names; a link login clears the lock; the same answer, taking the same time, for a wrong name, a wrong password and
+  no password; what was typed as the name is never recorded unless it is a person's).
 - `invited_by` is who made the invite on their page, or `null` for an admin's invite.
 - `hub` is the configured public URL, or the origin the request came to.
 - `projects` are names of the agent's projects.
@@ -601,7 +609,7 @@ HMAC-SHA256 of `ask:<id>` with the hub's link secret.
 
 ## Health
 
-`GET /healthz`, no auth: `{"ok":true,"version":"0.21.0","protocol":1}`. The hub reads its database for this; if that
+`GET /healthz`, no auth: `{"ok":true,"version":"0.21.1","protocol":1}`. The hub reads its database for this; if that
 fails, status 503 and `ok:false` with the same fields.
 
 ## Versioning

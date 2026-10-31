@@ -96,15 +96,25 @@ export default function App() {
 
 // Not logged in: the key link once, or the key typed here (an installed app has no address bar to open the link in).
 function Login() {
-  const [key, setKey] = useState("");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const res = await fetch("/ui/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, password }) });
+    if (res.ok) location.replace("/ui");
+    else setError(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `the hub answered ${res.status}`);
+  };
   return (
     <main className="mx-auto max-w-xl p-6">
       <h1 className="mb-2 font-semibold text-xl">AXOS</h1>
-      <p className="mb-4 text-muted-foreground">Open a login link here: on a device where you are logged in, People → "Log in another device" makes one. Or paste your page key, if you have one.</p>
-      <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (key.trim()) location.assign(`/ui?key=${encodeURIComponent(key.trim())}`); }}>
-        <input className="flex-1 rounded-md border bg-background px-3 py-2 text-sm" type="password" autoComplete="off" placeholder="your key" value={key} onChange={(e) => setKey(e.target.value)} />
+      <form className="flex flex-col gap-2" onSubmit={submit}>
+        <input className="rounded-md border bg-background px-3 py-2 text-sm" name="username" autoComplete="username" placeholder="your name" value={name} onChange={(e) => setName(e.target.value)} />
+        <input className="rounded-md border bg-background px-3 py-2 text-sm" type="password" name="password" autoComplete="current-password" placeholder="your password" value={password} onChange={(e) => setPassword(e.target.value)} />
         <button className="rounded-md border px-3 py-2 text-sm" type="submit">Log in</button>
+        {error && <p className="text-destructive text-sm">{error}</p>}
       </form>
+      <p className="mt-4 text-muted-foreground text-sm">No password yet? Open a login link here instead: on a device where you are logged in, People → "Log in another device" makes one, and a password can be set there too.</p>
     </main>
   );
 }
