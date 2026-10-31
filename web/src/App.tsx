@@ -63,21 +63,23 @@ export default function App() {
         <TabsContent value="inbox" className="screen-stack">
           <header className="screen-heading"><div><p className="eyebrow">Your attention</p><h2>Inbox</h2><p>Decisions to make, updates to catch up on. This is where your agents reach you.</p></div></header>
           <PendingRequests pending={state.pending} projects={state.projects} onChange={refresh} />
+          {/* Two quiet section titles; what matters is the state line under each ("none open", "nothing unread"). */}
           <section className="flex flex-col gap-3">
-            <h2 className="font-medium">Needs a decision <span className="ml-2 text-sm text-muted-foreground">{state.asks.length}</span></h2>
+            <h2 className="eyebrow">Needs a decision{state.asks.length > 0 && <span className="ml-2 font-normal normal-case tracking-normal">{state.asks.length}</span>}</h2>
             {state.asks.map((a) => <AskCard key={a.id} ask={a} now={state.now} onDone={refresh} />)}
             {!state.asks.length && <p className="text-muted-foreground text-sm">None open.</p>}
           </section>
           <section className="flex flex-col gap-3">
-            <h2 className="font-medium">Updates <span className="ml-2 text-sm text-muted-foreground">{state.inbox.length} unread</span></h2>
+            <h2 className="eyebrow">Updates{state.inbox.length > 0 && <span className="ml-2 font-normal normal-case tracking-normal">{state.inbox.length} unread</span>}</h2>
             {state.inbox.map((m) => <InboxItem key={m.id} m={m} now={state.now} onDone={refresh} />)}
             {!state.inbox.length && <p className="text-muted-foreground text-sm">{state.projects.length ? "Nothing unread." : "Nothing yet. A question from one of your sessions, or a message from a person, appears here and on your phone."}</p>}
           </section>
+          {/* Bonus information, folded by default: what your agents sent to other people, and what they quoted as your words. */}
           {state.sent.length > 0 && (
-            <section className="flex flex-col gap-3">
-              <h2 className="font-medium">Agent activity <span className="ml-2 text-sm text-muted-foreground">Last {state.sent.length}</span></h2>
-              {state.sent.map((m) => <SentItem key={m.id} m={m} now={state.now} />)}
-            </section>
+            <details className="group">
+              <summary className="eyebrow cursor-pointer list-none select-none opacity-70 hover:opacity-100"><span className="mr-1 inline-block transition-transform group-open:rotate-90">›</span>Agent activity<span className="ml-2 font-normal normal-case tracking-normal">last {state.sent.length}</span></summary>
+              <div className="mt-2 flex flex-col">{state.sent.map((m) => <SentItem key={m.id} m={m} now={state.now} />)}</div>
+            </details>
           )}
         </TabsContent>
         <TabsContent value="map" className="screen-stack">

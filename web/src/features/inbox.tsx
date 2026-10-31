@@ -71,12 +71,18 @@ export function InboxItem({ m, now, onDone }: { m: InboxMessage; now: number; on
   );
 }
 
+// One quiet line per message; the details open on a click.
 export function SentItem({ m, now }: { m: SentMessage; now: number }) {
+  const { name } = splitLabel(m.from);
   return (
-    <article className="border-b py-4">
-      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Sender label={m.from} /><span>→ {m.readers.length ? m.readers.join(", ") : "your own sessions"}</span><span className="ml-auto">{ago(m.created_at, now)}</span></div>
-      {m.quotes_human && <p className="mb-2 text-xs text-muted-foreground">This agent says it quoted your words.</p>}
-      <details><summary className="cursor-pointer text-sm font-medium">{m.summary}</summary>{m.body && <div className="mt-3 text-sm text-muted-foreground"><MessageResponse>{m.body}</MessageResponse></div>}</details>
-    </article>
+    <details className="group border-b py-2 text-sm">
+      <summary className="flex cursor-pointer list-none items-baseline gap-2 text-muted-foreground">
+        <span className="shrink-0 text-xs">{name}</span>
+        <span className="min-w-0 flex-1 truncate group-open:whitespace-normal">{m.summary}{m.quotes_human && <span className="ml-1 text-xs">(quotes you)</span>}</span>
+        <span className="shrink-0 text-xs">{ago(m.created_at, now)}</span>
+      </summary>
+      <div className="mt-2 pl-1 text-xs text-muted-foreground">To {m.readers.length ? m.readers.join(", ") : "your own sessions"}{m.quotes_human ? "; this agent says it quoted your words" : ""}.</div>
+      {m.body && <div className="mt-2 pl-1 text-sm text-muted-foreground"><MessageResponse>{m.body}</MessageResponse></div>}
+    </details>
   );
 }
