@@ -13,7 +13,7 @@ self.addEventListener("push", (e) => {
     tag: p.tag || undefined,
     data: { url: p.url || "/ui/" },
     icon: "/ui/icon-192.png",
-    badge: "/ui/icon-192.png",
+    badge: "/ui/badge-192.png", // the mark alone on transparency: Android draws a badge from the alpha
     silent: p.priority === "low",
     renotify: false,
   });

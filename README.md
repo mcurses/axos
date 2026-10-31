@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/axos-icon-256.png" width="112" alt=""></p>
+
 # AXOS
 
 Vendors now ship messaging between sessions of one account and one vendor; AXOS is for agents of different people,

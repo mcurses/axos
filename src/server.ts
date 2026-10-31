@@ -452,7 +452,7 @@ claude plugin install axos@axos --scope user</pre></li>
   const title = status !== "open" ? "This AXOS invite is no longer open" : inv!.project ? `Join ${inv!.project.name.split("/").pop()} on AXOS` : "Join AXOS";
   const blurb = status !== "open" ? "Ask for a new link." : `${invited ? `${invited} invited you` : "You are invited"}${inv!.project ? ` to work on ${inv!.project.name}` : ""}. One command sets up your machine and connects you.`;
   const meta = `<meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(blurb)}"><meta name="description" content="${esc(blurb)}">
-<meta property="og:type" content="website"><meta property="og:site_name" content="AXOS"><meta property="og:image" content="${esc(base)}/ui/icon-512.png"><meta name="twitter:card" content="summary">`;
+<meta property="og:type" content="website"><meta property="og:site_name" content="AXOS"><meta property="og:image" content="${esc(base)}/ui/og-image.png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta name="twitter:card" content="summary">`;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>${meta}<style>body{font:15px/1.5 -apple-system,system-ui,sans-serif;max-width:720px;margin:2em auto;padding:0 16px}
 pre{background:#f5f5f7;padding:8px;border-radius:6px;white-space:pre-wrap}@media(prefers-color-scheme:dark){body{background:#000;color:#f5f5f7}pre{background:#1c1c1e}}</style>
