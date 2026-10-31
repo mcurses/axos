@@ -1,5 +1,9 @@
 # Caddy streams the hub's event stream (text/event-stream) without buffering, and keeps long-polls open.
 {$AXOS_DOMAIN} {
 	encode gzip
-	reverse_proxy axos:18900
+	reverse_proxy axos:18900 {
+		# The hub counts login tries per client address from these; a client must not be able to set them itself.
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+	}
 }

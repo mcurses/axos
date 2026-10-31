@@ -186,6 +186,8 @@ const ANSWERED_ON_PHONE_MS = 86_400_000;
 const INVITE_TTL_S = 7 * 86_400; // an invite link lives a week (the operator's choice, 2026-10-31), or until withdrawn
 const MAX_OPEN_INVITES = 5; // per person, from the page
 const LOGIN_TRIES = 5;
+const CODE_TRIES = 10;
+const CODE_TRIES_ALL = 200; // over the whole hub; links and passwords stay open
 const LOGIN_TRIES_ALL = 50; // from one client address, over all names
 const LOGIN_LOCK_MS = 15 * 60_000;
 // Verified against when a name has no password, so the answer takes as long as a wrong password.
@@ -332,12 +334,53 @@ export class Hub {
 
   // A link that logs one device in, made on a device that is logged in already (or by the hub on redemption); ten
   // minutes, once. The page key itself is never shown again.
-  createLoginLink(human: string, ttlS = 600): { token: string; expires_at: number } {
+  // With a code: a second credential beside the link, eight letters and digits shown beside the QR code, for a device
+  // where the link cannot be opened (an installed app's login screen); each dies on its own use, both within ten
+  // minutes. madeBy: the device's login, so signing that device out ends what it made.
+  createLoginLink(human: string, ttlS = 600, opts: { withCode?: boolean; madeBy?: number | null } = {}): { token: string; code: string | null; expires_at: number } {
     if (!this.db.query("SELECT 1 FROM humans WHERE name = ?").get(human)) throw new AxosError(`no human '${human}'`);
     const token = newSecret("axoslogin");
     const t = this.now();
-    this.db.query("INSERT INTO login_links (token_hash, human, created_at, expires_at) VALUES (?, ?, ?, ?)").run(hashSecret(token), human, t, t + ttlS * 1000);
-    return { token, expires_at: t + ttlS * 1000 };
+    this.db.query("INSERT INTO login_links (token_hash, human, created_at, expires_at, made_by) VALUES (?, ?, ?, ?, ?)").run(hashSecret(token), human, t, t + ttlS * 1000, opts.madeBy ?? null);
+    let code: string | null = null;
+    if (opts.withCode) {
+      code = shortCode();
+      this.db.query("INSERT INTO login_links (token_hash, human, created_at, expires_at, code_hash, made_by) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(hashSecret(newSecret("axoslogin")), human, t, t + ttlS * 1000, hashSecret(code), opts.madeBy ?? null);
+    }
+    return { token, code, expires_at: t + ttlS * 1000 };
+  }
+
+  // The short code typed on the other device: the same link, found by the code. Ten wrong codes from one address in
+  // fifteen minutes lock that address (a code has 40 bits and lives ten minutes).
+  // Also a hub-wide ceiling (an address can be forged behind a proxy that passes the header through), an event per
+  // refusal, and the tries map pruned so it cannot grow without bound.
+  redeemLoginCode(code: string, label = "", client = ""): { human: string; key: string } {
+    const t = this.now();
+    this.pruneTries(t);
+    const tries = (this.loginTries.get(`code@${client}`) ?? []).filter((x) => t - x < LOGIN_LOCK_MS);
+    const all = (this.loginTries.get("code@*") ?? []).filter((x) => t - x < LOGIN_LOCK_MS);
+    if (all.length >= CODE_TRIES_ALL) throw new AxosError("the code login is paused for everyone for fifteen minutes after too many wrong codes; a link or your password still works");
+    if (tries.length >= CODE_TRIES) throw new AxosError("too many tries; wait fifteen minutes");
+    const norm = code.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const l = norm.length === 8 ? this.db.query("SELECT token_hash, used_at, expires_at FROM login_links WHERE code_hash = ?").get(hashSecret(norm)) as { token_hash: string; used_at: number | null; expires_at: number } | null : null;
+    if (!l || l.used_at || l.expires_at < t) {
+      tries.push(t);
+      this.loginTries.set(`code@${client}`, tries);
+      all.push(t);
+      this.loginTries.set("code@*", all);
+      this.event("axos", "login.code_refused", null, { client: oneLine(client, 64) });
+      throw new AxosError("that code is not valid now; make a new one on the other device");
+    }
+    const r = this.db.query("SELECT human FROM login_links WHERE token_hash = ?").get(l.token_hash) as { human: string };
+    const key = newSecret("axosui");
+    this.db.transaction(() => {
+      this.db.query("UPDATE login_links SET used_at = ? WHERE token_hash = ?").run(t, l.token_hash);
+      this.db.query("INSERT INTO logins (human, key_hash, label, created_at, last_seen) VALUES (?, ?, ?, ?, ?)").run(r.human, hashSecret(key), oneLine(label, 120), t, t);
+    })();
+    this.loginTries.delete(r.human);
+    this.event(`human:${r.human}`, "login.added", null, { label, by: "code" });
+    return { human: r.human, key };
   }
 
   // Whether a login link is good, without using it (the confirm page a browser opens; a link preview must not use it up).
@@ -403,6 +446,7 @@ export class Hub {
   // client: the caller's address, so a guesser cycling names locks only itself out (p19), never everyone.
   loginWithPassword(name: string, password: string, label = "", client = ""): { human: string; key: string } {
     const t = this.now();
+    this.pruneTries(t);
     const tries = (this.loginTries.get(name) ?? []).filter((x) => t - x < LOGIN_LOCK_MS);
     const all = (this.loginTries.get(`@${client}`) ?? []).filter((x) => t - x < LOGIN_LOCK_MS);
     if (tries.length >= LOGIN_TRIES || all.length >= LOGIN_TRIES_ALL) throw new AxosError("too many tries; wait fifteen minutes");
@@ -423,6 +467,13 @@ export class Hub {
     return { human: name, key };
   }
 
+  private pruneTries(t: number): void {
+    for (const [k, v] of this.loginTries) {
+      const live = v.filter((x) => t - x < LOGIN_LOCK_MS);
+      if (live.length) this.loginTries.set(k, live); else this.loginTries.delete(k);
+    }
+  }
+
   logins(human: string): { id: number; label: string; created_at: number; last_seen: number | null }[] {
     const h = this.db.query("SELECT ui_key_hash, created_at FROM humans WHERE name = ?").get(human) as { ui_key_hash: string | null; created_at: number } | null;
     const rows = this.db.query("SELECT id, label, created_at, last_seen FROM logins WHERE human = ? ORDER BY created_at").all(human) as
@@ -441,6 +492,7 @@ export class Hub {
       const r = this.db.query("DELETE FROM logins WHERE id = ? AND human = ?").run(id, human);
       if (!r.changes) throw new AxosError(`no login ${id}`);
       this.db.query("DELETE FROM push_devices WHERE login_id = ?").run(id);
+      this.db.query("DELETE FROM login_links WHERE made_by = ? AND used_at IS NULL").run(id);
     }
     this.event(`human:${human}`, "login.removed", null, { id });
   }
@@ -448,6 +500,7 @@ export class Hub {
   // Every device out, pushes off, the page key dead: the device this is done from logs in again through a link.
   signOutAll(human: string): void {
     this.db.query("DELETE FROM logins WHERE human = ?").run(human);
+    this.db.query("DELETE FROM login_links WHERE human = ? AND used_at IS NULL").run(human);
     this.db.query("UPDATE humans SET ui_key_hash = NULL, password_hash = NULL WHERE name = ?").run(human);
     this.db.query("DELETE FROM push_devices WHERE human = ?").run(human);
     this.event(`human:${human}`, "login.removed_all", null, {});
@@ -475,7 +528,7 @@ export class Hub {
       if (project) throw new AxosError("an invite from the page names no project; share the project once they are here");
       if (human !== by && !this.isOperator(by)) throw new AxosError("only the hub's operator invites new people; ask them");
       if (human !== by && exists) throw new AxosError(`${human} is here already; share a project with them instead of inviting them`);
-      const open = (this.db.query("SELECT COUNT(*) AS n FROM invites WHERE invited_by = ? AND used_at IS NULL AND expires_at > ?").get(by, this.now()) as { n: number }).n;
+      const open = (this.db.query("SELECT COUNT(*) AS n FROM invites WHERE invited_by = ? AND kind = 'machine' AND used_at IS NULL AND expires_at > ?").get(by, this.now()) as { n: number }).n;
       if (open >= MAX_OPEN_INVITES) throw new AxosError(`you have ${open} open invites; withdraw one first`);
     } else if (!exists && !project && this.db.query("SELECT 1 FROM humans").get()) {
       throw new AxosError(`'${human}' is new here: say which project they join (axos invite <project> --human ${human}), or invite them from your page`);
@@ -491,7 +544,7 @@ export class Hub {
 
   // The invites a person made on their page, newest first: pending, used (by whom) or expired.
   invitesBy(human: string): { id: number; human: string; created_at: number; expires_at: number; used_at: number | null; withdrawn: boolean }[] {
-    return (this.db.query("SELECT id, human, created_at, expires_at, used_at FROM invites WHERE invited_by = ? ORDER BY id DESC LIMIT 50").all(human) as
+    return (this.db.query("SELECT id, human, created_at, expires_at, used_at FROM invites WHERE invited_by = ? AND kind = 'machine' ORDER BY id DESC LIMIT 50").all(human) as
       { id: number; human: string; created_at: number; expires_at: number; used_at: number | null }[]).map((i) => ({ ...i, withdrawn: !i.used_at && i.expires_at < i.created_at }));
   }
 
@@ -517,6 +570,119 @@ export class Hub {
     this.db.query("INSERT OR IGNORE INTO human_projects (human, project) VALUES (?, ?)").run(a, id);
     this.db.query("INSERT OR IGNORE INTO human_projects (human, project) VALUES (?, ?)").run(b, id);
     this.event("axos", "project.paired", id, { humans: [a, b] });
+    return id;
+  }
+
+  projectOwner(project: string): string | null {
+    return (this.db.query("SELECT owner FROM projects WHERE id = ?").get(project) as { owner: string } | null)?.owner ?? null;
+  }
+
+  // Those a person shares a project with; never the hub's whole list.
+  people(human: string): string[] {
+    return (this.db.query(`SELECT DISTINCT h2.human FROM human_projects h1 JOIN human_projects h2 ON h2.project = h1.project
+      WHERE h1.human = ? AND h2.human <> ? ORDER BY h2.human`).all(human, human) as { human: string }[]).map((r) => r.human);
+  }
+
+  // ---------------------------------------------------------------- share and link, from the page
+
+  // The owner shares a project with a person they already know (a person they share a project with); the person
+  // joins on their page or phone, like answering a question. Only the owner shares (the human's choice, 2026-10-31).
+  shareProject(by: string, project: string, human: string): number {
+    if (this.projectOwner(project) !== by) throw new AxosError("only the project's owner shares it");
+    if (this.isPair(project)) throw new AxosError("a project of two people is not shared; make a project for the work");
+    if (!this.people(by).includes(human)) throw new AxosError(`you share no project with '${human}' yet`);
+    if (this.humanInProject(human, project)) throw new AxosError(`${human} is in ${this.projectName(project)} already`);
+    if (this.db.query("SELECT 1 FROM invites WHERE kind = 'share' AND project = ? AND human = ? AND decided_at IS NULL AND expires_at > ?").get(project, human, this.now())) {
+      throw new AxosError(`${human} was asked already and has not answered`);
+    }
+    const t = this.now();
+    const r = this.db.query("INSERT INTO invites (code_hash, human, project, created_at, expires_at, invited_by, kind) VALUES (?, ?, ?, ?, ?, ?, 'share')")
+      .run(hashSecret(newSecret("axosinv")), human, project, t, t + INVITE_TTL_S * 1000, by);
+    const id = Number(r.lastInsertRowid);
+    this.event(`human:${by}`, "project.share_asked", project, { human });
+    if (this.otherPushAllowed(by, human)) void this.pushToHuman(human, `${by} wants to share ${this.projectName(project)} with you`, "Join, or not now: on your page under People.", `#invite-${id}`);
+    return id;
+  }
+
+  // The owner asks a person to link this project with one of theirs; the person picks which, on their page.
+  linkRequest(by: string, project: string, human: string): number {
+    if (this.projectOwner(project) !== by) throw new AxosError("only the project's owner links it");
+    if (this.isPair(project)) throw new AxosError("a project of two people is not linked; make a project for the work");
+    if (!this.people(by).includes(human)) throw new AxosError(`you share no project with '${human}' yet`);
+    if (this.db.query("SELECT 1 FROM invites WHERE kind = 'link' AND project = ? AND human = ? AND decided_at IS NULL AND expires_at > ?").get(project, human, this.now())) {
+      throw new AxosError(`${human} was asked already and has not answered`);
+    }
+    const t = this.now();
+    const r = this.db.query("INSERT INTO invites (code_hash, human, project, created_at, expires_at, invited_by, kind) VALUES (?, ?, ?, ?, ?, ?, 'link')")
+      .run(hashSecret(newSecret("axosinv")), human, project, t, t + INVITE_TTL_S * 1000, by);
+    const id = Number(r.lastInsertRowid);
+    this.event(`human:${by}`, "project.link_asked", project, { human });
+    if (this.otherPushAllowed(by, human)) void this.pushToHuman(human, `${by} wants to link ${this.projectName(project)} with one of your projects`, "Pick which, or say no: on your page under People.", `#invite-${id}`);
+    return id;
+  }
+
+  // Share and link requests waiting for this person.
+  pendingFor(human: string): { id: number; kind: "share" | "link"; from: string; project: string; created_at: number }[] {
+    const t = this.now();
+    return (this.db.query(`SELECT id, kind, invited_by, project, created_at FROM invites WHERE human = ? AND kind IN ('share', 'link') AND decided_at IS NULL AND expires_at > ?
+      ORDER BY id`).all(human, t) as { id: number; kind: "share" | "link"; invited_by: string; project: string; created_at: number }[])
+      .map((r) => ({ id: r.id, kind: r.kind, from: r.invited_by, project: r.project, created_at: r.created_at }));
+  }
+
+  // The person answers: a share puts them into the project; a link joins the asked project with one they own.
+  decideInvite(human: string, id: number, accept: boolean, target?: string): void {
+    const inv = this.db.query("SELECT * FROM invites WHERE id = ? AND human = ? AND kind IN ('share', 'link')").get(id, human) as
+      { id: number; kind: "share" | "link"; project: string; invited_by: string; decided_at: number | null; expires_at: number } | null;
+    if (!inv) throw new AxosError(`no request ${id} for you`);
+    if (inv.decided_at) throw new AxosError("that request was answered already");
+    if (inv.expires_at <= this.now()) throw new AxosError("that request has expired; ask for it again");
+    const t = this.now();
+    if (!accept) {
+      this.db.query("UPDATE invites SET decided_at = ?, decision = 'declined' WHERE id = ?").run(t, id);
+      this.event(`human:${human}`, inv.kind === "share" ? "project.share_declined" : "project.link_declined", inv.project, { by: inv.invited_by });
+      if (this.otherPushAllowed(human, inv.invited_by)) void this.pushToHuman(inv.invited_by, `${human}: not now`, `${inv.kind === "share" ? "Sharing" : "Linking"} ${this.projectName(inv.project)}.`, "", [], { priority: "low" });
+      return;
+    }
+    if (inv.kind === "share") {
+      this.addHumanToProject(human, inv.project);
+      this.db.query("UPDATE invites SET decided_at = ?, decision = 'accepted' WHERE id = ?").run(t, id);
+      this.event(`human:${human}`, "project.share_accepted", inv.project, { by: inv.invited_by });
+      if (this.otherPushAllowed(human, inv.invited_by)) void this.pushToHuman(inv.invited_by, `${human} joined ${this.projectName(inv.project)}`, "Their sessions reach it once they link a folder to it.", "", [], { priority: "low" });
+    } else {
+      if (!target || this.projectOwner(target) !== human || this.isPair(target)) throw new AxosError("pick one of your own projects to link with");
+      this.linkProjects(inv.project, target);
+      this.db.query("UPDATE invites SET decided_at = ?, decision = 'accepted', target_project = ? WHERE id = ?").run(t, target, id);
+      this.event(`human:${human}`, "project.link_accepted", inv.project, { by: inv.invited_by, with: target });
+      if (this.otherPushAllowed(human, inv.invited_by)) void this.pushToHuman(inv.invited_by, `${human} linked ${this.projectName(target)} with ${this.projectName(inv.project)}`, "Sessions on both sides reach each other now.", "", [], { priority: "low" });
+    }
+  }
+
+  // Leaving, removing and unlinking, from the page: a member leaves (not the owner); the owner removes a member; the
+  // owner of either side unlinks.
+  leaveProject(human: string, project: string): void {
+    if (this.isPair(project)) throw new AxosError("the project of two people stays as long as both are on the hub; there is nothing to leave");
+    if (this.projectOwner(project) === human) throw new AxosError("the owner does not leave their project");
+    this.removeHumanFromProject(human, project);
+  }
+
+  removeMember(by: string, project: string, human: string): void {
+    if (this.isPair(project)) throw new AxosError("the project of two people stays as long as both are on the hub");
+    if (this.projectOwner(project) !== by) throw new AxosError("only the project's owner removes people");
+    if (human === by) throw new AxosError("the owner does not leave their project");
+    this.removeHumanFromProject(human, project);
+  }
+
+  unlinkByOwner(by: string, p: string, q: string): void {
+    if (this.projectOwner(p) !== by && this.projectOwner(q) !== by) throw new AxosError("only an owner of one of the two projects unlinks them");
+    this.unlinkProjects(p, q);
+  }
+
+  // A project made on the page (the folder is linked afterwards, on the machine).
+  createProjectForHuman(human: string, slug: string, brief = ""): string {
+    const own = slug.startsWith(`${human}/`) ? slug.slice(human.length + 1) : slug;
+    if (own.includes("/")) throw new AxosError(`a project you create is ${human}/<name>`);
+    const id = this.addProject(`${human}/${own}`, brief);
+    this.event(`human:${human}`, "project.created", id, {});
     return id;
   }
 
@@ -653,6 +819,9 @@ export class Hub {
       owner = all[0]!.name;
     }
     checkName("project", slug);
+    if (brief.length > MAX_BRIEF) throw new AxosError(`brief is ${brief.length} characters, ${brief.length - MAX_BRIEF} over the limit of ${MAX_BRIEF}; link to a file in the repo instead`);
+    const leak = findSecret(brief);
+    if (leak) throw new AxosError(`brief rejected: it looks like it contains a ${leak}`);
     if (!this.db.query("SELECT 1 FROM humans WHERE name = ?").get(owner)) throw new AxosError(`no human '${owner}'`);
     if (this.findProjects(`${owner}/${slug}`).length) throw new AxosError(`${owner} already has a project '${slug}'`);
     const id = newId("prj");
@@ -808,6 +977,19 @@ export class Hub {
         for (const l of this.db.query("SELECT * FROM leases WHERE project = ? AND holder = ? AND ended_at IS NULL").all(project, h.h) as LeaseRow[]) this.endLease(l, "revoked");
         this.db.query("UPDATE lease_waiters SET done_at = ? WHERE project = ? AND agent_id = ? AND done_at IS NULL").run(this.now(), project, h.h);
       }
+    }
+    // What else they kept (security review of 0.22.0): their landing subscriptions here, the links to projects they
+    // own, and the questions still open on their page from this project.
+    for (const id of agents) {
+      this.db.query("DELETE FROM subscriptions WHERE project = ? AND (subscriber = ? OR subscriber LIKE ?)").run(project, `agent:${id}`, `session:${id}#%`);
+    }
+    for (const q of this.linkedProjects(project)) if (this.projectOwner(q) === human) this.unlinkProjects(project, q);
+    for (const a of this.db.query("SELECT * FROM asks WHERE project = ? AND human = ? AND answer IS NULL").all(project, human) as AskRow[]) {
+      const t = this.now();
+      this.db.query("UPDATE asks SET answer = ?, answered_by = 'withdrawn:axos', answered_at = ? WHERE id = ?").run(`${human} left the project`, t, a.id);
+      this.ack(`human:${human}`, [a.message_id]);
+      this.systemMessage(a.project, this.liveBox(addr(a.asker)), "note", `No answer to ask ${a.id}: ${human} is no longer in the project`, `Question: ${a.question}`, "normal", a.message_id);
+      this.settledOnPhone(a, "No answer needed", "You are no longer in the project this question was from.", a.message_id);
     }
     this.event("admin", "project.human_removed", project, { human });
   }
@@ -1478,6 +1660,7 @@ export class Hub {
     }
     if (actor.kind === "agent") this.rateLimit(actor.id);
 
+    const notSent: { to: string; reason: string }[] = [];
     // A conversation may run across a link: a reply goes into the parent's thread, if the sender saw the parent.
     const inScope = (id: number): boolean => {
       const m = this.db.query("SELECT project FROM messages WHERE id = ?").get(id) as { project: string } | null;
@@ -1505,20 +1688,31 @@ export class Hub {
       // mailbox when the sending session has ended since.
       if (!input.to?.length) {
         if (parent.sender === SYSTEM_SENDER) throw new AxosError("messages from the hub take no reply; say who it is for with to");
+        // Only someone still in the thread's project gets the reply (a removed person's old message is no door back in).
+        const threadProject = (this.db.query("SELECT project FROM messages WHERE id = ?").get(parent.id) as { project: string }).project;
+        const stillIn = (box: string): boolean => {
+          if (box.startsWith("human:")) return this.humanInProject(box.slice(6), threadProject);
+          if (box.startsWith("agent:") || box.startsWith("session:")) return this.isMember(holderOf(box).split("#")[0]!, threadProject);
+          return true; // a role or a project box belongs to the project itself
+        };
         const back = this.liveBox(parent.sender);
-        if (back !== sender) recipients.set(back, back);
+        if (back !== sender) {
+          if (stillIn(back)) recipients.set(back, back);
+          else notSent.push({ to: back, reason: "no longer in the project this conversation belongs to" });
+        }
         // A follow-up to one's own message goes to whoever that message went to.
         else for (const d of this.db.query("SELECT recipient, via FROM deliveries WHERE message_id = ?").all(parent.id) as { recipient: string; via: string }[]) {
           const box = this.liveBox(d.recipient);
-          if (box !== sender && !recipients.has(box)) recipients.set(box, d.via);
+          if (box !== sender && !recipients.has(box) && stillIn(box)) recipients.set(box, d.via);
         }
       }
     }
     if (thread !== null && !inScope(thread)) throw new AxosError(`no thread ${thread} in '${input.project}'`);
-    if (!input.to?.length && !recipients.size) throw new AxosError(re === undefined ? "to is empty" : "nobody to reply to (that message was yours)");
+    if (!input.to?.length && !recipients.size) {
+      throw new AxosError(re === undefined ? "to is empty" : notSent.length ? `nobody to reply to: ${notSent[0]!.to} is ${notSent[0]!.reason}` : "nobody to reply to (that message was yours)");
+    }
 
     // Each address on its own: the ones that resolve get the message, the others come back with their reason.
-    const notSent: { to: string; reason: string }[] = [];
     const human = actor.kind === "agent" ? this.humanOf(actor.id) : actor.name;
     for (const a of input.to ?? []) {
       let found: { recipient: string; via: string }[];
@@ -2387,6 +2581,8 @@ export class Hub {
         "Ask again in other words, decide without it if you can, or tell your human.", "low", a.message_id);
       this.event("axos", "ask.stale", a.project, { ask: a.id });
     }
+    // Login links are short-lived; their rows go after a day.
+    this.db.query("DELETE FROM login_links WHERE expires_at < ?").run(t - 86_400_000);
     // A settled question's "Answered" notice stays on the phone for a day, then goes.
     for (const a of this.db.query("SELECT id, human FROM asks WHERE answered_at < ? AND phone_cleared_at IS NULL").all(t - ANSWERED_ON_PHONE_MS) as { id: number; human: string }[]) {
       this.db.query("UPDATE asks SET phone_cleared_at = ? WHERE id = ?").run(t, a.id);
@@ -2499,6 +2695,15 @@ function compatible(live: { mode: string }[], mode: string): boolean {
 }
 
 // One question's notification on the phone; later pushes with this id replace it.
+// Eight characters from an alphabet without 0/O and 1/I, shown as two groups of four.
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+function shortCode(): string {
+  const bytes = randomBytes(8);
+  let s = "";
+  for (let i = 0; i < 8; i++) s += CODE_ALPHABET[bytes[i]! % CODE_ALPHABET.length];
+  return s;
+}
+
 function askSequence(askId: number): string {
   return `axos-ask-${askId}`;
 }

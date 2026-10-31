@@ -1,6 +1,9 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { ago, splitLabel, type Project } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { ago, post, splitLabel, type Project } from "@/lib/api";
+import { useState } from "react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { BellIcon, LinkIcon, UserIcon } from "lucide-react";
 
@@ -8,15 +11,46 @@ export function Dot({ on }: { on: boolean }) {
   return <span className={cn("inline-block size-2 shrink-0 rounded-full", on ? "bg-emerald-500" : "bg-muted-foreground/40")} />;
 }
 
-export function ProjectCard({ p, now, me }: { p: Project; now: number; me: string }) {
+export function ProjectCard({ p, now, me, people = [], onChange }: { p: Project; now: number; me: string; people?: string[]; onChange?: () => void }) {
+  const mine = p.owner === me;
+  const [busy, setBusy] = useState(false);
+  const act = async (action: Parameters<typeof post>[0], body: Record<string, unknown>, done: string) => {
+    setBusy(true);
+    try { await post(action, body); toast.success(done); onChange?.(); } catch (e) { toast.error(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  };
+  const others = people.filter((h) => !p.humans.includes(h));
   return (
     <Card>
       <CardHeader>
         <CardTitle>{p.id}</CardTitle>
         {p.brief && <CardDescription className="whitespace-pre-wrap">{p.brief}</CardDescription>}
-        <div className="flex flex-wrap gap-1 pt-1">
-          {p.humans.filter((h) => h !== me).map((h) => <Badge key={h} variant="secondary" className="rounded-full"><UserIcon />{h}</Badge>)}
-          {p.links.map((l) => <Badge key={l} variant="outline"><LinkIcon /> {l}</Badge>)}
+        <div className="flex flex-wrap items-center gap-1 pt-1">
+          {p.humans.filter((h) => h !== me).map((h) => (
+            <Badge key={h} variant="secondary" className="rounded-full"><UserIcon />{h}
+              {mine && <button className="ml-1 opacity-60 hover:opacity-100" title={`remove ${h}`} disabled={busy} onClick={() => act("project/remove", { project: p.id, human: h }, `${h} removed.`)}>×</button>}
+            </Badge>
+          ))}
+          {p.links.map((l) => (
+            <Badge key={l} variant="outline"><LinkIcon /> {l}
+              {mine && <button className="ml-1 opacity-60 hover:opacity-100" title={`unlink ${l}`} disabled={busy} onClick={() => act("project/unlink", { project: p.id, other: l }, `Unlinked from ${l}.`)}>×</button>}
+            </Badge>
+          ))}
+        </div>
+        {/* Share with, and link with a project of, a person you already know: they accept on their page. Only the owner. */}
+        <div className="flex flex-wrap gap-2 pt-2 text-xs">
+          {mine && others.length > 0 && (
+            <select className="rounded-md border bg-background px-2 py-1" disabled={busy} value="" onChange={(e) => { const h = e.target.value; if (h) void act("project/share", { project: p.id, human: h }, `${h} is asked to join; they see it on their page and phone.`); }}>
+              <option value="">Share with…</option>
+              {others.map((h) => <option key={h} value={h}>{h}</option>)}
+            </select>
+          )}
+          {mine && people.length > 0 && (
+            <select className="rounded-md border bg-background px-2 py-1" disabled={busy} value="" onChange={(e) => { const h = e.target.value; if (h) void act("project/link", { project: p.id, human: h }, `${h} is asked to link one of their projects; they pick which.`); }}>
+              <option value="">Link with a project of…</option>
+              {people.map((h) => <option key={h} value={h}>{h}</option>)}
+            </select>
+          )}
+          {!mine && <Button size="sm" variant="ghost" disabled={busy} onClick={() => act("project/leave", { project: p.id }, `You left ${p.id}.`)}>Leave</Button>}
         </div>
       </CardHeader>
       <CardContent className="grid gap-6 md:grid-cols-3">
@@ -71,5 +105,50 @@ export function ProjectCard({ p, now, me }: { p: Project; now: number; me: strin
         </section>
       </CardContent>
     </Card>
+  );
+}
+
+// A project made on the page: the folder is linked afterwards, on the machine, with the one line shown.
+export function NewProject({ onChange }: { onChange: () => void }) {
+  const [name, setName] = useState("");
+  const [made, setMade] = useState<string | null>(null);
+  return (
+    <div className="flex flex-col gap-2">
+      <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (!name.trim()) return;
+        post("project/new", { name: name.trim() }).then((r) => { setMade((r as { name: string }).name); setName(""); onChange(); }, (err) => toast.error(err instanceof Error ? err.message : String(err))); }}>
+        <input className="flex-1 rounded-md border bg-background px-3 py-2 text-sm" placeholder="new project (lowercase, e.g. the repo's name)" value={name} onChange={(e) => setName(e.target.value)} />
+        <Button type="submit" size="sm" variant="outline">New project</Button>
+      </form>
+      {made && <p className="text-muted-foreground text-sm">Made. In the repo's folder, once: <code>axos link {made}</code>, or say to Claude Code there "connect this folder to AXOS as {made}".</p>}
+    </div>
+  );
+}
+
+// Share and link requests from people you know, answered here like a question.
+export function PendingRequests({ pending, projects, onChange }: { pending: { id: number; kind: "share" | "link"; from: string; project: string; created_at: number }[]; projects: Project[]; onChange: () => void }) {
+  const [pick, setPick] = useState<Record<number, string>>({});
+  const own = projects.filter((p) => !p.pair);
+  const decide = (id: number, accept: boolean, project?: string) =>
+    post("invite/decide", { id, accept, project }).then(onChange, (e) => toast.error(e instanceof Error ? e.message : String(e)));
+  if (!pending.length) return null;
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="font-medium">Requests from people you know <span className="text-muted-foreground">({pending.length})</span></h2>
+      {pending.map((r) => (
+        <Card key={r.id} id={`invite-${r.id}`} className="border-l-4 border-l-primary">
+          <CardContent className="flex flex-wrap items-center gap-2 pt-4 text-sm">
+            {r.kind === "share"
+              ? <><span><b>{r.from}</b> wants to share <b>{r.project}</b> with you.</span>
+                  <Button size="sm" onClick={() => decide(r.id, true)}>Join</Button><Button size="sm" variant="ghost" onClick={() => decide(r.id, false)}>Not now</Button></>
+              : <><span><b>{r.from}</b> wants to link <b>{r.project}</b> with one of your projects.</span>
+                  <select className="rounded-md border bg-background px-2 py-1" value={pick[r.id] ?? ""} onChange={(e) => setPick({ ...pick, [r.id]: e.target.value })}>
+                    <option value="">pick yours…</option>
+                    {own.filter((p) => p.owner !== r.from).map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
+                  </select>
+                  <Button size="sm" disabled={!pick[r.id]} onClick={() => decide(r.id, true, pick[r.id])}>Link</Button><Button size="sm" variant="ghost" onClick={() => decide(r.id, false)}>No</Button></>}
+          </CardContent>
+        </Card>
+      ))}
+    </section>
   );
 }

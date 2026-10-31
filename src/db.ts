@@ -32,8 +32,11 @@ CREATE TABLE IF NOT EXISTS login_links (     -- one-time, short-lived: opening o
   human         TEXT NOT NULL REFERENCES humans(name),
   created_at    INTEGER NOT NULL,
   expires_at    INTEGER NOT NULL,
-  used_at       INTEGER
+  used_at       INTEGER,
+  code_hash     TEXT,                          -- a short code typed on the other device (its own credential, beside the link)
+  made_by       INTEGER                        -- the login (device) it was made on; signing that device out ends it
 );
+CREATE INDEX IF NOT EXISTS login_links_code ON login_links (code_hash);
 -- Projects and agents are known by ids that never change; names are labels. A project's name is '<owner>/<slug>',
 -- unique per owner, so two people can each have an 'axos'. Stored addresses ('role:<project id>/<role>',
 -- 'agent:<agent id>') carry ids, so a rename touches one row.
@@ -200,7 +203,11 @@ CREATE TABLE IF NOT EXISTS invites (     -- one-time links that set up a machine
   used_at       INTEGER,
   agent_id      TEXT,                          -- the agent the redemption created
   invited_by    TEXT,                          -- the person who made it on their page; for another person, redemption pairs the two
-  new_human     INTEGER                        -- made for a name nobody had: refused if someone has it by redemption
+  new_human     INTEGER,                       -- made for a name nobody had: refused if someone has it by redemption
+  kind          TEXT NOT NULL DEFAULT 'machine', -- machine (a code), share (a person into a project), link (two projects)
+  target_project TEXT,                         -- link: the project the other side picked
+  decided_at    INTEGER,                       -- share and link: when the other side joined, linked or declined
+  decision      TEXT                           -- 'accepted' | 'declined'
 );
 -- "Tell me when it lands": a mailbox waiting for a commit to reach a branch, or for every landing there. The hub never
 -- sees a repository; the script that lands reports what it pushed, and the hub compares strings.
@@ -321,6 +328,12 @@ function migrate(db: Database): void {
   column("invites", "new_human", "INTEGER");
   column("push_devices", "login_id", "INTEGER");
   column("humans", "password_hash", "TEXT");
+  column("invites", "kind", "TEXT NOT NULL DEFAULT 'machine'");
+  column("invites", "target_project", "TEXT");
+  column("invites", "decided_at", "INTEGER");
+  column("invites", "decision", "TEXT");
+  column("login_links", "code_hash", "TEXT");
+  column("login_links", "made_by", "INTEGER");
 }
 
 // Databases from before ids (2026-10-26) keyed projects and agents by their names, and stored addresses carried the

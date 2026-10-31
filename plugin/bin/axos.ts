@@ -6,6 +6,7 @@
 //                        stop (Stop), end (SessionEnd). Prints nothing when nothing is waiting, so a session pays nothing.
 //   axos join <link>     for a person: set this machine up with an invite link (writes the config and the token)
 //   axos link [<project>] connect this repo to a project on this machine only (matched by its git remote, so every clone
+//   axos link --new [<name>]   make a project for this folder (named after it by default) and connect the folder to it
 //                        and worktree of it); nothing is written into the repo
 //   axos unlink          undo that
 //   axos trust           for a person at a terminal: accept the .axos.json of this folder, once per machine
@@ -1059,12 +1060,27 @@ async function link(args: string[]): Promise<void> {
   };
   const here = args.includes("--here");
   const remoteName = opt("--remote");
+  // --new [<name>]: make the project on the hub first (named after the folder by default), then link this folder to it.
+  const ni = args.indexOf("--new");
+  const isNew = ni >= 0;
+  const newName = isNew && args[ni + 1] && !args[ni + 1]!.startsWith("--") ? args.splice(ni, 2)[1] : (isNew ? (args.splice(ni, 1), undefined) : undefined);
   const rest = args.filter((a) => a !== "--here");
-  if (rest.length > 1 || rest.some((a) => a.startsWith("--"))) throw new Error("usage: axos link [<project>] [--remote <name>] [--here]");
+  if (rest.length > 1 || rest.some((a) => a.startsWith("--"))) throw new Error("usage: axos link [<project>] [--new [<name>]] [--remote <name>] [--here]");
   const cwd = process.cwd();
   const file = repoFile(c, cwd);
-  const ref = rest[0] ?? file?.ref;
-  if (!ref) throw new Error("say which project: axos link <owner>/<name>");
+  let ref = rest[0] ?? file?.ref;
+  if (isNew) {
+    if (ref) throw new Error("--new makes a project; do not also name one");
+    const slug = (newName ?? basename(cwd)).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "");
+    const res = await fetch(`${c.url.replace(/\/$/, "")}/api/projects`, {
+      method: "POST", headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" }, body: JSON.stringify({ name: slug }), signal: AbortSignal.timeout(10_000),
+    });
+    const r = (await res.json().catch(() => ({}))) as { error?: string; name?: string };
+    if (!res.ok || !r.name) throw new Error(r.error ?? `the hub answered ${res.status}`);
+    console.log(`Project ${r.name} made.`);
+    ref = r.name;
+  }
+  if (!ref) throw new Error("say which project: axos link <owner>/<name>, or axos link --new to make one for this folder");
   const project = await resolveProject(c, t, ref);
   // Taking the project from the repo's own file is trusting that file: a person confirms it, as with axos trust.
   if (!rest[0]) {

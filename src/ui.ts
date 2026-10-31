@@ -92,6 +92,24 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
       throw e;
     }
   }
+  // The short code from a logged-in device's "Log in another device", typed here: this device gets a login of its own.
+  if (url.pathname === "/ui/login/code" && req.method === "POST") {
+    if (!sameOrigin(req)) return json({ error: "bad origin" }, 403);
+    const b = (await req.json().catch(() => ({}))) as { code?: unknown };
+    try {
+      const forwarded = (req.headers.get("x-forwarded-for") ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+      const client = req.headers.get("x-real-ip") || forwarded.at(-1) || "direct";
+      const r = hub.redeemLoginCode(String(b.code ?? ""), deviceLabel(req.headers.get("user-agent") ?? ""), client);
+      const secure = url.protocol === "https:" || req.headers.get("x-forwarded-proto") === "https" ? "; Secure" : "";
+      return new Response(JSON.stringify({ ok: true }), { headers: {
+        "Content-Type": "application/json", "Cache-Control": "no-store",
+        "Set-Cookie": `${COOKIE}=${encodeURIComponent(r.key)}; Path=/ui; HttpOnly; SameSite=Strict; Max-Age=31536000${secure}`,
+      } });
+    } catch (e) {
+      if (e instanceof AxosError) return json({ error: e.message }, 401);
+      throw e;
+    }
+  }
   // The login form: name and password (JSON), from the page itself; this device gets a login of its own.
   if (url.pathname === "/ui/login" && req.method === "POST") {
     if (!sameOrigin(req)) return json({ error: "bad origin" }, 403);
@@ -124,13 +142,19 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
     if (!(req.headers.get("content-type") ?? "").startsWith("application/json")) return json({ error: "send JSON" }, 415);
     const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const str = (k: string) => (typeof b[k] === "string" ? (b[k] as string) : "");
+    // A project as the page names it, among this person's own; anything else is an error that names nothing.
+    const pid = (ref: string): string => {
+      const id = hub.projectId(ref, hub.projectsOfHuman(human));
+      if (!id) throw new AxosError(`you are not in a project '${ref}'`);
+      return id;
+    };
     try {
       if (url.pathname === "/ui/api/answer") {
         return json(hub.answerAsk(human, Number(b.ask), str("answer")));
       } else if (url.pathname === "/ui/api/login-link") {
         // For another device of the same person: shown once on this one, ten minutes, single use.
-        const l = hub.createLoginLink(human);
-        return json({ link: `${hub.publicUrl || url.origin}/ui/login/${l.token}`, expires_at: l.expires_at });
+        const l = hub.createLoginLink(human, 600, { withCode: true, madeBy: auth!.login });
+        return json({ link: `${hub.publicUrl || url.origin}/ui/login/${l.token}`, code: `${l.code!.slice(0, 4)}-${l.code!.slice(4)}`, expires_at: l.expires_at });
       } else if (url.pathname === "/ui/api/login/remove") {
         hub.removeLogin(human, Number(b.id));
         return json({ ok: true });
@@ -144,6 +168,28 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
         // Only the operator invites a new person (the hub refuses otherwise); the link is shown once.
         const inv = hub.createInvite(str("name").trim().toLowerCase(), null, undefined, human);
         return json({ id: inv.id, link: `${hub.publicUrl || url.origin}/join/${inv.code}`, expires_at: inv.expires_at });
+      } else if (url.pathname === "/ui/api/invite/decide") {
+        hub.decideInvite(human, Number(b.id), b.accept === true, str("project") ? hub.projectId(str("project"), hub.projectsOfHuman(human)) ?? undefined : undefined);
+        return json({ ok: true });
+      } else if (url.pathname === "/ui/api/project/new") {
+        const id = hub.createProjectForHuman(human, str("name").trim().toLowerCase(), str("brief"));
+        return json({ id, name: hub.projectName(id) });
+      } else if (url.pathname === "/ui/api/project/share") {
+        return json({ id: hub.shareProject(human, pid(str("project")), str("human").trim().toLowerCase()) });
+      } else if (url.pathname === "/ui/api/project/link") {
+        return json({ id: hub.linkRequest(human, pid(str("project")), str("human").trim().toLowerCase()) });
+      } else if (url.pathname === "/ui/api/project/leave") {
+        hub.leaveProject(human, pid(str("project")));
+        return json({ ok: true });
+      } else if (url.pathname === "/ui/api/project/remove") {
+        hub.removeMember(human, pid(str("project")), str("human").trim().toLowerCase());
+        return json({ ok: true });
+      } else if (url.pathname === "/ui/api/project/unlink") {
+        const p = pid(str("project"));
+        const other = hub.projectId(str("other"), hub.linkedProjects(p));
+        if (!other) return json({ error: `no linked project '${str("other")}'` }, 400);
+        hub.unlinkByOwner(human, p, other);
+        return json({ ok: true });
       } else if (url.pathname === "/ui/api/invite/withdraw") {
         hub.withdrawInvite(Number(b.id), human);
         return json({ ok: true });
@@ -236,14 +282,15 @@ function state(hub: Hub, human: string) {
   // The page's own pushes: the key this browser subscribes with (null: this hub cannot push), and the devices registered.
   const push = { key: hub.vapidPublicKey(), devices: hub.pushDevices(human).map((d) => ({ label: d.label, created_at: d.created_at, last_ok: d.last_ok })) };
   // People: those who share a project with this person (never the hub's whole list); the invites this person made.
-  const people = [...new Set(mine.flatMap((p) => hub.projectHumans(p)))].filter((h) => h !== human).sort()
-    .map((h) => ({ name: h, pair: mine.find((p) => hub.isPair(p) && hub.projectHumans(p).includes(h)) ?? null }));
+  const people = hub.people(human).map((h) => ({ name: h, pair: mine.find((p) => hub.isPair(p) && hub.projectHumans(p).includes(h)) ?? null }));
+  // Share and link requests waiting for this person; the project names are the asker's, which the person may see.
+  const pending = hub.pendingFor(human).map((r) => ({ ...r, project: hub.projectName(r.project) ?? r.project }));
   const invites = hub.invitesBy(human).map((i) => ({ id: i.id, name: i.human, created_at: i.created_at, expires_at: i.expires_at, used_at: i.used_at }));
   const me = { operator: hub.isOperator(human), logins: hub.logins(human), password: hub.hasPassword(human) };
   const projects = mine.map((p) => {
     const leases = hub.leases(p);
     return {
-      id: p, pair: hub.isPair(p), brief: hub.brief(p), humans: hub.projectHumans(p), links: hub.linkedProjects(p),
+      id: p, pair: hub.isPair(p), owner: hub.projectOwner(p), brief: hub.brief(p), humans: hub.projectHumans(p), links: hub.linkedProjects(p),
       sessions: hub.presence(p).map((x) => ({
         label: hub.label(x.address), name: x.name, human: x.human, profile: x.profile, online: x.online, bell: x.wake === "wakes",
         unread: x.unread, unseen: x.unseen, roles: x.roles, last_seen: x.last_seen,
@@ -253,5 +300,5 @@ function state(hub: Hub, human: string) {
       leases: leases.live.map((l) => ({ resource: l.resource, holder: hub.label(l.holder), until: l.expires_at, note: l.note })),
     };
   });
-  return { human, me, people, invites, push, now: hub.now(), types: MESSAGE_TYPES, asks, inbox, sent, projects };
+  return { human, me, people, invites, pending, push, now: hub.now(), types: MESSAGE_TYPES, asks, inbox, sent, projects };
 }

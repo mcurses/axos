@@ -471,7 +471,7 @@ export function makeFetch(hub: Hub) {
     }
     const join = /^\/join\/(axosinv_[A-Za-z0-9_-]+)$/.exec(path);
     if (join) return handleJoinPage(hub, url, join[1]!);
-    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/unshown" || path === "/api/attach" || path === "/api/inbox") {
+    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/projects" || path === "/api/unshown" || path === "/api/attach" || path === "/api/inbox") {
       const token = bearer(req);
       const agent = token ? hub.authenticateAgent(token) : null;
       if (!agent) return unauthorized();
@@ -486,6 +486,18 @@ export function makeFetch(hub: Hub) {
       if (path === "/api/hook") return handleHook(hub, req, agent, conn);
       if (path === "/api/landed") return handleLanded(hub, req, agent, conn);
       if (path === "/api/whoami") return handleWhoami(hub, req, url, agent);
+      // `axos link --new`: a project for this agent's human, made from the machine, then linked there.
+      if (path === "/api/projects") {
+        if (req.method !== "POST") return new Response("method not allowed\n", { status: 405 });
+        const b = (await req.json().catch(() => ({}))) as { name?: unknown; brief?: unknown };
+        try {
+          const id = hub.createProject(agent.id, String(b.name ?? "").trim().toLowerCase(), typeof b.brief === "string" ? b.brief : "");
+          return json({ id, name: hub.projectName(id) });
+        } catch (e) {
+          if (e instanceof AxosError) return json({ error: hub.display(e.message, { agent: agent.id }) }, 400);
+          throw e;
+        }
+      }
       if (path === "/api/attach") return handleAttach(hub, req, url, agent);
       if (path === "/api/inbox") return handleInbox(hub, url, agent, conn);
       if (path === "/api/unshown") {

@@ -1981,3 +1981,130 @@ describe("passwords", () => {
     expect(hub.loginWithPassword("alice", "correct horse battery staple", "", "198.51.100.2").human).toBe("alice"); // another address is not locked
   });
 });
+
+describe("share and link from the page (0.22.0)", () => {
+  // bob is in GAME with alice already, so each knows the other; carol is nobody's acquaintance.
+  test("the owner shares a project with a person they know; the person joins on their page; the asker hears of it", async () => {
+    hub.addHuman("carol");
+    expect(refusal(() => hub.shareProject("bob", SHOP, "bob"))).toContain("only the project's owner");
+    expect(refusal(() => hub.shareProject("alice", SHOP, "carol"))).toContain("share no project with 'carol'");
+    expect(refusal(() => hub.shareProject("alice", GAME, "bob"))).toContain("is in alice/game already");
+    const id = hub.shareProject("alice", SHOP, "bob");
+    await Bun.sleep(0);
+    expect(refusal(() => hub.shareProject("alice", SHOP, "bob"))).toContain("asked already");
+    expect(hub.pendingFor("bob")).toMatchObject([{ id, kind: "share", from: "alice", project: SHOP }]);
+    expect(hub.pendingFor("alice")).toEqual([]);
+    expect(refusal(() => hub.decideInvite("alice", id, true))).toContain("no request");
+    hub.decideInvite("bob", id, true);
+    expect(hub.humanInProject("bob", SHOP)).toBe(true);
+    expect(hub.pendingFor("bob")).toEqual([]);
+    expect(refusal(() => hub.decideInvite("bob", id, true))).toContain("answered already");
+    expect(hub.people("bob")).toEqual(["alice"]);
+  });
+
+  test("a link request: the asked person picks one of their own projects; declining tells the asker", () => {
+    const BOBS = hub.addProject("bob/parser");
+    expect(refusal(() => hub.linkRequest("bob", BOBS, "carol"))).toContain("share no project");
+    const id = hub.linkRequest("bob", BOBS, "alice");
+    expect(refusal(() => hub.decideInvite("alice", id, true))).toContain("pick one of your own");
+    expect(refusal(() => hub.decideInvite("alice", id, true, BOBS))).toContain("pick one of your own");
+    hub.decideInvite("alice", id, true, SHOP);
+    expect(hub.linkedProjects(SHOP)).toEqual([BOBS]);
+    const again = hub.linkRequest("bob", BOBS, "alice");
+    hub.decideInvite("alice", again, false);
+    expect(hub.pendingFor("alice")).toEqual([]);
+    expect(hub.events(0, 1000).map((e) => e.kind)).toContain("project.link_declined");
+    // Unlinking: an owner of either side; leaving and removing.
+    expect(refusal(() => hub.unlinkByOwner("carol", SHOP, BOBS))).toContain("only an owner");
+    hub.unlinkByOwner("alice", SHOP, BOBS);
+    expect(hub.linkedProjects(SHOP)).toEqual([]);
+    expect(refusal(() => hub.leaveProject("alice", GAME))).toContain("owner does not leave");
+    hub.leaveProject("bob", GAME);
+    expect(hub.humanInProject("bob", GAME)).toBe(false);
+    hub.addHumanToProject("bob", GAME);
+    expect(refusal(() => hub.removeMember("bob", GAME, "alice"))).toContain("only the project's owner");
+    hub.removeMember("alice", GAME, "bob");
+    expect(hub.humanInProject("bob", GAME)).toBe(false);
+  });
+
+  test("a pair project is neither shared nor linked; a project made on the page belongs to its maker", () => {
+    hub.setOperator("alice", true);
+    hub.redeemInvite(hub.createInvite("ben", null, undefined, "alice").code, "bens-laptop");
+    const pair = hub.projectsOfHuman("ben")[0]!;
+    expect(refusal(() => hub.shareProject("alice", pair, "bob"))).toContain("project of two people");
+    expect(refusal(() => hub.linkRequest("alice", pair, "bob"))).toContain("project of two people");
+    const made = hub.createProjectForHuman("ben", "parser");
+    expect(hub.projectName(made)).toBe("ben/parser");
+    expect(hub.humanInProject("ben", made)).toBe(true);
+    expect(refusal(() => hub.createProjectForHuman("ben", "alice/x"))).toContain("ben/<name>");
+  });
+});
+
+describe("the short code of a login link", () => {
+  test("the code logs the other device in once; wrong, used and late codes are refused and counted per address", () => {
+    const l = hub.createLoginLink("alice", 600, { withCode: true });
+    expect(l.code).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
+    expect(hub.createLoginLink("alice").code).toBeNull(); // a redemption's link carries no code
+    const r = hub.redeemLoginCode(`${l.code!.slice(0, 4).toLowerCase()}-${l.code!.slice(4)}`, "iPhone, home screen", "203.0.113.5");
+    expect(r.human).toBe("alice");
+    expect(hub.authenticateHuman(r.key)).toBe("alice");
+    expect(refusal(() => hub.redeemLoginCode(l.code!, "", "203.0.113.5"))).toContain("not valid now");
+    expect(hub.redeemLoginLink(l.token).human).toBe("alice"); // the link is its own credential: the phone's Safari and its installed app
+    const late = hub.createLoginLink("alice", 600, { withCode: true });
+    t += 601_000;
+    expect(refusal(() => hub.redeemLoginCode(late.code!, "", "203.0.113.5"))).toContain("not valid now");
+    for (let i = 0; i < 8; i++) refusal(() => hub.redeemLoginCode("ZZZZZZZZ", "", "203.0.113.5"));
+    expect(refusal(() => hub.redeemLoginCode(hub.createLoginLink("alice", 600, { withCode: true }).code!, "", "203.0.113.5"))).toContain("too many tries");
+    expect(hub.redeemLoginCode(hub.createLoginLink("alice", 600, { withCode: true }).code!, "", "198.51.100.7").human).toBe("alice");
+    expect(hub.events(0, 2000).filter((e) => e.kind === "login.code_refused").length).toBeGreaterThan(8);
+  });
+
+  test("signing out ends the open links and codes that device made; signing out everywhere ends them all", () => {
+    const phone = hub.redeemLoginLink(hub.createLoginLink("alice").token, "iPhone");
+    const phoneId = hub.authenticateLogin(phone.key)!.login!;
+    const stolen = hub.createLoginLink("alice", 600, { withCode: true, madeBy: phoneId });
+    hub.removeLogin("alice", phoneId);
+    expect(refusal(() => hub.redeemLoginCode(stolen.code!, "", "x"))).toContain("not valid now");
+    expect(refusal(() => hub.redeemLoginLink(stolen.token))).toContain("not valid");
+    const other = hub.createLoginLink("alice", 600, { withCode: true });
+    hub.signOutAll("alice");
+    expect(refusal(() => hub.redeemLoginCode(other.code!, "", "x"))).toContain("not valid now");
+    expect(refusal(() => hub.redeemLoginLink(other.token))).toContain("not valid");
+  });
+});
+
+describe("sharing: the review's fixes", () => {
+  test("a removed person keeps nothing: subscriptions end, links to their projects go, open questions settle, replies do not reach them", async () => {
+    const BOBS = hub.addProject("bob/parser");
+    hub.linkProjects(GAME, BOBS);
+    hub.subscribeLanding(SC, { project: GAME, repo: "x", branch: "main" });
+    const q = hub.askHuman(DEV1, { project: GAME, human: "bob", question: "Still there?" });
+    const theirs = hub.send(S, { project: GAME, to: ["human:alice"], type: "note", summary: "from bob's agent" }).id;
+    hub.removeMember("alice", GAME, "bob");
+    expect(hub.linkedProjects(GAME)).toEqual([]);
+    expect(hub.db.query("SELECT COUNT(*) AS n FROM subscriptions WHERE project = ?").get(GAME)).toEqual({ n: 0 });
+    expect(hub.asks({ human: "bob", open: true })).toEqual([]);
+    expect(hub.inbox(`agent:${DEV1}`).map((m) => m.summary)).toContain(`No answer to ask ${q.ask_id}: bob is no longer in the project`);
+    expect(refusal(() => hub.send({ kind: "human", name: "alice" }, { project: GAME, to: [], re: theirs, type: "note", summary: "a reply into the void" }))).toContain("no longer in the project");
+    expect(hub.inbox(`agent:${SC}`).map((m) => m.summary)).not.toContain("a reply into the void");
+  });
+
+  test("share and link requests count against the phone cap; an expired request can be asked again; a pair is not left; a brief has limits", () => {
+    hub.setOperator("alice", true);
+    const BOBS = hub.addProject("bob/parser");
+    for (let i = 0; i < 12; i++) hub.send(S, { project: GAME, to: ["human:alice"], type: "note", summary: `ping ${i}` });
+    const before = pushes.length;
+    hub.linkRequest("bob", BOBS, "alice");
+    expect(pushes.length).toBe(before); // over the cap: the request waits on the page, no push
+    expect(hub.pendingFor("alice")).toHaveLength(1);
+    const id = hub.shareProject("alice", SHOP, "bob");
+    hub.withdrawInvite(id, "alice");
+    expect(hub.shareProject("alice", SHOP, "bob")).toBeGreaterThan(id); // asked again after a withdrawal
+    hub.redeemInvite(hub.createInvite("ben", null, undefined, "alice").code, "bens-laptop");
+    const pair = hub.projectsOfHuman("ben")[0]!;
+    expect(refusal(() => hub.leaveProject("ben", pair))).toContain("nothing to leave");
+    expect(refusal(() => hub.removeMember("alice", pair, "ben"))).toContain("stays");
+    expect(refusal(() => hub.addProject("bob/big", "x".repeat(2001)))).toContain("over the limit");
+    expect(refusal(() => hub.addProject("bob/leak", "token: axos_" + "a".repeat(40)))).toContain("looks like it contains");
+  });
+});

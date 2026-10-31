@@ -5,7 +5,7 @@ import { AskCard, InboxItem, SentItem } from "@/features/inbox";
 import { Composer } from "@/features/composer";
 import { Notifications } from "@/features/notifications";
 import { People } from "@/features/people";
-import { ProjectCard } from "@/features/projects";
+import { NewProject, PendingRequests, ProjectCard } from "@/features/projects";
 import { loadState, NotLoggedIn, type State } from "@/lib/api";
 import { syncPush } from "@/lib/push";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
@@ -39,7 +39,7 @@ export default function App() {
   if (error instanceof NotLoggedIn) return <Login />;
   if (!state) return <main className="p-6 text-muted-foreground">{error ? `Could not load: ${error.message}` : "Loading…"}</main>;
 
-  const unread = state.asks.length + state.inbox.length;
+  const unread = state.asks.length + state.inbox.length + state.pending.length;
   return (
     <main className="mx-auto flex max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <header className="flex items-center justify-between gap-2">
@@ -58,6 +58,7 @@ export default function App() {
           <TabsTrigger value="send">Send</TabsTrigger>
         </TabsList>
         <TabsContent value="inbox" className="flex flex-col gap-6 pt-2">
+          <PendingRequests pending={state.pending} projects={state.projects} onChange={refresh} />
           <section className="flex flex-col gap-3">
             <h2 className="font-medium">Questions for you <span className="text-muted-foreground">({state.asks.length})</span></h2>
             {state.asks.map((a) => <AskCard key={a.id} ask={a} now={state.now} onDone={refresh} />)}
@@ -79,7 +80,8 @@ export default function App() {
           <Suspense fallback={<p className="text-muted-foreground text-sm">Loading the map…</p>}><LinkMap state={state} /></Suspense>
         </TabsContent>
         <TabsContent value="projects" className="flex flex-col gap-4 pt-2">
-          {state.projects.filter((p) => !p.pair).map((p) => <ProjectCard key={p.id} p={p} now={state.now} me={state.human} />)}
+          <NewProject onChange={refresh} />
+          {state.projects.filter((p) => !p.pair).map((p) => <ProjectCard key={p.id} p={p} now={state.now} me={state.human} people={state.people.map((x) => x.name)} onChange={refresh} />)}
           {!state.projects.some((p) => !p.pair) && <p className="text-muted-foreground text-sm">No projects yet. In a repo, tell Claude Code "connect this folder to AXOS".</p>}
         </TabsContent>
         <TabsContent value="people" className="pt-2">
@@ -98,13 +100,14 @@ export default function App() {
 function Login() {
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const res = await fetch("/ui/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, password }) });
+  const send = async (path: string, body: unknown) => {
+    const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     if (res.ok) location.replace("/ui");
     else setError(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `the hub answered ${res.status}`);
   };
+  const submit = (e: React.FormEvent) => { e.preventDefault(); void send("/ui/login", { name, password }); };
   return (
     <main className="mx-auto max-w-xl p-6">
       <h1 className="mb-2 font-semibold text-xl">AXOS</h1>
@@ -114,7 +117,13 @@ function Login() {
         <button className="rounded-md border px-3 py-2 text-sm" type="submit">Log in</button>
         {error && <p className="text-destructive text-sm">{error}</p>}
       </form>
-      <p className="mt-4 text-muted-foreground text-sm">No password yet? Open a login link here instead: on a device where you are logged in, People → "Log in another device" makes one, and a password can be set there too.</p>
+      <form className="mt-6 flex flex-col gap-2" onSubmit={(e) => { e.preventDefault(); void send("/ui/login/code", { code }); }}>
+        <p className="text-muted-foreground text-sm">Or the short code from a device where you are logged in (People → "Log in another device"):</p>
+        <div className="flex gap-2">
+          <input className="flex-1 rounded-md border bg-background px-3 py-2 text-sm uppercase tracking-widest" autoComplete="one-time-code" placeholder="ABCD-EFGH" value={code} onChange={(e) => setCode(e.target.value)} />
+          <button className="rounded-md border px-3 py-2 text-sm" type="submit">Log in with the code</button>
+        </div>
+      </form>
     </main>
   );
 }

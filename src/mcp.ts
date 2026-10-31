@@ -137,7 +137,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }));
 
   server.registerTool("create_project", {
-    description: "Open a new AXOS project for your human (e.g. for the repo you are in). Another person joins it when the hub's admin adds them (axos project human); sharing from the page is coming.",
+    description: "Open a new AXOS project for your human (e.g. for the repo you are in). Another person joins it when your human shares it with them on the AXOS page (Projects → Share with…); they accept on theirs.",
     inputSchema: strict({
       name: z.string().describe("lowercase, e.g. the repo name; the project is called '<your human>/<name>'"),
       brief: z.string().optional().describe("What the project is and where its rules live, in two or three sentences"),

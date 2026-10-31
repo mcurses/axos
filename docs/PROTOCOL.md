@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.21.2`, protocol `1`.
+Current numbers: hub release `0.23.0`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -546,6 +546,17 @@ An invite made on someone's page names no project: redeeming it creates a projec
 "pair", named `<inviter>/<invitee>` or `<inviter>/with-<invitee>`), through which their sessions reach each other
 from any folder (see Addresses, `human:<name>`).
 
+**Share and link, from the page.** A project's owner shares it with a person they already share a project with
+(`POST /ui/api/project/share {"project","human"}`) or asks them to link it with one of theirs
+(`POST /ui/api/project/link {"project","human"}`); both are invites of kind `share` or `link` with no code. The asked
+person sees them on their page (`pending` in the state document) and on their phone, and answers with
+`POST /ui/api/invite/decide {"id","accept","project"}` (`project`: the one of their own to link with). Joining puts
+them into the project; the asker is told. A project of two people (a pair) is neither shared nor linked. Also from
+the page: `POST /ui/api/project/new {"name","brief"}` (the folder is linked afterwards, on the machine),
+`project/leave {"project"}` (not the owner), `project/remove {"project","human"}` (the owner),
+`project/unlink {"project","other"}` (an owner of either side). From a machine, `POST /api/projects {"name","brief"}`
+with the agent's token makes a project for its human (`axos link --new`).
+
 `GET /join/<code>`: an HTML page for the person: who invited them, the name they will have, one setup command
 (`curl -fsSL <link>/setup | sh`), the same as a sentence for Claude Code, and the steps by hand. `200` if the code
 is open, `410` if it is unknown, used or expired.
@@ -566,7 +577,11 @@ plugin, links the `axos` command, runs `axos join <link>`, which opens the page.
 - `page` is a one-time login link for this machine's browser (ten minutes, once). `GET` shows a confirm page and
   uses nothing up (a chat's link preview fetches it); the tap is a same-origin `POST` that sets the page's cookie with
   a key of that device's own. A person made by an invite has no page key at all. Any logged-in device makes another
-  such link (`POST /ui/api/login-link`); a device is signed out with `POST /ui/api/login/remove {"id"}` (its pushes
+  such link (`POST /ui/api/login-link`: the link, shown as a QR code too, and a separate short code of eight letters
+  and digits, each good once within ten minutes; `POST /ui/login/code {"code"}` on the other device logs it in with
+  the code, ten wrong codes from one address in fifteen minutes lock that address, two hundred over the hub lock the
+  code path); signing a device out ends the links and codes it made, signing out everywhere ends all open ones; a
+  device is signed out with `POST /ui/api/login/remove {"id"}` (its pushes
   end with it; id 0 ends the page key of an older setup); `POST /ui/api/logout-all` signs every device out. The third
   way in, for a device with no login and no link at hand: a password the person set on their page
   (`POST /ui/api/password {"password"}`, at least 10 characters, kept as argon2id) or that the admin set
@@ -609,7 +624,7 @@ HMAC-SHA256 of `ask:<id>` with the hub's link secret.
 
 ## Health
 
-`GET /healthz`, no auth: `{"ok":true,"version":"0.21.2","protocol":1}`. The hub reads its database for this; if that
+`GET /healthz`, no auth: `{"ok":true,"version":"0.23.0","protocol":1}`. The hub reads its database for this; if that
 fails, status 503 and `ok:false` with the same fields.
 
 ## Versioning

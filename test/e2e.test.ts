@@ -1343,6 +1343,13 @@ test("the second person's path: invite from the page, the setup script, the one-
   expect(aliceState.invites[0]).toMatchObject({ name: "ben" });
   expect(aliceState.invites[0]!.used_at).not.toBeNull();
   expect(aliceState.people.find((p) => p.name === "ben")!.pair).not.toBeNull();
+  // The short code beside the link: typed on the other device's login screen.
+  const withCode = await (await post("login-link", {})).json() as { link: string; code: string };
+  expect(withCode.code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+  const byCode = await fetch(`${base}/ui/login/code`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: withCode.code }) });
+  expect(byCode.status).toBe(200);
+  expect(byCode.headers.get("set-cookie")).toContain("axos_ui=");
+  expect((await fetch(`${base}/ui/login/code`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: withCode.code }) })).status).toBe(401);
   const dl = await (await post("login-link", {})).json() as { link: string };
   expect((await fetch(dl.link, { method: "POST", redirect: "manual", headers: { origin: "https://evil.example" } })).status).toBe(403);
   // Safari sends the word "null" as the Origin of a form sent without a referrer: refused, never a crash (seen live 2026-10-31).
@@ -1372,4 +1379,45 @@ test("the login form: a password set on the page logs a device in; a cross-site 
   expect((await change({ password: "a thief's new password", current: "wrong" })).status).toBe(400);
   expect((await change({ password: "the owner's new password", current: "a long enough password" })).status).toBe(200);
   expect((await form({ name: "alice", password: "the owner's new password" })).status).toBe(200);
+});
+
+test("share and link from the page: the asked person joins or links on theirs, the asker's phone hears; a machine makes a project", async () => {
+  const login = await fetch(`${base}/ui?key=${uiKey}`, { redirect: "manual" });
+  const alice = login.headers.get("set-cookie")!.split(";")[0]!;
+  const as = (cookie: string) => (path: string, body: unknown) =>
+    fetch(`${base}/ui/api/${path}`, { method: "POST", body: JSON.stringify(body), headers: { cookie, "Content-Type": "application/json" } });
+  const A = as(alice);
+  // ben joins through alice's invite and logs in by link; the two know each other through their pair.
+  hub.setOperator("alice", true);
+  const inv = await (await A("invite", { name: "benny" })).json() as { link: string };
+  const r = await (await fetch(`${base}/api/join`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: inv.link.split("/join/")[1], machine: "bennys-laptop" }) })).json() as { token: string; page: string };
+  const ben = (await fetch(r.page, { method: "POST", redirect: "manual" })).headers.get("set-cookie")!.split(";")[0]!;
+  const B = as(ben);
+  // From benny's machine, a project of his own; then he shares it with alice from his page.
+  const made = await (await fetch(`${base}/api/projects`, { method: "POST", headers: { Authorization: `Bearer ${r.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ name: "parser" }) })).json() as { name: string };
+  expect(made.name).toBe("benny/parser");
+  // alice's phone (registered here; an earlier test unregistered it) hears of the request.
+  await A("push/subscribe", { subscription: { endpoint: "https://web.push.apple.com/alice-again", keys: { p256dh: "B".repeat(87), auth: "a".repeat(22) } }, label: "iPhone" });
+  expect((await B("project/share", { project: "benny/parser", human: "alice" })).status).toBe(200);
+  expect(await (await B("project/share", { project: "benny/parser", human: "alice" })).json()).toMatchObject({ error: expect.stringContaining("asked already") });
+  await Bun.sleep(0);
+  expect(webPushes.at(-1)!.title).toBe("benny wants to share benny/parser with you");
+  const aliceState = await (await fetch(`${base}/ui/api/state`, { headers: { cookie: alice } })).json() as { pending: { id: number; kind: string; from: string; project: string }[] };
+  expect(aliceState.pending).toMatchObject([{ kind: "share", from: "benny", project: "benny/parser" }]);
+  expect((await A("invite/decide", { id: aliceState.pending[0]!.id, accept: true })).status).toBe(200);
+  expect(hub.projectsOfHuman("alice").map((p) => hub.projectName(p))).toContain("benny/parser");
+  // A link request the other way: alice asks benny to link alice/shop with one of his; he picks parser.
+  expect((await A("project/link", { project: "alice/shop", human: "benny" })).status).toBe(200);
+  const benState = await (await fetch(`${base}/ui/api/state`, { headers: { cookie: ben } })).json() as { pending: { id: number; kind: string; project: string }[]; projects: { id: string; owner: string | null }[] };
+  expect(benState.pending).toMatchObject([{ kind: "link", project: "alice/shop" }]);
+  expect((await B("invite/decide", { id: benState.pending[0]!.id, accept: true, project: "benny/parser" })).status).toBe(200);
+  expect(hub.linkedProjects(SHOP).map((p) => hub.projectName(p))).toContain("benny/parser"); // beside links earlier tests made
+  // Only the owner shares; a stranger's project is not even nameable.
+  expect(await (await A("project/share", { project: "benny/parser", human: "benny" })).json()).toMatchObject({ error: expect.stringContaining("owner") });
+  expect(await (await B("project/share", { project: "alice/game", human: "alice" })).json()).toMatchObject({ error: expect.stringContaining("not in a project") });
+  // Unlink by the owner of one side; leave; remove.
+  expect((await A("project/unlink", { project: "alice/shop", other: "benny/parser" })).status).toBe(200);
+  expect(hub.linkedProjects(SHOP).map((p) => hub.projectName(p))).not.toContain("benny/parser");
+  expect((await A("project/leave", { project: "benny/parser" })).status).toBe(200);
+  expect(hub.humanInProject("alice", hub.projectId("benny/parser", hub.projectsOfHuman("benny"))!)).toBe(false);
 });

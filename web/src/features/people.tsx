@@ -3,14 +3,17 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ago, post, type State } from "@/lib/api";
 import { UserIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import QRCode from "qrcode";
 import { toast } from "sonner";
 
 // People: who this person shares a project with, the invites they made (a link shown once), and their own devices.
 export function People({ state, onChange }: { state: State; onChange: () => void }) {
   const [name, setName] = useState("");
   const [shown, setShown] = useState<{ id: number; link: string } | null>(null);
-  const [device, setDevice] = useState<string | null>(null);
+  const [device, setDevice] = useState<{ link: string; code: string } | null>(null);
+  const qr = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => { if (device && qr.current) void QRCode.toCanvas(qr.current, device.link, { width: 192, margin: 1 }); }, [device]);
   const [password, setPassword] = useState("");
   const [current, setCurrent] = useState("");
   const [busy, setBusy] = useState(false);
@@ -64,10 +67,19 @@ export function People({ state, onChange }: { state: State; onChange: () => void
         </CardHeader>
         <CardContent className="flex flex-col gap-3 text-sm">
           <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => run(async () => { const r = await post("login-link", {}) as { link: string }; setDevice(r.link); })}>Log in another device</Button>
-            {device && <span className="text-muted-foreground">Open this on the other device within ten minutes; it works once.</span>}
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => run(async () => { const r = await post("login-link", {}) as { link: string; code: string }; setDevice(r); })}>Log in another device</Button>
+            {device && <span className="text-muted-foreground">Within ten minutes, once: scan the code with the phone, or type the short code on the other device's login screen, or open the link there.</span>}
           </div>
-          {device && <div className="flex items-center gap-2"><code className="break-all">{device}</code><Button size="sm" variant="outline" onClick={() => copy(device)}>Copy</Button></div>}
+          {device && (
+            <div className="flex flex-wrap items-center gap-4">
+              <canvas ref={qr} className="rounded-md bg-white p-1" width={192} height={192} />
+              <div className="flex flex-col gap-2">
+                <div>Code: <code className="text-base tracking-widest">{device.code}</code></div>
+                <div className="flex items-center gap-2"><code className="break-all text-xs">{device.link}</code><Button size="sm" variant="outline" onClick={() => copy(device.link)}>Copy link</Button></div>
+                <p className="text-muted-foreground text-xs">iPhone: scan the QR code (Safari logs in), Share → Add to Home Screen, open AXOS there and type the code: the two are separate, each works once.</p>
+              </div>
+            </div>
+          )}
           <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (password.length < 10) { toast.error("At least 10 characters."); return; }
             void run(async () => { await post("password", { password, current }); setPassword(""); setCurrent(""); toast.success("Password set. Keep it in your password manager."); }); }}>
             {state.me.password && <input className="flex-1 rounded-md border bg-background px-3 py-2 text-sm" type="password" autoComplete="current-password" placeholder="current password" value={current} onChange={(e) => setCurrent(e.target.value)} />}

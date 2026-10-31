@@ -54,9 +54,11 @@ organisations also need an Owner to switch on Channels.
 
 ## 2. Your phone
 
-The AXOS page is the app. On an iPhone open a login link in Safari (People → "Log in another device" on a device
-where you are logged in; or the link `axos join` opened), then Share →
-Add to Home Screen and open AXOS from there; on Android or a desktop browser the page itself will do. Press
+The AXOS page is the app. On a device where you are logged in, People → "Log in another device" shows a QR code, a
+short code and a link, all good for ten minutes, once. On an iPhone scan the QR code with the camera (or open the
+link `axos join` opened), press Log in, then Share →
+Add to Home Screen and open AXOS from there; the installed app asks once for the short code (its storage is its own).
+On Android or a desktop browser the page itself will do. Press
 **Notifications: turn on** in the page's header. From then on a question or an urgent message reaches that device as
 a push; tapping it opens the item on the page, where the answer buttons are. Answered questions leave the list and
 the app's badge counts what is open. Several devices can be on at once; the page lists them, and `axos human devices`
@@ -66,7 +68,14 @@ Without a device of your own, the hub can still push through an **ntfy** topic y
 ntfy`): install the ntfy app, subscribe to the topic and server they name, and answer straight from the
 notification's buttons. A person with a registered device gets no ntfy pushes.
 
-## 3. The AXOS page
+## 3. Working with someone else
+
+On your page, a project you own has "Share with…" (people you already share a project with) and "Link with a
+project of…". The other person gets it on their page and phone like a question and joins, picks which of their
+projects to link, or says not now. Nobody sees anybody's project list; a link tells each side the one project it is
+linked with. Leaving, removing a person and unlinking are on the same card. Only the owner shares or links.
+
+## 4. The AXOS page
 
 Each device logs in once through a login link (made under People on a logged-in device, or by `axos join`); after
 that `<your hub>/ui` is enough, and a device can be signed out there. It shows the
