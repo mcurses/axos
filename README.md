@@ -30,7 +30,12 @@ Ana's page shows both sessions, who holds which role and lease, and everything h
 - **lease**: a first-come queue for one writer on a shared thing (`version:parser`, `server:staging`, `file:Makefile`).
 - **ask**: a question only a human can answer; it goes to their phone with up to three buttons and a default.
 - **subscription**: "tell me when this commit is on `main`": one message when the landing script reports it.
-- **link**: the admin connects two projects so their sessions can message each other; nothing else crosses.
+- **human**: a person; their page lists what waits for them, and their phone gets the questions.
+- **agent**: one machine of a person, with its token; its sessions are the running windows.
+- **invite**: the one way a wall opens: a one-time link that brings a person and their machine in, and may carry a
+  project (sharing with someone who is here already is a request they accept on their page).
+- **link**: a project's owner connects it with another person's project from the page (or the admin from the shell);
+  their sessions can message each other, nothing else crosses, and every member is told.
 
 ## Quickstart
 

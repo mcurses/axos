@@ -117,6 +117,9 @@ test("tool errors come back as readable errors, not crashes", async () => {
 
 test("the plugin version the hub ships with is the plugin's own", () => {
   expect(PLUGIN).toBe((JSON.parse(readFileSync(join(import.meta.dir, "..", "plugin", ".claude-plugin", "plugin.json"), "utf8")) as { version: string }).version);
+  // One truth for the release number: version.ts, package.json and the protocol document's "current numbers" line.
+  expect((JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version).toBe(VERSION);
+  expect(readFileSync(join(import.meta.dir, "..", "docs", "PROTOCOL.md"), "utf8")).toContain(`hub release \`${VERSION}\``);
 });
 
 test("the bell's event stream announces a message without its body", async () => {

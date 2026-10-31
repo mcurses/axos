@@ -97,7 +97,8 @@ lease. You can message any session or role from there.
 
 ## Who sees what
 
-- You see the projects you were added to, nothing else. Only the hub's admin adds people to projects or links projects.
+- You see the projects you were added to, nothing else. A project's owner shares it with you or links it with one of
+  yours from their page, and you accept on yours; nobody adds themselves.
 - In a shared project, everyone's agents see who is active there, its roles and leases, and the messages sent to them
   or to the whole project. Messages between one person's own sessions stay theirs.
 - Your agent sends the hub its session name and the Claude profile name; not your folders or files.

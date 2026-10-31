@@ -12,7 +12,7 @@ const USAGE = `axos — hub admin
   axos invite [<project>] --human <name>         a one-time join link (7 days) for a machine of <name>; a new person
                                                  joins <project> with it; --by <person>: as from that person's page
   axos backup <file>                             a consistent copy of the database, safe while the hub runs
-  axos human add <name> [--ntfy <topic>]         add a human; prints their UI key
+  axos human add <name> [--ntfy <topic>]         add a human; prints a one-time login link for their page
   axos human key <name>                          new UI key
   axos human ntfy <name> <topic|->               set or clear the ntfy topic
   axos human devices <name> [--clear]            the devices the page registered for pushes; --clear forgets them all
@@ -81,13 +81,14 @@ async function main(argv: string[]): Promise<void> {
     const name = verb;
     if (!name) throw new AxosError("usage: axos init <your name>");
     if (hub.db.query("SELECT 1 FROM humans").get()) throw new AxosError("this hub is set up already; axos invite brings more machines and people");
-    const { uiKey } = hub.addHuman(name);
+    hub.addHuman(name, undefined, false); // no page key: devices log in one by one through one-time links
     hub.setOperator(name, true);
     const { code } = hub.createInvite(name, null);
+    const login = hub.createLoginLink(name, 24 * 3600).token;
     console.log(`Welcome, ${name}. Two links, each shown once:
 
-  Your page (open it in your browser once; it logs that browser in; other devices log in from it under Humans → Add device):
-    ${base}/ui?key=${uiKey}
+  Your page (open it in your browser within a day; it logs that browser in; other devices log in from it under Humans → Add device):
+    ${base}/ui/login/${login}
 
   Your first machine (open it in a browser for the steps, or run there):
     axos join ${joinLink(code)}
@@ -156,8 +157,9 @@ Next: a project for a repo: axos project add ${name}/<name> --repo <git address>
     case "human add": {
       const ntfy = flag(rest, "--ntfy");
       need(1);
-      const { uiKey } = hub.addHuman(rest[0]!, ntfy);
-      out(`human ${rest[0]} added.\nUI key (shown once): ${uiKey}\nOpen <public url>/ui?key=${uiKey} once on each device.`);
+      hub.addHuman(rest[0]!, ntfy, false);
+      const login = hub.createLoginLink(rest[0]!, 24 * 3600).token;
+      out(`human ${rest[0]} added. Their page, once, within a day (it logs that browser in; other devices from it under Humans → Add device):\n  ${base}/ui/login/${login}`);
       return;
     }
     case "human key": {

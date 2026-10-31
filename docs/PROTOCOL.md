@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.6`, protocol `1`.
+Current numbers: hub release `0.24.7`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -296,8 +296,9 @@ comparison (a script, Codex, an older plugin) is refused with the reason. This i
 proof: the session runs as its user and can influence what the comparison sees; the hub therefore never gives a quote
 the human's own sender, and a reader weighs a quote as it weighs the sender. `as: "human"` does not exist.
 
-Projects are linked by an admin. Linked projects can message each other's roles, sessions, agents and live sessions;
-nothing else crosses (briefs, leases, presence).
+Projects are linked by their owners from the page (a request the other side answers by picking one of theirs; see
+Invites) or by the admin (`axos project link`). Linked projects can message each other's roles, sessions, agents and
+live sessions; nothing else crosses (briefs, leases, presence).
 
 A session is live when it has not ended and was seen in the last 7 days. A session (or any holder of a role) is online
 when it has an open event stream or was seen in the last 10 minutes; otherwise it is away.

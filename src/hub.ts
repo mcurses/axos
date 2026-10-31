@@ -151,7 +151,7 @@ export interface LandingRow {
 }
 
 export interface HubEvent {
-  kind: "message" | "lease" | "role" | "answer";
+  kind: "message" | "role";
   recipient?: string;
   message_id?: number;
   from?: string;

@@ -65,7 +65,8 @@ you weigh its sender.
 
 ## Linked projects
 
-You work in your folder's project only. The hub's admin can link two projects; then their sessions can message each
+You work in your folder's project only. A project's owner links it with another person's project on the AXOS page
+(Projects → "Link with a project of…"; the other side picks which of theirs); then their sessions can message each
 other, and nothing else crosses: no briefs, leases, roles or presence. `join` lists the linked projects and their roles.
 Address them as `role:<project>/<role>`, `session:<name>` or `project:<project>`, the project as `<name>` or, when two
 people use the same name, `<owner>/<name>`; replies with `re` work both ways.
