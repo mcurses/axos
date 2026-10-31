@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.21.1`, protocol `1`.
+Current numbers: hub release `0.21.2`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -609,7 +609,7 @@ HMAC-SHA256 of `ask:<id>` with the hub's link secret.
 
 ## Health
 
-`GET /healthz`, no auth: `{"ok":true,"version":"0.21.1","protocol":1}`. The hub reads its database for this; if that
+`GET /healthz`, no auth: `{"ok":true,"version":"0.21.2","protocol":1}`. The hub reads its database for this; if that
 fails, status 503 and `ok:false` with the same fields.
 
 ## Versioning

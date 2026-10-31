@@ -32,6 +32,16 @@ function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// A POST from another site is refused. The Origin header may be absent (older clients), a URL, or the word "null"
+// (a page sent without a referrer); only a URL whose host is ours passes, anything else is "bad origin".
+function sameOrigin(req: Request): boolean {
+  const origin = req.headers.get("origin");
+  if (!origin) return true;
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  if (!host) return true;
+  try { return new URL(origin).host === host; } catch { return false; }
+}
+
 function cookie(req: Request, name: string): string | null {
   for (const part of (req.headers.get("cookie") ?? "").split(/;\s*/)) {
     const i = part.indexOf("=");
@@ -63,15 +73,14 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
     const st = hub.loginLinkStatus(login[1]!);
     if (st.status !== "open") return plain(st.status === "unknown" ? "This login link is not valid." : `This login link was already ${st.status}; make a new one on a device where you are logged in.`, 410);
     if (req.method === "GET") {
-      const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer">
+      const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="same-origin">
 <title>Log in to AXOS</title><style>body{font:17px/1.5 -apple-system,system-ui,sans-serif;max-width:480px;margin:3em auto;padding:0 16px}button{font:inherit;padding:10px 18px;border-radius:8px;border:1px solid #888;background:#171717;color:#fff}
 @media(prefers-color-scheme:dark){body{background:#000;color:#f5f5f7}button{background:#f5f5f7;color:#000}}</style></head>
 <body><h1>AXOS</h1><p>Log in as <b>${esc(st.human!)}</b> on this device? The link works once.</p><form method="post"><button type="submit">Log in</button></form></body></html>`;
-      return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'" } });
+      // same-origin referrer policy: the form's POST then carries our Origin (no-referrer would send "null" and be refused).
+      return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "same-origin", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'" } });
     }
-    const origin = req.headers.get("origin");
-    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
-    if (origin && host && new URL(origin).host !== host) return plain("bad origin", 403);
+    if (!sameOrigin(req)) return plain("bad origin", 403);
     try {
       const r = hub.redeemLoginLink(login[1]!, deviceLabel(req.headers.get("user-agent") ?? ""));
       const secure = url.protocol === "https:" || req.headers.get("x-forwarded-proto") === "https" ? "; Secure" : "";
@@ -85,9 +94,7 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
   }
   // The login form: name and password (JSON), from the page itself; this device gets a login of its own.
   if (url.pathname === "/ui/login" && req.method === "POST") {
-    const origin = req.headers.get("origin");
-    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
-    if (origin && host && new URL(origin).host !== host) return json({ error: "bad origin" }, 403);
+    if (!sameOrigin(req)) return json({ error: "bad origin" }, 403);
     const b = (await req.json().catch(() => ({}))) as { name?: unknown; password?: unknown };
     try {
       // The proxy's own view of the client: X-Real-IP, else the last X-Forwarded-For entry (nginx appends the real
@@ -113,9 +120,7 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
     if (req.method === "GET" && url.pathname === "/ui/api/state") return json(hub.display(JSON.stringify(state(hub, human)), { human }));
     if (req.method !== "POST") return json({ error: "not found" }, 404);
     // SameSite=Strict already keeps other sites out; JSON only and the Origin check are further locks.
-    const origin = req.headers.get("origin");
-    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
-    if (origin && host && new URL(origin).host !== host) return json({ error: "bad origin" }, 403);
+    if (!sameOrigin(req)) return json({ error: "bad origin" }, 403);
     if (!(req.headers.get("content-type") ?? "").startsWith("application/json")) return json({ error: "send JSON" }, 415);
     const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const str = (k: string) => (typeof b[k] === "string" ? (b[k] as string) : "");

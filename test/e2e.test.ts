@@ -1342,6 +1342,9 @@ test("the second person's path: invite from the page, the setup script, the one-
   expect(aliceState.people.find((p) => p.name === "ben")!.pair).not.toBeNull();
   const dl = await (await post("login-link", {})).json() as { link: string };
   expect((await fetch(dl.link, { method: "POST", redirect: "manual", headers: { origin: "https://evil.example" } })).status).toBe(403);
+  // Safari sends the word "null" as the Origin of a form sent without a referrer: refused, never a crash (seen live 2026-10-31).
+  expect((await fetch(dl.link, { method: "POST", redirect: "manual", headers: { origin: "null" } })).status).toBe(403);
+  expect((await fetch(dl.link)).headers.get("referrer-policy")).toBe("same-origin");
   expect((await fetch(dl.link, { method: "POST", redirect: "manual" })).status).toBe(303);
   // Inviting a person who is here already is refused: sharing is the way.
   expect(await (await post("invite", { name: "ben" })).json()).toMatchObject({ error: expect.stringContaining("here already") });
