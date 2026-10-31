@@ -203,6 +203,15 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     if (roles.length) parts.push(`Held for ${roles.join(", ")} until someone takes the role.`);
     if (r.waiting_for_role.some((w) => w.startsWith("next:"))) parts.push(`Held for the next session of ${agent.human} that starts in this project.`);
     for (const x of r.not_sent) parts.push(`Not sent to ${x.to}: ${x.reason}`);
+    // The first message from a new person's side (no project of their own yet): what else there is, once, for the agent to pass on.
+    if (hub.messagesFrom(agent.human) === 1 && hub.projectsOf(agent.id).every((p) => hub.isPair(p))) {
+      parts.push(`\nThat was the first message from ${agent.human}'s side. What AXOS is for, so you can tell them: (1) their own sessions ` +
+        "on any machine find each other per project, hand work over before a restart (send to next) and take turns on shared things (lease); " +
+        `(2) a question only ${agent.human} can decide reaches their phone (ask_human) and the answer comes back here; ` +
+        "(3) another person joins a project when it is shared with them, and their sessions then reach it too. " +
+        "To start with a repo of theirs: in that folder, say \"connect this folder to AXOS\" (create_project, then they run axos link once). " +
+        `Their page${hub.publicUrl ? ` (${hub.publicUrl}/ui)` : ""} shows people, projects and questions; added to a phone's home screen it is the app.`);
+    }
     parts.push(...r.unattended);
     return parts.join(" ");
   }));

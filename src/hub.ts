@@ -632,6 +632,12 @@ export class Hub {
     return true;
   }
 
+  // How many messages this person's side (them, their agents) has sent on this hub: the first one is a moment to say
+  // what else AXOS does, once.
+  messagesFrom(human: string): number {
+    return (this.db.query("SELECT COUNT(*) AS n FROM messages WHERE sender_human = ?").get(human) as { n: number }).n;
+  }
+
   // What the app badge shows: open questions and unread messages on the page.
   openForHuman(human: string): number {
     return (this.db.query(`SELECT COUNT(*) AS n FROM deliveries WHERE recipient = ? AND acked_at IS NULL`).get(`human:${human}`) as { n: number }).n;

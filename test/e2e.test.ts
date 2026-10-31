@@ -1328,6 +1328,9 @@ test("the second person's path: invite from the page, the setup script, the one-
   const hello = await call(ben, "send", { to: "human:alice", summary: "hello from ben" });
   expect(hello.text).toContain("Sent through the project you share with alice");
   expect(hello.isError).toBe(false);
+  // The first message from a new person's side says what else there is, once.
+  expect(hello.text).toContain("first message from ben's side");
+  expect((await call(ben, "send", { to: "human:alice", summary: "second" })).text).not.toContain("first message");
   expect((await call(ben, "send", { to: "human:nobody", summary: "x" })).text).toContain("share no project");
   expect((await call(ben, "send", { to: "project", summary: "x" })).isError).toBe(true);
   const id = hub.inbox("human:alice").find((m) => m.summary === "hello from ben")!.id;

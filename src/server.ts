@@ -380,6 +380,9 @@ case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) say "Note: ~/.local/bin is not o
 "$AXOS" join "$LINK"
 say ""
 say "Done. Restart Claude Code (every open window), then say in any of them: tell ${inviter ?? "<a person here>"} hello"
+say ""
+say "After that, when you like: in a repo you work in, say to Claude Code: connect this folder to AXOS."
+say "Your page is the app on a phone too: People, Log in another device, open the link on the phone, Add to Home Screen, Notifications on."
 `;
 }
 
@@ -398,7 +401,8 @@ ${base.startsWith("https:") ? `<p>On the machine you use Claude Code on, paste t
 <p>Or say this to Claude Code, which shows the script before running it:</p>
 <pre>Set up AXOS from ${esc(link)}</pre>` : `<p>Say this to Claude Code on the machine you use it on; it shows the setup script before running it:</p>
 <pre>Set up AXOS from ${esc(link)}</pre>`}
-<p>Then restart Claude Code and say in any window: <b>tell ${esc(invited ?? "<a person here>")} hello</b>.</p>
+<p>Then restart Claude Code and say in any window: <b>tell ${esc(invited ?? "<a person here>")} hello</b>. Their reply reaches that window.</p>
+<p>After that, when you like: in a repo you work in, say to Claude Code <b>connect this folder to AXOS</b>, and your sessions there find each other, hand work over, and reach your phone with questions. Your page is the app on a phone too.</p>
 <details><summary>By hand instead</summary>
 <ol>
 <li>Install <a href="https://bun.sh">bun</a> and the AXOS plugin for Claude Code:<pre>claude plugin marketplace add ${esc(pluginSource())}
