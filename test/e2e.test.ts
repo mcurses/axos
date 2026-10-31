@@ -1302,6 +1302,29 @@ test("the second person's path: invite from the page, the setup script, the one-
   const tmp = join(tmpdir(), `axos-setup-${Date.now()}.sh`);
   writeFileSync(tmp, sh);
   expect(Bun.spawnSync(["sh", "-n", tmp]).exitCode).toBe(0);
+  // Run it for real against an empty home with `claude` stubbed: the marketplace registry says the axos marketplace is a
+  // folder (a maintainer's checkout, not the GitHub path), the script finds the command there, links it and joins with it.
+  const home = mkdtempSync(join(tmpdir(), "axos-home-"));
+  const stubs = join(home, "stubs");
+  mkdirSync(join(stubs), { recursive: true });
+  writeFileSync(join(stubs, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  mkdirSync(join(home, "checkout", "plugin", "bin"), { recursive: true });
+  writeFileSync(join(home, "checkout", "plugin", "bin", "axos"), "#!/bin/sh\necho \"stub axos $*\"\n", { mode: 0o755 });
+  mkdirSync(join(home, ".claude", "plugins"), { recursive: true });
+  writeFileSync(join(home, ".claude", "plugins", "known_marketplaces.json"),
+    JSON.stringify({ other: { source: { source: "github", repo: "x/y" }, installLocation: join(home, "no") }, axos: { source: { source: "directory", path: join(home, "checkout") }, installLocation: join(home, "checkout") } }, null, 2));
+  const run = Bun.spawnSync(["sh", tmp], { env: { ...process.env, HOME: home, PATH: `${stubs}:${process.env.PATH}` } });
+  const out = run.stdout.toString() + run.stderr.toString();
+  expect(out).toContain(`stub axos join ${inv.link}`);
+  expect(run.exitCode).toBe(0);
+  expect(realpathSync(join(home, ".local", "bin", "axos"))).toBe(realpathSync(join(home, "checkout", "plugin", "bin", "axos")));
+  // Without a registry entry and without the GitHub path: the script says so and stops before the join.
+  writeFileSync(join(home, ".claude", "plugins", "known_marketplaces.json"), JSON.stringify({ other: { installLocation: join(home, "no") } }));
+  const none = Bun.spawnSync(["sh", tmp], { env: { ...process.env, HOME: home, PATH: `${stubs}:${process.env.PATH}` } });
+  expect(none.exitCode).toBe(1);
+  expect(none.stdout.toString()).toContain("its axos command was not found");
+  expect(none.stdout.toString()).toContain("tell alice");
+  rmSync(home, { recursive: true, force: true });
   rmSync(tmp, { force: true });
   // Redeeming: a token for the machine, a one-time login link for the browser, the pair project.
   const code = inv.link.split("/join/")[1]!;

@@ -373,8 +373,16 @@ export PATH="$HOME/.bun/bin:$PATH"
 say "Installing the AXOS plugin for Claude Code..."
 claude plugin marketplace add '${pluginSource()}' >/dev/null 2>&1 || true
 claude plugin install axos@axos --scope user >/dev/null 2>&1 || claude plugin update axos@axos >/dev/null 2>&1 || { say "The plugin did not install; run: claude plugin install axos@axos --scope user"; exit 1; }
-AXOS="$HOME/.claude/plugins/marketplaces/axos/plugin/bin/axos"
-[ -x "$AXOS" ] || { say "The plugin is installed but $AXOS is missing; tell ${inviter ?? "the hub's operator"}."; exit 1; }
+# The axos command lives in the marketplace's folder: a GitHub marketplace is checked out under ~/.claude/plugins, a
+# folder marketplace (a maintainer's checkout) is wherever the registry says.
+AXOS=""
+REG="$HOME/.claude/plugins/known_marketplaces.json"
+if [ -f "$REG" ]; then
+  LOC=$(awk '/"axos": *\\{/{f=1} f && /"installLocation"/{sub(/.*"installLocation": *"/,""); sub(/".*/,""); print; exit}' "$REG")
+  if [ -n "$LOC" ] && [ -x "$LOC/plugin/bin/axos" ]; then AXOS="$LOC/plugin/bin/axos"; fi
+fi
+if [ -z "$AXOS" ] && [ -x "$HOME/.claude/plugins/marketplaces/axos/plugin/bin/axos" ]; then AXOS="$HOME/.claude/plugins/marketplaces/axos/plugin/bin/axos"; fi
+[ -n "$AXOS" ] || { say "The plugin is installed but its axos command was not found under ~/.claude/plugins; tell ${inviter ?? "the hub's operator"}."; exit 1; }
 mkdir -p "$HOME/.local/bin" && ln -sf "$AXOS" "$HOME/.local/bin/axos"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) say "Note: ~/.local/bin is not on your PATH, so 'axos' works inside Claude Code but not in this shell until you add it." ;; esac
 "$AXOS" join "$LINK"
@@ -407,7 +415,7 @@ ${base.startsWith("https:") ? `<p>On the machine you use Claude Code on, paste t
 <ol>
 <li>Install <a href="https://bun.sh">bun</a> and the AXOS plugin for Claude Code:<pre>claude plugin marketplace add ${esc(pluginSource())}
 claude plugin install axos@axos --scope user</pre></li>
-<li>Put the <code>axos</code> command on your PATH:<pre>mkdir -p ~/.local/bin &amp;&amp; ln -sf ~/.claude/plugins/marketplaces/axos/plugin/bin/axos ~/.local/bin/axos</pre></li>
+<li>Put the <code>axos</code> command on your PATH (the marketplace's folder is in <code>claude plugin marketplace list</code>; for one added from GitHub it is this):<pre>mkdir -p ~/.local/bin &amp;&amp; ln -sf ~/.claude/plugins/marketplaces/axos/plugin/bin/axos ~/.local/bin/axos</pre></li>
 <li>Join with this machine (it opens your page):<pre>axos join ${esc(link)}</pre></li>
 <li>Restart Claude Code.</li>
 </ol>
