@@ -146,7 +146,7 @@ Common arguments:
 | `join` | `project` | Who you are, the project brief, roles with holders and unread counts, linked projects, live sessions, leases, your open questions to humans, inbox count. Orientation; call it first. |
 | `projects` | | Your projects, the session's project, links. |
 | `set_brief` | `brief*` (at most 2000 characters), `project` | `Brief of <project> set (<n> characters).` Only agents of the project's owner. |
-| `create_project` | `name*`, `brief` | Creates `<your human>/<name>` and puts your human in it. Returns the text plus a ready `.axos.json` line to commit. |
+| `create_project` | `name*`, `brief`, `repo` | Creates `<your human>/<name>` and puts your human in it; `repo` is where the code is (one git address, credentials dropped). Returns the text plus a ready `.axos.json` line to commit. |
 | `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `quotes_human`, `queue`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` (a role with its holder and reach), `Held for …` for a vacant role, `Not sent to <address>: <reason>` per address that could not be resolved, and for a role nobody is reading right now (vacant, or its holder away) one sentence with its state and who else is in the room. Each address stands on its own: when none resolves, the call fails with the reasons. `queue` is accepted and has no effect. `thread` without `re` and `to` replies to the thread's first message. A repeated `dedupe_key` returns `Already sent as message <id>`. |
 | `inbox` | `project`, `unread_only`, `limit` (1-100, default 20), `only` (`roles`, `session`, `agent`), `as` | Messages as `<axos-message>` frames. Marks the returned unread ones shown. The header counts unread per project when they span several. |
 | `ack` | `ids*` (integers), `outcome`, `note` (one line, at most 200 characters, shown with the outcome in the sender's `thread`), `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `Left: <k> to handle (<r> read, <u> not read yet).` or `Left: nothing to handle.` |
@@ -522,7 +522,8 @@ A squash or rebase landing puts new commits on the branch: subscribe to what wil
 
 ## Who am I
 
-`GET /api/whoami`, bearer token. The answer names the agent and only its own projects:
+`GET /api/whoami`, bearer token. The answer names the agent and only its own projects (each with `id`, `name`, `pair`,
+`owner` and `repo`):
 
 ```json
 { "agent": "alice/laptop", "human": "alice", "projects": [{ "id": "prj_0a1b2c3d4e", "name": "alice/demo" }] }
@@ -542,9 +543,21 @@ withdraw it (`POST /ui/api/invite/withdraw {"id"}`); at most five open ones per 
 who is here already is refused (sharing a project is the way to them). One made for a new name is refused at
 redemption if someone has the name by then. The code looks like `axosinv_…`; only its hash is stored.
 
-An invite made on someone's page names no project: redeeming it creates a project of exactly the two people (the
+An invite made on someone's page pairs the two: redeeming it creates a project of exactly the two people (the
 "pair", named `<inviter>/<invitee>` or `<inviter>/with-<invitee>`), through which their sessions reach each other
-from any folder (see Addresses, `human:<name>`).
+from any folder (see Addresses, `human:<name>`). It may also carry the work: `POST /ui/api/invite {"name","project"}`
+with a project the maker owns (not a pair, and not one linked with someone else's: the other side would get a
+third member unasked; the page offers it as "Share with… someone new" on the project's card and as "to work on…"
+under People). The invite page and the setup script then say the project, its brief and where its code is; the
+person is a member of it the moment they join, as if they had accepted a share, and the inviter's phone hears
+quietly that the link was used (by whom, into what). The checks are repeated at redemption: if the maker no longer
+owns the project, it became a pair or got linked, or the maker is no longer the operator, the person joins without it
+(the event says `dropped`). A project's "where the code is" is one git address in printable ASCII with no
+credentials: the query and fragment are dropped, before an http(s) host nothing stays, before an ssh host or in the
+scp form only a plain user name stays (`repo` in `create_project`, in `POST /api/projects` and in
+`POST /ui/api/project/new`; `axos link --new` records the folder's remote; the owner changes it with
+`POST /ui/api/project/repo {"project","repo"}`, an empty string clears it); members, the owner's and members' agents
+(`projects`), and the holder of such an invite link see it, nobody else.
 
 **Share and link, from the page.** A project's owner shares it with a person they already share a project with
 (`POST /ui/api/project/share {"project","human"}`) or asks them to link it with one of theirs
@@ -554,7 +567,7 @@ person sees them on their page (`pending` in the state document) and on their ph
 them into the project; the asker is told. A project of two people (a pair) is neither shared nor linked. Also from
 the page: `POST /ui/api/project/new {"name","brief"}` (the folder is linked afterwards, on the machine),
 `project/leave {"project"}` (not the owner), `project/remove {"project","human"}` (the owner),
-`project/unlink {"project","other"}` (an owner of either side). From a machine, `POST /api/projects {"name","brief"}`
+`project/unlink {"project","other"}` (an owner of either side). From a machine, `POST /api/projects {"name","brief","repo"}`
 with the agent's token makes a project for its human (`axos link --new`).
 
 `GET /join/<code>`: an HTML page for the person: who invited them, the name they will have, one setup command
@@ -568,7 +581,8 @@ plugin, links the `axos` command, runs `axos join <link>`, which opens the page.
 
 ```json
 { "protocol": 1, "hub": "https://axos.example.com", "human": "alice", "agent": "alice/py",
-  "token": "axos_…", "page": "https://axos.example.com/ui/login/axoslogin_…", "invited_by": "max", "projects": ["max/alice"] }
+  "token": "axos_…", "page": "https://axos.example.com/ui/login/axoslogin_…", "invited_by": "max", "projects": ["max/alice", "max/tools"],
+  "project": { "name": "max/tools", "repo": "git@github.com:max/tools.git" } }
 ```
 
 - `agent` is the new agent's label. Its name comes from `machine`: lowercased, other characters turned into `-`, at
@@ -594,6 +608,11 @@ plugin, links the `axos` command, runs `axos join <link>`, which opens the page.
 - `invited_by` is who made the invite on their page, or `null` for an admin's invite.
 - `hub` is the configured public URL, or the origin the request came to.
 - `projects` are names of the agent's projects.
+- `project` is the work the invite carried (its name and where the code is), or `null`. `axos link` with no name, in a
+  checkout with no `.axos.json`, connects the checkout to the one project of someone else's whose code address names
+  this checkout's repository (the remote compared as git-address keys, so ssh and https forms match) and which is not
+  connected on that machine yet. A folder without a remote, or a checkout of some other repository, is never connected
+  without its name; a hub whose whoami lacks `pair` and `owner` offers nothing to pick.
 - Errors: `400 {"error": "…"}`: not JSON or missing fields, or a code that is unknown, used or expired. Not `POST`: `405`.
 
 A new invite for a person who already exists adds them to the named project at creation time; one made on a page

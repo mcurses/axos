@@ -56,7 +56,7 @@ directly, so no token travels through chat or mail. For another machine of yours
 
 ```bash
 docker compose exec axos axos invite --human ana                 # another machine of yours (or People → Log in another device)
-docker compose exec axos axos invite ana/parser --human ben      # Ben, straight into ana/parser; or invite him from your page: People → Invite someone
+docker compose exec axos axos invite ana/parser --human ben      # Ben, straight into ana/parser; or from your page: the project's "Share with… someone new"
 ```
 
 Each person connects a repository once per machine, in its folder:

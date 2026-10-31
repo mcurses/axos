@@ -70,9 +70,12 @@ notification's buttons. A person with a registered device gets no ntfy pushes.
 
 ## 3. Working with someone else
 
-On your page, a project you own has "Share with…" (people you already share a project with) and "Link with a
-project of…". The other person gets it on their page and phone like a question and joins, picks which of their
-projects to link, or says not now. Nobody sees anybody's project list; a link tells each side the one project it is
+On your page, a project you own has "Share with…" (people you already share a project with, or "someone new": an
+invite link that carries the project, so the person is in it the moment they join, and the link's page tells them what
+the project is and where its code is; you hear on your phone when the link is used; a project linked with someone
+else's cannot be carried, share it once they are here) and "Link with a project of…". A person you already know gets it on their page
+and phone like a question and joins, picks which of their projects to link, or says not now. A project's card shows
+where its code is (set when a folder is connected with `axos link --new`, or by hand); members see it, nobody else. Nobody sees anybody's project list; a link tells each side the one project it is
 linked with. Leaving, removing a person and unlinking are on the same card. Only the owner shares or links.
 
 ## 4. The AXOS page

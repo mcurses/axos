@@ -11,7 +11,7 @@ export function Dot({ on }: { on: boolean }) {
   return <span className={cn("inline-block size-2 shrink-0 rounded-full", on ? "bg-emerald-500" : "bg-muted-foreground/40")} />;
 }
 
-export function ProjectCard({ p, now, me, people = [], onChange }: { p: Project; now: number; me: string; people?: string[]; onChange?: () => void }) {
+export function ProjectCard({ p, now, me, people = [], operator = false, onChange }: { p: Project; now: number; me: string; people?: string[]; operator?: boolean; onChange?: () => void }) {
   const mine = p.owner === me;
   const [busy, setBusy] = useState(false);
   const act = async (action: Parameters<typeof post>[0], body: Record<string, unknown>, done: string) => {
@@ -19,11 +19,24 @@ export function ProjectCard({ p, now, me, people = [], onChange }: { p: Project;
     try { await post(action, body); toast.success(done); onChange?.(); } catch (e) { toast.error(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
   };
   const others = people.filter((h) => !p.humans.includes(h));
+  // An invite that carries this project, for someone not here yet: the link is shown once, here.
+  const [invite, setInvite] = useState<{ name: string; link: string } | null>(null);
+  const [newName, setNewName] = useState<string | null>(null);
+  const [repo, setRepo] = useState<string | null>(null);
+  const copy = (text: string) => navigator.clipboard?.writeText(text).then(() => toast.success("Copied."), () => toast.error("Could not copy; select it by hand."));
   return (
     <Card>
       <CardHeader>
         <CardTitle>{p.id}</CardTitle>
         {p.brief && <CardDescription className="whitespace-pre-wrap">{p.brief}</CardDescription>}
+        {/* Where the code is: one git address; the owner edits it, members and an invite's page read it. */}
+        {repo === null
+          ? <CardDescription className="text-xs">{p.repo ? <>Code: <code>{p.repo}</code></> : mine ? "No code address yet" : null}{mine && <button className="ml-2 underline opacity-60 hover:opacity-100" disabled={busy} onClick={() => setRepo(p.repo)}>{p.repo ? "change" : "set"}</button>}</CardDescription>
+          : <form className="flex gap-2 pt-1" onSubmit={(e) => { e.preventDefault(); void act("project/repo", { project: p.id, repo }, repo ? "Code address set." : "Code address cleared.").then(() => setRepo(null)); }}>
+              <input className="flex-1 rounded-md border bg-background px-2 py-1 text-xs" placeholder="git address of the code, e.g. git@github.com:you/repo.git" value={repo} onChange={(e) => setRepo(e.target.value)} />
+              <Button type="submit" size="sm" variant="outline" disabled={busy}>Save</Button>
+              <Button type="button" size="sm" variant="ghost" onClick={() => setRepo(null)}>Cancel</Button>
+            </form>}
         <div className="flex flex-wrap items-center gap-1 pt-1">
           {p.humans.filter((h) => h !== me).map((h) => (
             <Badge key={h} variant="secondary" className="rounded-full"><UserIcon />{h}
@@ -36,12 +49,14 @@ export function ProjectCard({ p, now, me, people = [], onChange }: { p: Project;
             </Badge>
           ))}
         </div>
-        {/* Share with, and link with a project of, a person you already know: they accept on their page. Only the owner. */}
+        {/* Share with a person you already know (they accept on their page), or with someone new (an invite link that
+            carries this project: they are in it when they join). Link with a project of a person you know. Only the owner. */}
         <div className="flex flex-wrap gap-2 pt-2 text-xs">
-          {mine && others.length > 0 && (
-            <select className="rounded-md border bg-background px-2 py-1" disabled={busy} value="" onChange={(e) => { const h = e.target.value; if (h) void act("project/share", { project: p.id, human: h }, `${h} is asked to join; they see it on their page and phone.`); }}>
+          {mine && (
+            <select className="rounded-md border bg-background px-2 py-1" disabled={busy} value="" onChange={(e) => { const h = e.target.value; if (h === "__new") setNewName(""); else if (h) void act("project/share", { project: p.id, human: h }, `${h} is asked to join; they see it on their page and phone.`); }}>
               <option value="">Share with…</option>
               {others.map((h) => <option key={h} value={h}>{h}</option>)}
+              {operator && <option value="__new">someone new…</option>}
             </select>
           )}
           {mine && people.length > 0 && (
@@ -52,6 +67,20 @@ export function ProjectCard({ p, now, me, people = [], onChange }: { p: Project;
           )}
           {!mine && <Button size="sm" variant="ghost" disabled={busy} onClick={() => act("project/leave", { project: p.id }, `You left ${p.id}.`)}>Leave</Button>}
         </div>
+        {newName !== null && (
+          <form className="flex gap-2 pt-2" onSubmit={(e) => { e.preventDefault(); const name = newName.trim().toLowerCase(); if (!name) return;
+            void (async () => { setBusy(true); try { const r = await post("invite", { name, project: p.id }) as { link: string }; setInvite({ name, link: r.link }); setNewName(null); onChange?.(); } catch (err) { toast.error(err instanceof Error ? err.message : String(err)); } finally { setBusy(false); } })(); }}>
+            <input className="flex-1 rounded-md border bg-background px-3 py-1 text-sm" autoFocus placeholder="name of the person (lowercase)" value={newName} onChange={(e) => setNewName(e.target.value)} />
+            <Button type="submit" size="sm" disabled={busy}>Make the invite</Button>
+            <Button type="button" size="sm" variant="ghost" onClick={() => setNewName(null)}>Cancel</Button>
+          </form>
+        )}
+        {invite && (
+          <div className="mt-2 rounded-md border p-3 text-sm">
+            <p className="mb-1">Send this link to {invite.name} in a chat you already use. It says you invited them to work on {p.id}{p.repo ? " and where the code is" : ""}; it works once, lives a week, and is shown here once.</p>
+            <div className="flex items-center gap-2"><code className="break-all">{invite.link}</code><Button size="sm" variant="outline" onClick={() => copy(invite.link)}>Copy</Button></div>
+          </div>
+        )}
       </CardHeader>
       <CardContent className="grid gap-6 md:grid-cols-3">
         <section>

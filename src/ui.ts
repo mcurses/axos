@@ -165,15 +165,19 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
         hub.signOutAll(human);
         return json({ ok: true });
       } else if (url.pathname === "/ui/api/invite") {
-        // Only the operator invites a new person (the hub refuses otherwise); the link is shown once.
-        const inv = hub.createInvite(str("name").trim().toLowerCase(), null, undefined, human);
+        // Only the operator invites a new person (the hub refuses otherwise); the link is shown once. It may carry a
+        // project of the maker's: the person is in it on redemption (sharing with someone not here yet).
+        const inv = hub.createInvite(str("name").trim().toLowerCase(), str("project") ? pid(str("project")) : null, undefined, human);
         return json({ id: inv.id, link: `${hub.publicUrl || url.origin}/join/${inv.code}`, expires_at: inv.expires_at });
       } else if (url.pathname === "/ui/api/invite/decide") {
         hub.decideInvite(human, Number(b.id), b.accept === true, str("project") ? hub.projectId(str("project"), hub.projectsOfHuman(human)) ?? undefined : undefined);
         return json({ ok: true });
       } else if (url.pathname === "/ui/api/project/new") {
-        const id = hub.createProjectForHuman(human, str("name").trim().toLowerCase(), str("brief"));
+        const id = hub.createProjectForHuman(human, str("name").trim().toLowerCase(), str("brief"), str("repo"));
         return json({ id, name: hub.projectName(id) });
+      } else if (url.pathname === "/ui/api/project/repo") {
+        hub.setRepo(pid(str("project")), str("repo"), { human });
+        return json({ ok: true });
       } else if (url.pathname === "/ui/api/project/share") {
         return json({ id: hub.shareProject(human, pid(str("project")), str("human").trim().toLowerCase()) });
       } else if (url.pathname === "/ui/api/project/link") {
@@ -285,12 +289,12 @@ function state(hub: Hub, human: string) {
   const people = hub.people(human).map((h) => ({ name: h, pair: mine.find((p) => hub.isPair(p) && hub.projectHumans(p).includes(h)) ?? null }));
   // Share and link requests waiting for this person; the project names are the asker's, which the person may see.
   const pending = hub.pendingFor(human).map((r) => ({ ...r, project: hub.projectName(r.project) ?? r.project }));
-  const invites = hub.invitesBy(human).map((i) => ({ id: i.id, name: i.human, created_at: i.created_at, expires_at: i.expires_at, used_at: i.used_at }));
+  const invites = hub.invitesBy(human).map((i) => ({ id: i.id, name: i.human, project: i.project, created_at: i.created_at, expires_at: i.expires_at, used_at: i.used_at }));
   const me = { operator: hub.isOperator(human), logins: hub.logins(human), password: hub.hasPassword(human) };
   const projects = mine.map((p) => {
     const leases = hub.leases(p);
     return {
-      id: p, pair: hub.isPair(p), owner: hub.projectOwner(p), brief: hub.brief(p), humans: hub.projectHumans(p), links: hub.linkedProjects(p),
+      id: p, pair: hub.isPair(p), owner: hub.projectOwner(p), brief: hub.brief(p), repo: hub.repo(p), humans: hub.projectHumans(p), links: hub.linkedProjects(p),
       sessions: hub.presence(p).map((x) => ({
         label: hub.label(x.address), name: x.name, human: x.human, profile: x.profile, online: x.online, bell: x.wake === "wakes",
         unread: x.unread, unseen: x.unseen, roles: x.roles, last_seen: x.last_seen,

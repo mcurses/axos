@@ -720,7 +720,7 @@ async function joinHub(args: string[]): Promise<void> {
   if (existsSync(tokenFile) && !force) throw new Error(`this machine already has an AXOS token in ${tokenFile}; axos join --force replaces it`);
   const machine = name ?? hostname().split(".")[0]!;
   const res = await fetch(`${hubUrl}/api/join`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, machine }) });
-  const r = (await res.json().catch(() => ({ error: `the hub answered ${res.status}` }))) as { error?: string; hub?: string; agent?: string; token?: string; invited_by?: string | null; page?: string | null; projects?: string[] };
+  const r = (await res.json().catch(() => ({ error: `the hub answered ${res.status}` }))) as { error?: string; hub?: string; agent?: string; token?: string; invited_by?: string | null; page?: string | null; projects?: string[]; project?: { name: string; repo: string } | null };
   if (r.error || !r.token) throw new Error(r.error ?? "the hub sent no token");
   mkdirSync(dirname(CONFIG_PATH), { recursive: true });
   writeFileSync(CONFIG_PATH, `${JSON.stringify({ ...(existing ?? {}), url: r.hub ?? hubUrl }, null, 2)}\n`, { mode: 0o600 });
@@ -733,7 +733,13 @@ async function joinHub(args: string[]): Promise<void> {
     try { Bun.spawn([process.platform === "darwin" ? "open" : "xdg-open", r.page], { stdout: "ignore", stderr: "ignore" }); } catch { /* no browser here: the link is printed */ }
   }
   console.log(`Restart Claude Code (every open window), then say in any of them: tell ${r.invited_by ?? "<a person here>"} hello.`);
-  console.log("To work with others in a repo, connect it once, in its folder: axos link <owner>/<project> (or axos trust, if it commits an .axos.json).");
+  if (r.project) {
+    // The invite carried the work: the person is in that project already; its folder is connected once it is here.
+    console.log(`You are in ${r.project.name}${r.invited_by ? ` with ${r.invited_by}` : ""}.${r.project.repo ? ` The code: ${r.project.repo}` : ""}`);
+    console.log("Get the code onto this machine, then in its folder run: axos link (it picks that project), or say to Claude Code there: connect this folder to AXOS.");
+  } else {
+    console.log("To work with others in a repo, connect it once, in its folder: axos link <owner>/<project> (or axos trust, if it commits an .axos.json).");
+  }
 }
 
 // For a landing script, run in the repository after the push succeeded. The hub never sees the repository: this reads
@@ -1069,32 +1075,56 @@ async function link(args: string[]): Promise<void> {
   const cwd = process.cwd();
   const file = repoFile(c, cwd);
   let ref = rest[0] ?? file?.ref;
+  const git = gitRemotes(cwd);
+  const pick = !here && git?.remotes.length
+    ? (remoteName ? git.remotes.find((r) => r.name === remoteName) : git.remotes.find((r) => r.name === "origin") ?? (git.remotes.length === 1 ? git.remotes[0] : undefined))
+    : undefined;
+  if (!here && git?.remotes.length && !pick) throw new Error(remoteName ? `no remote '${remoteName}' here` : `say which remote: --remote ${git.remotes.map((r) => r.name).join(" or --remote ")}`);
   if (isNew) {
     if (ref) throw new Error("--new makes a project; do not also name one");
     const slug = (newName ?? basename(cwd)).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "");
+    // Where the code is goes with the project (the remote's address, never a user name or token in it), so that a
+    // person invited into it knows what to clone.
+    // The query, the fragment and anything before an http host are dropped here; the hub cleans it once more.
+    const repo = pick ? pick.url.replace(/[?#].*$/, "").replace(/^((?:git\+)?https?:\/\/)[^@/]+@/i, "$1") : "";
     const res = await fetch(`${c.url.replace(/\/$/, "")}/api/projects`, {
-      method: "POST", headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" }, body: JSON.stringify({ name: slug }), signal: AbortSignal.timeout(10_000),
+      method: "POST", headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" }, body: JSON.stringify({ name: slug, repo }), signal: AbortSignal.timeout(10_000),
     });
     const r = (await res.json().catch(() => ({}))) as { error?: string; name?: string };
     if (!res.ok || !r.name) throw new Error(r.error ?? `the hub answered ${res.status}`);
-    console.log(`Project ${r.name} made.`);
+    console.log(`Project ${r.name} made${repo ? ` (code: ${repo})` : ""}.`);
     ref = r.name;
   }
-  if (!ref) throw new Error("say which project: axos link <owner>/<name>, or axos link --new to make one for this folder");
+  // No name, no file: this checkout's remote is the code of a project someone else invited this person into, and the
+  // project is not connected on this machine yet. Only that: a folder without a remote, or whose remote is some
+  // other repository, is never connected to anything without its name (it would carry every session here into it).
+  if (!ref) {
+    const res = await fetch(`${c.url.replace(/\/$/, "")}/api/whoami`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(10_000) });
+    const w = (await res.json().catch(() => null)) as { human?: string; projects?: { id: string; name: string; pair?: boolean; owner?: string | null; repo?: string }[] } | null;
+    const linked = new Set((c.folders ?? []).map((f) => f.project));
+    const theirs = (w?.projects ?? []).filter((p) => p.pair === false && typeof p.owner === "string" && p.owner !== w?.human && !linked.has(p.id));
+    const here = pick ? theirs.filter((p) => p.repo && remoteKey(p.repo, cwd) === pick.key) : [];
+    if (here.length === 1) {
+      ref = here[0]!.name;
+      console.log(`Connecting to ${ref}: this checkout is its code, and you were invited into it.`);
+    } else if (!pick) {
+      throw new Error(`this folder is no checkout with a remote, so say which project: axos link <owner>/<name>${theirs.length ? ` (you are in ${theirs.map((p) => p.name).join(", ")})` : ", or axos link --new to make one for this folder"}`);
+    } else if (theirs.length) {
+      throw new Error(`this checkout (${pick.key}) is not the code of ${theirs.map((p) => `${p.name}${p.repo ? ` (${p.repo})` : ""}`).join(" or ")}; to connect it anyway: axos link <owner>/<name>`);
+    } else {
+      throw new Error("say which project: axos link <owner>/<name>, or axos link --new to make one for this folder");
+    }
+  }
   const project = await resolveProject(c, t, ref);
   // Taking the project from the repo's own file is trusting that file: a person confirms it, as with axos trust.
-  if (!rest[0]) {
+  if (!rest[0] && file?.ref) {
     const question = `Connect Claude Code sessions in this repo to the AXOS project ${project.name ?? project.id}, as its .axos.json asks, ` +
       `on ${hostOf(c.url)}? Their messages, roles and leases are then shared with that project's members.`;
     if (!(await confirm(question))) return console.log("Not linked.");
   }
 
-  const git = gitRemotes(cwd);
   let rule: FolderRule;
-  if (!here && git?.remotes.length) {
-    const pick = remoteName ? git.remotes.find((r) => r.name === remoteName)
-      : git.remotes.find((r) => r.name === "origin") ?? (git.remotes.length === 1 ? git.remotes[0] : undefined);
-    if (!pick) throw new Error(remoteName ? `no remote '${remoteName}' here` : `say which remote: --remote ${git.remotes.map((r) => r.name).join(" or --remote ")}`);
+  if (pick) {
     rule = { remote: pick.key, project: project.id, ...(project.name ? { name: project.name } : {}) };
   } else {
     if (remoteName) throw new Error("--remote needs a git checkout with that remote");

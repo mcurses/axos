@@ -10,7 +10,9 @@ import { toast } from "sonner";
 // People: who this person shares a project with, the invites they made (a link shown once), and their own devices.
 export function People({ state, onChange }: { state: State; onChange: () => void }) {
   const [name, setName] = useState("");
+  const [work, setWork] = useState(""); // a project of mine the invite carries, or none
   const [shown, setShown] = useState<{ id: number; link: string } | null>(null);
+  const ownProjects = state.projects.filter((p) => !p.pair && p.owner === state.human);
   const [device, setDevice] = useState<{ link: string; code: string } | null>(null);
   const qr = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => { if (device && qr.current) void QRCode.toCanvas(qr.current, device.link, { width: 192, margin: 1 }); }, [device]);
@@ -37,14 +39,21 @@ export function People({ state, onChange }: { state: State; onChange: () => void
           </ul>
           {state.me.operator && (
             <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (!name.trim()) return;
-              void run(async () => { const r = await post("invite", { name: name.trim() }) as { id: number; link: string }; setShown(r); setName(""); }); }}>
+              void run(async () => { const r = await post("invite", { name: name.trim(), ...(work ? { project: work } : {}) }) as { id: number; link: string }; setShown(r); setName(""); setWork(""); }); }}>
               <input className="flex-1 rounded-md border bg-background px-3 py-2 text-sm" placeholder="name of the person to invite (lowercase)" value={name} onChange={(e) => setName(e.target.value)} />
+              {ownProjects.length > 0 && (
+                <select className="rounded-md border bg-background px-2 py-1 text-sm" value={work} onChange={(e) => setWork(e.target.value)} title="The invite can carry a project of yours: they are in it when they join">
+                  <option value="">just to the hub</option>
+                  {ownProjects.map((p) => <option key={p.id} value={p.id}>to work on {p.id}</option>)}
+                </select>
+              )}
               <Button type="submit" size="sm" disabled={busy}>Invite someone</Button>
             </form>
           )}
           {shown && (
             <div className="rounded-md border p-3 text-sm">
-              <p className="mb-1">Send this link to them in a chat you already use. It works once and lives a week; it is shown here once.</p>
+              <p className="mb-1">Send this link to them in a chat you already use. It works once and lives a week; it is shown here once.{" "}
+                {!state.invites.find((i) => i.id === shown.id)?.project ? "" : `It says you invited them to work on ${state.invites.find((i) => i.id === shown.id)!.project}.`}</p>
               <div className="flex items-center gap-2"><code className="break-all">{shown.link}</code><Button size="sm" variant="outline" onClick={() => copy(shown.link)}>Copy</Button></div>
             </div>
           )}
@@ -52,7 +61,7 @@ export function People({ state, onChange }: { state: State; onChange: () => void
             <ul className="flex flex-col gap-1 text-sm">
               {state.invites.map((i) => (
                 <li key={i.id} className="flex items-center gap-2">
-                  <span>{i.name}: {i.used_at ? `joined ${ago(i.used_at, state.now)}` : i.expires_at <= state.now ? "link expired" : `invited ${ago(i.created_at, state.now)}, not joined yet`}</span>
+                  <span>{i.name}{i.project ? ` (to ${i.project})` : ""}: {i.used_at ? `joined ${ago(i.used_at, state.now)}` : i.expires_at <= state.now ? "link expired" : `invited ${ago(i.created_at, state.now)}, not joined yet`}</span>
                   {!i.used_at && i.expires_at > state.now && <Button size="sm" variant="ghost" disabled={busy} onClick={() => run(async () => { await post("invite/withdraw", { id: i.id }); })}>Withdraw</Button>}
                 </li>
               ))}

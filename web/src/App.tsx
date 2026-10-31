@@ -81,7 +81,7 @@ export default function App() {
         </TabsContent>
         <TabsContent value="projects" className="flex flex-col gap-4 pt-2">
           <NewProject onChange={refresh} />
-          {state.projects.filter((p) => !p.pair).map((p) => <ProjectCard key={p.id} p={p} now={state.now} me={state.human} people={state.people.map((x) => x.name)} onChange={refresh} />)}
+          {state.projects.filter((p) => !p.pair).map((p) => <ProjectCard key={p.id} p={p} now={state.now} me={state.human} people={state.people.map((x) => x.name)} operator={state.me.operator} onChange={refresh} />)}
           {!state.projects.some((p) => !p.pair) && <p className="text-muted-foreground text-sm">No projects yet. In a repo, tell Claude Code "connect this folder to AXOS".</p>}
         </TabsContent>
         <TabsContent value="people" className="pt-2">

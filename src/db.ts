@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS projects (
   owner         TEXT NOT NULL REFERENCES humans(name),
   slug          TEXT NOT NULL,
   brief         TEXT NOT NULL DEFAULT '',
+  repo          TEXT NOT NULL DEFAULT '',   -- where the code is (one git address), for members and the invited
   created_at    INTEGER NOT NULL,
   pair          INTEGER NOT NULL DEFAULT 0,    -- the project of exactly two people, made when one invited the other
   UNIQUE (owner, slug)
@@ -334,6 +335,7 @@ function migrate(db: Database): void {
   column("invites", "decision", "TEXT");
   column("login_links", "code_hash", "TEXT");
   column("login_links", "made_by", "INTEGER");
+  column("projects", "repo", "TEXT NOT NULL DEFAULT ''");
 }
 
 // Databases from before ids (2026-10-26) keyed projects and agents by their names, and stored addresses carried the
@@ -382,7 +384,7 @@ function migrateToIds(db: Database): void {
   };
 
   const tables: Record<string, (r: Record<string, unknown>) => Record<string, unknown>> = {
-    projects: (r) => ({ id: P(r.name), owner: ownerOf(r.name as string), slug: r.name, brief: r.brief, created_at: r.created_at, pair: 0 }),
+    projects: (r) => ({ id: P(r.name), owner: ownerOf(r.name as string), slug: r.name, brief: r.brief, repo: "", created_at: r.created_at, pair: 0 }),
     agents: (r) => ({ ...r, id: holder(r.id as string) }),
     memberships: (r) => ({ agent_id: holder(r.agent_id as string), project: P(r.project) }),
     human_projects: (r) => ({ ...r, project: P(r.project) }),

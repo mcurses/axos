@@ -301,7 +301,7 @@ async function handleAttach(hub: Hub, req: Request, url: URL, agent: AgentRow): 
 function handleWhoami(hub: Hub, req: Request, url: URL, agent: AgentRow): Response {
   if (req.method !== "GET") return new Response("method not allowed\n", { status: 405 });
   const mine = hub.projectsOf(agent.id);
-  const projects = mine.map((id) => ({ id, name: hub.projectName(id) }));
+  const projects = mine.map((id) => ({ id, name: hub.projectName(id), pair: hub.isPair(id), owner: hub.projectOwner(id), repo: hub.repo(id) }));
   const out = { agent: `${agent.human}/${agent.name}`, human: agent.human, projects };
   const ref = url.searchParams.get("project");
   if (ref === null) return json(out);
@@ -354,8 +354,9 @@ function pluginSource(): string {
   return /^[A-Za-z0-9._\/:@-]+$/.test(s) ? s : "mcurses/axos";
 }
 
-function setupScript(hub: Hub, origin: string, code: string, inviter: string | null): string {
+function setupScript(hub: Hub, origin: string, code: string, inviter: string | null, work: { name: string; repo: string } | null): string {
   const base = hub.publicUrl || origin;
+  const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`; // one shell word, whatever the hub's data says
   return `#!/bin/sh
 # AXOS setup for this machine, served by ${base}. It installs bun and the Claude Code plugin, joins with your invite
 # (once), and opens your page. Safe to read first; it changes only ~/.bun, ~/.claude/plugins, ~/.local/bin and ~/.config/axos.
@@ -389,7 +390,10 @@ case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) say "Note: ~/.local/bin is not o
 say ""
 say "Done. Restart Claude Code (every open window), then say in any of them: tell ${inviter ?? "<a person here>"} hello"
 say ""
-say "After that, when you like: in a repo you work in, say to Claude Code: connect this folder to AXOS."
+${work
+    ? `say ${q(`You are in ${work.name} with ${inviter ?? "them"}.${work.repo ? ` The code: ${work.repo}` : ""}`)}
+say ${q(`Get the code onto this machine, open its folder in Claude Code and say: connect this folder to AXOS (it picks ${work.name}).`)}`
+    : `say "After that, when you like: in a repo you work in, say to Claude Code: connect this folder to AXOS."`}
 say "Your page is the app on a phone too: People, Log in another device, open the link on the phone, Add to Home Screen, Notifications on."
 `;
 }
@@ -402,15 +406,22 @@ function handleJoinPage(hub: Hub, url: URL, code: string): Response {
   const invited = inv?.invited_by && inv.invited_by !== inv.human ? inv.invited_by : null;
   const body = status !== "open"
     ? `<p>This invite link ${status === "unknown" ? "is not valid" : `was already ${status === "used" ? "used" : "expired"}`}. Ask for a new one.</p>`
-    : `<p>${invited ? `<b>${esc(invited)}</b> invited you to their AXOS hub. You will be <b>${esc(inv!.human)}</b> here.` : `This link sets up one machine for <b>${esc(inv!.human)}</b> on this AXOS hub.`}
+    : `<p>${invited
+      ? inv!.project
+        ? `<b>${esc(invited)}</b> invited you to work on <b>${esc(inv!.project.name)}</b> with them, on their AXOS hub. You will be <b>${esc(inv!.human)}</b> here.`
+        : `<b>${esc(invited)}</b> invited you to their AXOS hub. You will be <b>${esc(inv!.human)}</b> here.`
+      : `This link sets up one machine for <b>${esc(inv!.human)}</b> on this AXOS hub.`}
 It works once and expires ${esc(new Date(inv!.expires_at).toUTCString().replace(/:\d\d GMT$/, " UTC"))}.</p>
+${inv!.project && (inv!.project.brief || inv!.project.repo) ? `<blockquote>${inv!.project.brief ? `<p>${esc(inv!.project.brief)}</p>` : ""}${inv!.project.repo ? `<p>The code: <code>${esc(inv!.project.repo)}</code></p>` : ""}</blockquote>` : ""}
 ${base.startsWith("https:") ? `<p>On the machine you use Claude Code on, paste this into a terminal. It installs what is needed, joins, and opens your page:</p>
 <pre>curl -fsSL ${esc(link)}/setup | sh</pre>
 <p>Or say this to Claude Code, which shows the script before running it:</p>
 <pre>Set up AXOS from ${esc(link)}</pre>` : `<p>Say this to Claude Code on the machine you use it on; it shows the setup script before running it:</p>
 <pre>Set up AXOS from ${esc(link)}</pre>`}
 <p>Then restart Claude Code and say in any window: <b>tell ${esc(invited ?? "<a person here>")} hello</b>. Their reply reaches that window.</p>
-<p>After that, when you like: in a repo you work in, say to Claude Code <b>connect this folder to AXOS</b>, and your sessions there find each other, hand work over, and reach your phone with questions. Your page is the app on a phone too.</p>
+${inv!.project
+    ? `<p>Then get the code onto your machine, open its folder in Claude Code and say <b>connect this folder to AXOS</b>: it picks ${esc(inv!.project.name)}, and your sessions there work with ${esc(invited ?? "theirs")}'s: they find each other, hand work over, and reach your phone with questions. Your page is the app on a phone too.</p>`
+    : `<p>After that, when you like: in a repo you work in, say to Claude Code <b>connect this folder to AXOS</b>, and your sessions there find each other, hand work over, and reach your phone with questions. Your page is the app on a phone too.</p>`}
 <details><summary>By hand instead</summary>
 <ol>
 <li>Install <a href="https://bun.sh">bun</a> and the AXOS plugin for Claude Code:<pre>claude plugin marketplace add ${esc(pluginSource())}
@@ -440,6 +451,7 @@ async function handleJoin(hub: Hub, req: Request): Promise<Response> {
       protocol: PROTOCOL, hub: base, human: r.human, agent: hub.agentLabel(r.agent), token: r.token,
       page: `${base}/ui/login/${r.login}`, // one-time, ten minutes: logs this machine's browser in
       invited_by: r.invited_by, projects: r.projects.map((p) => hub.projectName(p)),
+      project: r.project, // the work the invite carried: {name, repo}, or null
     });
   } catch (e) {
     if (e instanceof AxosError) return json({ error: e.message }, 400);
@@ -474,7 +486,7 @@ export function makeFetch(hub: Hub) {
     if (setup && req.method === "GET") {
       if (hub.inviteStatus(setup[1]!) !== "open") return new Response("echo 'This invite link is not open any more; ask for a new one.'; exit 1\n", { status: 410, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
       const inv = hub.inviteOf(setup[1]!);
-      return new Response(setupScript(hub, url.origin, setup[1]!, inv?.invited_by && inv.invited_by !== inv.human ? inv.invited_by : null),
+      return new Response(setupScript(hub, url.origin, setup[1]!, inv?.invited_by && inv.invited_by !== inv.human ? inv.invited_by : null, inv?.project ?? null),
         { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
     }
     const join = /^\/join\/(axosinv_[A-Za-z0-9_-]+)$/.exec(path);
@@ -497,9 +509,9 @@ export function makeFetch(hub: Hub) {
       // `axos link --new`: a project for this agent's human, made from the machine, then linked there.
       if (path === "/api/projects") {
         if (req.method !== "POST") return new Response("method not allowed\n", { status: 405 });
-        const b = (await req.json().catch(() => ({}))) as { name?: unknown; brief?: unknown };
+        const b = (await req.json().catch(() => ({}))) as { name?: unknown; brief?: unknown; repo?: unknown };
         try {
-          const id = hub.createProject(agent.id, String(b.name ?? "").trim().toLowerCase(), typeof b.brief === "string" ? b.brief : "");
+          const id = hub.createProject(agent.id, String(b.name ?? "").trim().toLowerCase(), typeof b.brief === "string" ? b.brief : "", typeof b.repo === "string" ? b.repo : "");
           return json({ id, name: hub.projectName(id) });
         } catch (e) {
           if (e instanceof AxosError) return json({ error: hub.display(e.message, { agent: agent.id }) }, 400);

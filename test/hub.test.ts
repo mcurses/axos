@@ -1749,7 +1749,6 @@ describe("the second person's path (0.21.0)", () => {
   test("only the operator invites a new person from the page; redeeming pairs the two in a project of their own", () => {
     expect(refusal(() => hub.createInvite("ben", null, undefined, "bob"))).toContain("operator");
     hub.setOperator("alice", true);
-    expect(refusal(() => hub.createInvite("ben", GAME, undefined, "alice"))).toContain("names no project");
     const inv = hub.createInvite("ben", null, undefined, "alice");
     expect(inv.expires_at - t).toBe(7 * 86_400_000);
     expect(hub.invitesBy("alice")).toMatchObject([{ id: inv.id, human: "ben", used_at: null }]);
@@ -1767,6 +1766,66 @@ describe("the second person's path (0.21.0)", () => {
     expect(hub.projectsOfHuman("ben")).toEqual([pair!]);
     // Anyone invites another machine of their own from the page.
     expect(hub.createInvite("bob", null, undefined, "bob").code).toMatch(/^axosinv_/);
+  });
+
+  test("an invite from the page may carry a project the maker owns: the new person is in it on redemption", async () => {
+    hub.setOperator("alice", true);
+    expect(refusal(() => hub.createInvite("ben", GAME, undefined, "bob"))).toContain("no project of yours");
+    hub.redeemInvite(hub.createInvite("cara", null, undefined, "alice").code, "caras-laptop");
+    const pair = hub.projectsOfHuman("cara")[0]!;
+    expect(refusal(() => hub.createInvite("dan", pair, undefined, "alice"))).toContain("two people");
+    expect(refusal(() => hub.createInvite("alice", GAME, undefined, "alice"))).toContain("your own machine");
+    hub.setRepo(GAME, "https://me:pw@github.com/alice/game.git", { human: "alice" });
+    const inv = hub.createInvite("ben", GAME, undefined, "alice");
+    expect(hub.invitesBy("alice")[0]).toMatchObject({ human: "ben", project: hub.projectName(GAME) });
+    expect(hub.inviteOf(inv.code)!.project).toEqual({ name: hub.projectName(GAME)!, brief: hub.brief(GAME), repo: "https://github.com/alice/game.git" });
+    const r = hub.redeemInvite(inv.code, "bens-laptop");
+    expect(r.project).toEqual({ name: hub.projectName(GAME)!, repo: "https://github.com/alice/game.git" });
+    expect(hub.projectHumans(GAME)).toContain("ben");
+    expect(hub.projectsOfHuman("ben")).toHaveLength(2); // the pair with alice, and the work
+    expect(hub.projectsOf(r.agent)).toContain(GAME);
+    // The inviter hears of the join, quietly.
+    await Bun.sleep(0);
+    expect(pushes.at(-1)).toMatchObject({ title: `ben joined ${hub.projectName(GAME)}`, priority: "low" });
+    // A project linked with someone else's is not carried (third members of a link: the human's open question).
+    hub.linkProjects(SHOP, GAME);
+    expect(refusal(() => hub.createInvite("eve", GAME, undefined, "alice"))).toContain("linked with someone else's");
+    // Checked again at redemption: a project that became linked after the link was made is dropped, the person still joins.
+    hub.unlinkProjects(SHOP, GAME);
+    const later = hub.createInvite("eve", GAME, undefined, "alice");
+    hub.linkProjects(SHOP, GAME);
+    const r2 = hub.redeemInvite(later.code, "eves-laptop");
+    expect(r2.project).toBeNull();
+    expect(hub.projectHumans(GAME)).not.toContain("eve");
+    expect(hub.projectsOfHuman("eve")).toHaveLength(1);
+    const redeemed = hub.events().filter((e) => e.kind === "invite.redeemed").at(-1)!;
+    expect(JSON.parse(redeemed.data_json)).toMatchObject({ human: "eve", dropped: GAME });
+  });
+
+  test("where the code is: one address without credentials, set by the owner or the owner's agents only", () => {
+    expect(refusal(() => hub.setRepo(GAME, "git@x.com:a/b.git", { human: "bob" }))).toContain("only alice");
+    expect(refusal(() => hub.setRepo(GAME, "git@x.com:a/b.git", { agent: S.id }))).toContain("only alice");
+    expect(refusal(() => hub.setRepo(GAME, "git@x.com:a/b.git and more", { human: "alice" }))).toContain("without spaces");
+    hub.setRepo(GAME, "  git@github.com:alice/game.git ", { human: "alice" });
+    expect(hub.repo(GAME)).toBe("git@github.com:alice/game.git");
+    hub.setRepo(GAME, "ssh://git:pw@host:22/a/game.git", { agent: DEV1 });
+    expect(hub.repo(GAME)).toBe("ssh://git@host:22/a/game.git");
+    // The critic's five shapes (review of 2026-10-31): a query-string token, a token as the only user part of
+    // git+https, ssh and the scp form; control and bidi characters refused.
+    const clean = (r: string) => { hub.setRepo(GAME, r, { human: "alice" }); return hub.repo(GAME); };
+    expect(clean("https://gitlab.example/a/b.git?private_token=glpat-abc#x")).toBe("https://gitlab.example/a/b.git");
+    expect(clean("git+https://T0KENT0KEN@github.com/a/b")).toBe("git+https://github.com/a/b");
+    expect(clean("ssh://T0KENT0KENT0KENT0KENT0KENT0KENT0KEN@host/a/b")).toBe("ssh://host/a/b");
+    expect(clean("T0KENT0KENT0KENT0KENT0KENT0KENT0KEN@host:a/b.git")).toBe("host:a/b.git");
+    expect(clean("git@host:a/b.git?x=1")).toBe("git@host:a/b.git");
+    expect(refusal(() => clean("https://host/a\u009bb"))).toContain("plain characters");
+    expect(refusal(() => clean("https://host/a\u202eb"))).toContain("plain characters");
+    expect(refusal(() => clean("https://host/a\u2800b"))).toContain("plain characters");
+    hub.setRepo(GAME, "", { human: "alice" });
+    expect(hub.repo(GAME)).toBe("");
+    const id = hub.createProject(DEV1, "tools", "", "https://token@github.com/alice/tools");
+    expect(hub.repo(id)).toBe("https://github.com/alice/tools");
+    expect(refusal(() => hub.createProject(DEV1, "tools2", "", "x".repeat(301)))).toContain("at most 300");
   });
 
   test("an invite is withdrawn by its maker only; a withdrawn link is expired", () => {

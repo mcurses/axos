@@ -175,6 +175,7 @@ const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,47}$/;
 const MAX_SUMMARY = 300;
 const MAX_BODY = 64_000;
 const MAX_BRIEF = 2_000;
+const MAX_REPO = 300; // where a project's code is: one git address
 const MAX_NOTE = 1_000; // a subscription's note
 const MAX_ACK_NOTE = 200;
 export const MAX_IMAGE = 5 * 1024 * 1024;
@@ -241,6 +242,38 @@ export function oneLine(s: string, max: number): string {
 
 const PROJECT_ID = /\bprj_[0-9a-z]{10}\b/g;
 const AGENT_ID = /\bagt_[0-9a-z]{10}\b/g;
+
+// Where a project's code is, as members and the invited see it: one git address in printable ASCII, no spaces, no
+// quotes or shell characters, and no credentials: the query and fragment go; before an http host nothing stays; before
+// an ssh host or in the scp form only a plain user name (git@) stays, a token there goes.
+const REPO_USER = /^[a-z_][a-z0-9_.-]{0,31}$/i;
+function cleanRepo(repo: string): string {
+  const r = repo.trim();
+  if (!r) return "";
+  if (r.length > MAX_REPO || !/^[\x21-\x7e]+$/.test(r) || /[<>"'`$\\]/.test(r)) {
+    throw new AxosError(`the code's address is one git address in plain characters, without spaces or quotes, at most ${MAX_REPO} characters`);
+  }
+  const leak = findSecret(r);
+  if (leak) throw new AxosError(`the code's address rejected: it looks like it contains a ${leak}`);
+  const url = /^([a-z][a-z0-9+.-]*):\/\/(.*)$/i.exec(r);
+  if (url) {
+    const scheme = url[1]!;
+    const rest = url[2]!.replace(/[?#].*$/, "");
+    const at = rest.indexOf("@");
+    const slash = rest.indexOf("/");
+    const hasAuth = at >= 0 && (slash < 0 || at < slash);
+    const auth = hasAuth ? rest.slice(0, at) : null;
+    const hostPath = hasAuth ? rest.slice(at + 1) : rest;
+    const user = auth === null || /^(git\+)?https?$/i.test(scheme) ? null : auth.split(":")[0]!;
+    return `${scheme}://${user && REPO_USER.test(user) ? `${user}@` : ""}${hostPath}`;
+  }
+  const scp = /^(?:([^@/]+)@)?([^:/]+):(?!\/\/)(.+)$/.exec(r);
+  if (scp) {
+    const [, user, host, path] = scp;
+    return `${user && REPO_USER.test(user) ? `${user}@` : ""}${host}:${path!.replace(/[?#].*$/, "")}`;
+  }
+  return r;
+}
 
 function checkName(kind: string, s: string): void {
   if (!NAME_RE.test(s)) throw new AxosError(`${kind} '${s}' must be lowercase letters, digits, '.', '_' or '-'`);
@@ -523,13 +556,19 @@ export class Hub {
   createInvite(human: string, project: string | null, ttlS = INVITE_TTL_S, by?: string): { code: string; expires_at: number; id: number } {
     checkName("human", human);
     const exists = !!this.db.query("SELECT 1 FROM humans WHERE name = ?").get(human);
-    if (project && !this.db.query("SELECT 1 FROM projects WHERE id = ?").get(project)) throw new AxosError(`no project '${project}'`);
     if (by) {
-      if (project) throw new AxosError("an invite from the page names no project; share the project once they are here");
+      // A page invite may carry the work: a project the maker owns (not the pair, not one linked with someone else's
+      // until the human rules on third members of a link); the new person is in it on redemption.
+      if (project && this.projectOwner(project) !== by) throw new AxosError(`no project of yours '${project}'`);
+      if (project && this.isPair(project)) throw new AxosError("a project of two people is not shared; make a project for the work");
+      if (project && this.linkedProjects(project).length) throw new AxosError("that project is linked with someone else's; share it with them once they are here, so the other side is not surprised");
+      if (project && human === by) throw new AxosError("your own machine is in your projects already; invite it without one");
       if (human !== by && !this.isOperator(by)) throw new AxosError("only the hub's operator invites new people; ask them");
       if (human !== by && exists) throw new AxosError(`${human} is here already; share a project with them instead of inviting them`);
       const open = (this.db.query("SELECT COUNT(*) AS n FROM invites WHERE invited_by = ? AND kind = 'machine' AND used_at IS NULL AND expires_at > ?").get(by, this.now()) as { n: number }).n;
       if (open >= MAX_OPEN_INVITES) throw new AxosError(`you have ${open} open invites; withdraw one first`);
+    } else if (project && !this.db.query("SELECT 1 FROM projects WHERE id = ?").get(project)) {
+      throw new AxosError(`no project '${project}'`);
     } else if (!exists && !project && this.db.query("SELECT 1 FROM humans").get()) {
       throw new AxosError(`'${human}' is new here: say which project they join (axos invite <project> --human ${human}), or invite them from your page`);
     }
@@ -543,9 +582,10 @@ export class Hub {
   }
 
   // The invites a person made on their page, newest first: pending, used (by whom) or expired.
-  invitesBy(human: string): { id: number; human: string; created_at: number; expires_at: number; used_at: number | null; withdrawn: boolean }[] {
-    return (this.db.query("SELECT id, human, created_at, expires_at, used_at FROM invites WHERE invited_by = ? AND kind = 'machine' ORDER BY id DESC LIMIT 50").all(human) as
-      { id: number; human: string; created_at: number; expires_at: number; used_at: number | null }[]).map((i) => ({ ...i, withdrawn: !i.used_at && i.expires_at < i.created_at }));
+  invitesBy(human: string): { id: number; human: string; project: string | null; created_at: number; expires_at: number; used_at: number | null; withdrawn: boolean }[] {
+    return (this.db.query("SELECT id, human, project, created_at, expires_at, used_at FROM invites WHERE invited_by = ? AND kind = 'machine' ORDER BY id DESC LIMIT 50").all(human) as
+      { id: number; human: string; project: string | null; created_at: number; expires_at: number; used_at: number | null }[])
+      .map((i) => ({ ...i, project: i.project ? this.projectName(i.project) : null, withdrawn: !i.used_at && i.expires_at < i.created_at }));
   }
 
   // Withdrawing sets the link to expired at once.
@@ -678,10 +718,10 @@ export class Hub {
   }
 
   // A project made on the page (the folder is linked afterwards, on the machine).
-  createProjectForHuman(human: string, slug: string, brief = ""): string {
+  createProjectForHuman(human: string, slug: string, brief = "", repo = ""): string {
     const own = slug.startsWith(`${human}/`) ? slug.slice(human.length + 1) : slug;
     if (own.includes("/")) throw new AxosError(`a project you create is ${human}/<name>`);
-    const id = this.addProject(`${human}/${own}`, brief);
+    const id = this.addProject(`${human}/${own}`, brief, repo);
     this.event(`human:${human}`, "project.created", id, {});
     return id;
   }
@@ -701,8 +741,12 @@ export class Hub {
   }
 
   // What an open code is for, without using it (the invite page says who invited whom).
-  inviteOf(code: string): { human: string; invited_by: string | null; expires_at: number } | null {
-    return this.db.query("SELECT human, invited_by, expires_at FROM invites WHERE code_hash = ?").get(hashSecret(code)) as { human: string; invited_by: string | null; expires_at: number } | null;
+  inviteOf(code: string): { human: string; invited_by: string | null; expires_at: number; project: { name: string; brief: string; repo: string } | null } | null {
+    const r = this.db.query("SELECT human, invited_by, expires_at, project FROM invites WHERE code_hash = ?").get(hashSecret(code)) as
+      { human: string; invited_by: string | null; expires_at: number; project: string | null } | null;
+    if (!r) return null;
+    const name = r.project ? this.projectName(r.project) : null;
+    return { human: r.human, invited_by: r.invited_by, expires_at: r.expires_at, project: r.project && name ? { name, brief: this.brief(r.project), repo: this.repo(r.project) } : null };
   }
 
   // Whether a code is good, without using it (for the page a browser opens).
@@ -716,7 +760,7 @@ export class Hub {
   // Sets up the machine: its agent (named after the machine, made unique), its token, and the person if new.
   // Also: a new person's page key is made and never shown (a one-time login link stands in for it); an invite made on
   // someone's page pairs the two people in a project of their own.
-  redeemInvite(code: string, machine: string): { human: string; agent: string; token: string; login: string; invited_by: string | null; projects: string[] } {
+  redeemInvite(code: string, machine: string): { human: string; agent: string; token: string; login: string; invited_by: string | null; projects: string[]; project: { name: string; repo: string } | null } {
     const status = this.inviteStatus(code);
     if (status !== "open") throw new AxosError(status === "unknown" ? "this invite link is not valid" : `this invite link was already ${status === "used" ? "used" : "expired"}; ask for a new one`);
     const inv = this.db.query("SELECT * FROM invites WHERE code_hash = ?").get(hashSecret(code)) as { id: number; human: string; project: string | null; invited_by: string | null; new_human: number | null };
@@ -724,10 +768,19 @@ export class Hub {
       throw new AxosError(`the name '${inv.human}' was taken since this invite was made; ask for a new one`);
     }
     const base = machine.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 40) || "machine";
-    return this.db.transaction(() => {
+    const out = this.db.transaction(() => {
+      // A carried project is checked again now, not only when the link was made: the maker must still own it, it
+      // must still be no pair and not linked, and a page maker must still be the operator; otherwise the person joins
+      // without it (the pair with the inviter still happens) and the event says so.
+      let project = inv.project && this.projectName(inv.project) ? inv.project : null;
+      if (project && inv.invited_by) {
+        const ok = this.projectOwner(project) === inv.invited_by && !this.isPair(project) && !this.linkedProjects(project).length
+          && (inv.invited_by === inv.human || this.isOperator(inv.invited_by));
+        if (!ok) project = null;
+      }
       if (!this.db.query("SELECT 1 FROM humans WHERE name = ?").get(inv.human)) {
         this.addHuman(inv.human, undefined, false);
-        if (inv.project) this.addHumanToProject(inv.human, inv.project);
+        if (project) this.addHumanToProject(inv.human, project);
       }
       if (inv.invited_by && inv.invited_by !== inv.human && this.db.query("SELECT 1 FROM humans WHERE name = ?").get(inv.invited_by)) {
         this.pairProject(inv.invited_by, inv.human);
@@ -736,9 +789,16 @@ export class Hub {
       for (let n = 2; this.agentId(`${inv.human}/${name}`); n++) name = `${base}-${n}`;
       const { id, token } = this.addAgent(inv.human, name, []);
       this.db.query("UPDATE invites SET used_at = ?, agent_id = ? WHERE id = ?").run(this.now(), id, inv.id);
-      this.event(`agent:${id}`, "invite.redeemed", inv.project, { human: inv.human, invited_by: inv.invited_by });
-      return { human: inv.human, agent: id, token, login: this.createLoginLink(inv.human).token, invited_by: inv.invited_by, projects: this.projectsOf(id) };
+      this.event(`agent:${id}`, "invite.redeemed", project, { human: inv.human, invited_by: inv.invited_by, ...(inv.project && !project ? { dropped: inv.project } : {}) });
+      const carried = project ? { name: this.projectName(project)!, repo: this.repo(project) } : null;
+      return { human: inv.human, agent: id, token, login: this.createLoginLink(inv.human).token, invited_by: inv.invited_by, projects: this.projectsOf(id), project: carried };
     })();
+    // The inviter hears that their link was used (quietly): a forwarded or stolen link does not go unnoticed.
+    if (out.invited_by && out.invited_by !== out.human) {
+      void this.pushToHuman(out.invited_by, `${out.human} joined${out.project ? ` ${out.project.name}` : ""}`,
+        out.project ? "They are in the project now; remove them on its card if that was not you." : "Your invite link was used; their sessions reach you from any folder.", "", [], { priority: "low" });
+    }
+    return out;
   }
 
   setNtfyTopic(name: string, topic: string | null): void {
@@ -810,7 +870,7 @@ export class Hub {
   }
 
   // name: '<owner>/<slug>', or a bare slug when the hub has exactly one human. Returns the new project's id.
-  addProject(name: string, brief = ""): string {
+  addProject(name: string, brief = "", repo = ""): string {
     if (name.split("/").length > 2) throw new AxosError(`a project name is <owner>/<name>, not '${name}'`);
     let [owner, slug] = name.includes("/") ? name.split("/", 2) as [string, string] : [undefined, name];
     if (!owner) {
@@ -824,8 +884,9 @@ export class Hub {
     if (leak) throw new AxosError(`brief rejected: it looks like it contains a ${leak}`);
     if (!this.db.query("SELECT 1 FROM humans WHERE name = ?").get(owner)) throw new AxosError(`no human '${owner}'`);
     if (this.findProjects(`${owner}/${slug}`).length) throw new AxosError(`${owner} already has a project '${slug}'`);
+    const where = cleanRepo(repo);
     const id = newId("prj");
-    this.db.query("INSERT INTO projects (id, owner, slug, brief, created_at) VALUES (?, ?, ?, ?, ?)").run(id, owner, slug, brief, this.now());
+    this.db.query("INSERT INTO projects (id, owner, slug, brief, repo, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, owner, slug, brief, where, this.now());
     // The owner is in their own project (until 0.21.0 `axos project add` left them out; the onboarding study, 2026-10-31).
     this.db.query("INSERT OR IGNORE INTO human_projects (human, project) VALUES (?, ?)").run(owner, id);
     this.event("admin", "project.added", id, { name: `${owner}/${slug}` });
@@ -1297,12 +1358,12 @@ export class Hub {
 
   // Agents may open a project for their human, named '<human>/<slug>'; another person's project of the same slug is
   // no obstacle. Other humans are added by the admin.
-  createProject(agentId: string, slug: string, brief = ""): string {
+  createProject(agentId: string, slug: string, brief = "", repo = ""): string {
     const a = this.db.query("SELECT human FROM agents WHERE id = ?").get(agentId) as { human: string } | null;
     if (!a) throw new AxosError(`no agent '${agentId}'`);
     const own = slug.startsWith(`${a.human}/`) ? slug.slice(a.human.length + 1) : slug;
     if (own.includes("/")) throw new AxosError(`a project you create is ${a.human}/<name>; '${slug}' names someone else's`);
-    const id = this.addProject(`${a.human}/${own}`, brief);
+    const id = this.addProject(`${a.human}/${own}`, brief, repo);
     this.addHumanToProject(a.human, id);
     this.event(`agent:${agentId}`, "project.created", id, {});
     return id;
@@ -1345,6 +1406,22 @@ export class Hub {
   private requireActorInProject(actor: Actor, project: string): void {
     if (actor.kind === "agent") this.requireMember(actor.id, project);
     else if (!this.humanInProject(actor.name, project)) throw new AxosError(`human '${actor.name}' is not in project '${project}'`);
+  }
+
+  // Where the project's code is: one git address, or "" when nobody said. Members see it; so does an invite's page.
+  repo(project: string): string {
+    return (this.db.query("SELECT repo FROM projects WHERE id = ?").get(project) as { repo: string } | null)?.repo ?? "";
+  }
+
+  // Only the owner (on the page) or the owner's agents (from the folder, `axos link --new`) set it.
+  setRepo(project: string, repo: string, by: { human: string } | { agent: string }): void {
+    const owner = this.projectOwner(project);
+    if (!owner) throw new AxosError(`no project '${project}'`);
+    const human = "human" in by ? by.human : this.humanOf(by.agent);
+    if (human !== owner) throw new AxosError(`only ${owner} says where the code of '${this.projectName(project)}' is`);
+    const where = cleanRepo(repo);
+    this.db.query("UPDATE projects SET repo = ? WHERE id = ?").run(where, project);
+    this.event("human" in by ? `human:${by.human}` : `agent:${by.agent}`, "project.repo", project, { set: !!where });
   }
 
   brief(project: string): string {

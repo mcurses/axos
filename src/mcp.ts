@@ -132,18 +132,19 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }, tool(() => {
     const mine = hub.projectsOf(agent.id);
     const links = (p: string) => hub.linkedProjects(p);
-    return `${mine.length ? mine.map((p) => `- ${p}${p === conn.project ? " (this session)" : ""}${hub.isPair(p) ? ` (direct messages with ${hub.projectHumans(p).filter((h) => h !== agent.human).join(", ")}; no folder)` : ""}${links(p).length ? `, linked with ${links(p).join(", ")}` : ""}`).join("\n") : "No projects yet; create_project opens one."}` +
+    return `${mine.length ? mine.map((p) => `- ${p}${p === conn.project ? " (this session)" : ""}${hub.isPair(p) ? ` (direct messages with ${hub.projectHumans(p).filter((h) => h !== agent.human).join(", ")}; no folder)` : ""}${hub.repo(p) ? ` (code: \`${hub.repo(p)}\`)` : ""}${links(p).length ? `, linked with ${links(p).join(", ")}` : ""}`).join("\n") : "No projects yet; create_project opens one."}` +
       (conn.project ? "" : "\nThis session is not tied to a project: its folder is not linked (axos link) and has no trusted .axos.json. See the axos skill, 'connect'.");
   }));
 
   server.registerTool("create_project", {
-    description: "Open a new AXOS project for your human (e.g. for the repo you are in). Another person joins it when your human shares it with them on the AXOS page (Projects → Share with…); they accept on theirs.",
+    description: "Open a new AXOS project for your human (e.g. for the repo you are in). Another person joins it when your human shares it with them on the AXOS page (Projects → Share with…, or an invite that carries the project for someone new); they accept on theirs.",
     inputSchema: strict({
       name: z.string().describe("lowercase, e.g. the repo name; the project is called '<your human>/<name>'"),
       brief: z.string().optional().describe("What the project is and where its rules live, in two or three sentences"),
+      repo: z.string().optional().describe("Where the code is: the repo's git address (the origin remote, without credentials), so an invited person knows what to clone"),
     }),
-  }, tool(({ name, brief }) => {
-    const id = hub.createProject(agent.id, name, brief ?? "");
+  }, tool(({ name, brief, repo }) => {
+    const id = hub.createProject(agent.id, name, brief ?? "", repo ?? "");
     const file = JSON.stringify({ hub: hub.publicUrl || undefined, project: hub.projectName(id), id });
     return [`Project ${id} created; ${agent.human} is in it. To connect the repo, run \`axos link ${hub.projectName(id)}\` in it ` +
       "(nothing is written into the repo; each person links once per machine). For a private team repo whose every clone " +
@@ -204,8 +205,11 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     if (r.waiting_for_role.some((w) => w.startsWith("next:"))) parts.push(`Held for the next session of ${agent.human} that starts in this project.`);
     for (const x of r.not_sent) parts.push(`Not sent to ${x.to}: ${x.reason}`);
     // The first message from a new person's side (no project of their own yet): what else there is, once, for the agent to pass on.
-    if (hub.messagesFrom(agent.human) === 1 && hub.projectsOf(agent.id).every((p) => hub.isPair(p))) {
-      parts.push(`\nThat was the first message from ${agent.human}'s side. What AXOS is for, so you can tell them: (1) their own sessions ` +
+    const invitedInto = hub.projectsOf(agent.id).filter((p) => !hub.isPair(p) && hub.projectOwner(p) !== agent.human);
+    if (hub.messagesFrom(agent.human) === 1 && hub.projectsOf(agent.id).every((p) => hub.isPair(p) || hub.projectOwner(p) !== agent.human)) {
+      parts.push(`\nThat was the first message from ${agent.human}'s side.` +
+        (invitedInto.length ? ` They were invited into ${invitedInto.map((p) => `${p}${hub.repo(p) ? ` (code: \`${hub.repo(p)}\`)` : ""}`).join(", ")}: in the folder of that code, \`axos link\` connects it (it picks that project), and sessions there work with the other members'. ` : " ") +
+        "What AXOS is for, so you can tell them: (1) their own sessions " +
         "on any machine find each other per project, hand work over before a restart (send to next) and take turns on shared things (lease); " +
         `(2) a question only ${agent.human} can decide reaches their phone (ask_human) and the answer comes back here; ` +
         "(3) another person joins a project when it is shared with them, and their sessions then reach it too. " +

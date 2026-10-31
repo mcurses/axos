@@ -1113,9 +1113,9 @@ test("the landing route needs a token and a project the agent is in", async () =
 test("/api/whoami names the caller's projects and resolves a reference only among them", async () => {
   const who = (q: string, t?: string) => fetch(`${base}/api/whoami${q}`, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
   expect((await who("")).status).toBe(401);
-  const mine = (await (await who("", tokens.dev1)).json()) as { agent: string; projects: { id: string; name: string }[] };
+  const mine = (await (await who("", tokens.dev1)).json()) as { agent: string; projects: { id: string; name: string; pair: boolean; owner: string | null; repo: string }[] };
   expect(mine.agent).toBe("alice/dev1");
-  expect(mine.projects).toContainEqual({ id: SHOP, name: "alice/shop" });
+  expect(mine.projects).toContainEqual({ id: SHOP, name: "alice/shop", pair: false, owner: "alice", repo: "" });
   expect(await (await who("?project=shop", tokens.dev1)).json()).toMatchObject({ project: { id: SHOP, name: "alice/shop" } });
   // An outsider naming alice's project learns nothing about it, not even its id.
   const outsider = hub.addAgent("bob", "whoami-box", []).token;
@@ -1273,6 +1273,95 @@ test("the page registers this device for pushes; the manifest and the service wo
     rmSync(dist, { recursive: true, force: true });
   }
 });
+
+test("an invite that carries the work: the page and the script say the project and where the code is; the person is in it on joining", async () => {
+  const login = await fetch(`${base}/ui?key=${uiKey}`, { redirect: "manual" });
+  const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
+  const post = (path: string, body: unknown, c = cookie) =>
+    fetch(`${base}/ui/api/${path}`, { method: "POST", body: JSON.stringify(body), headers: { cookie: c, "Content-Type": "application/json" } });
+  hub.setOperator("alice", true);
+  const made = await (await post("project/new", { name: "workshop", brief: "The shared tools.", repo: "https://me:secret@github.com/alice/workshop.git" })).json() as { id: string; name: string; error?: string };
+  expect(made.error).toBeUndefined();
+  expect(made.name).toBe("alice/workshop");
+  expect(hub.repo(made.id)).toBe("https://github.com/alice/workshop.git");
+  const inv = await (await post("invite", { name: "cara", project: "alice/workshop" })).json() as { id: number; link: string };
+  expect(inv.link).toMatch(/\/join\/axosinv_/);
+  const page = await (await fetch(inv.link)).text();
+  expect(page).toContain("<b>alice</b> invited you to work on <b>alice/workshop</b>");
+  expect(page).toContain("The shared tools.");
+  expect(page).toContain("The code: <code>https://github.com/alice/workshop.git</code>");
+  expect(page).toContain("connect this folder to AXOS</b>: it picks alice/workshop");
+  const sh = await (await fetch(`${inv.link}/setup`)).text();
+  expect(sh).toContain("You are in alice/workshop with alice. The code: https://github.com/alice/workshop.git");
+  const tmp = join(tmpdir(), `axos-setup-${Date.now()}.sh`);
+  writeFileSync(tmp, sh);
+  expect(Bun.spawnSync(["sh", "-n", tmp]).exitCode).toBe(0);
+  rmSync(tmp, { force: true });
+  const state = await (await fetch(`${base}/ui/api/state`, { headers: { cookie } })).json() as { invites: { name: string; project: string | null }[]; projects: { id: string; repo: string }[] };
+  expect(state.invites[0]).toMatchObject({ name: "cara", project: "alice/workshop" });
+  expect(state.projects.find((p) => p.id === "alice/workshop")!.repo).toBe("https://github.com/alice/workshop.git");
+  // Joining: the answer names the work; whoami tells the plugin which projects are pairs and whose they are.
+  const code = inv.link.split("/join/")[1]!;
+  const r = await (await fetch(`${base}/api/join`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, machine: "caras-laptop" }) })).json() as
+    { token: string; projects: string[]; project: { name: string; repo: string } | null };
+  expect(r.project).toEqual({ name: "alice/workshop", repo: "https://github.com/alice/workshop.git" });
+  expect(r.projects.sort()).toEqual(["alice/cara", "alice/workshop"]);
+  const who = await (await fetch(`${base}/api/whoami`, { headers: { Authorization: `Bearer ${r.token}` } })).json() as { projects: { name: string; pair: boolean; owner: string }[] };
+  expect(who.projects.find((p) => p.name === "alice/workshop")).toMatchObject({ pair: false, owner: "alice" });
+  expect(who.projects.find((p) => p.name === "alice/cara")).toMatchObject({ pair: true, owner: "alice" });
+  // Her first hello tells her agent about the work and the one command for its folder.
+  const cara = await connect(r.token, { "x-axos-session": "cara-hello", "x-axos-name": "hello" });
+  const hello = await call(cara, "send", { to: "human:alice", summary: "hello from cara" });
+  expect(hello.isError).toBe(false);
+  expect(hello.text).toContain("invited into alice/workshop (code: `https://github.com/alice/workshop.git`)");
+  expect(hello.text).toContain("`axos link` connects it");
+  expect((await call(cara, "projects", {})).text).toContain("alice/workshop (code: `https://github.com/alice/workshop.git`)");
+  await cara.close();
+  // The plugin on her machine: `axos link` with no name, in a folder with no .axos.json, picks the project she was
+  // invited into; `axos link --new` in a repo of hers makes a project with the remote's address, credentials dropped.
+  const home = mkdtempSync(join(tmpdir(), "axos-cara-"));
+  writeFileSync(join(home, "config.json"), JSON.stringify({ url: base }));
+  writeFileSync(join(home, "token"), `${r.token}\n`, { mode: 0o600 });
+  // Asynchronous: the hub under test runs in this process, and a synchronous spawn would block its answers.
+  const plugin = async (cwd: string, ...args: string[]) => {
+    const run = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), ...args],
+      { cwd, env: { ...process.env, AXOS_CONFIG: join(home, "config.json"), AXOS_TOKEN_FILE: join(home, "token"), HOME: home }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [out, err] = [await new Response(run.stdout).text(), await new Response(run.stderr).text()];
+    return { out: out + err, code: await run.exited };
+  };
+  const checkout = (dir: string, remote: string) => { mkdirSync(join(dir, ".git"), { recursive: true }); writeFileSync(join(dir, ".git", "config"), `[remote "origin"]\n\turl = ${remote}\n`); };
+  // A folder that is no checkout, and a checkout of some other repository: never connected without a name.
+  const bare = join(home, "bare");
+  mkdirSync(bare);
+  expect((await plugin(bare, "link")).out).toContain("no checkout with a remote, so say which project: axos link <owner>/<name> (you are in alice/workshop)");
+  const other = join(home, "other");
+  checkout(other, "git@corp.example:secret/payroll.git");
+  expect((await plugin(other, "link")).out).toContain("this checkout (corp.example/secret/payroll) is not the code of alice/workshop (https://github.com/alice/workshop.git)");
+  expect(readFileSync(join(home, "config.json"), "utf8")).not.toContain("folders");
+  // Her clone of the project's code, by ssh while the project says https: the same repository, connected.
+  const work = join(home, "work");
+  checkout(work, "git@github.com:alice/workshop.git");
+  const linked = await plugin(work, "link");
+  expect(linked.out).toContain("Connecting to alice/workshop: this checkout is its code, and you were invited into it.");
+  expect(linked.out).toContain("every checkout of github.com/alice/workshop -> alice/workshop");
+  expect(linked.code).toBe(0);
+  expect((JSON.parse(readFileSync(join(home, "config.json"), "utf8")) as { folders: { remote?: string; name?: string }[] }).folders[0]).toMatchObject({ remote: "github.com/alice/workshop", name: "alice/workshop" });
+  expect((await plugin(work, "link")).out).toContain("say which project"); // connected already: nothing left to pick
+  const own = join(home, "thing");
+  checkout(own, "https://cara:pw@github.com/cara/thing.git?token=abc");
+  const made2 = await plugin(own, "link", "--new");
+  expect(made2.out).toContain("Project cara/thing made (code: https://github.com/cara/thing.git)");
+  expect(hub.repo(hub.projectId("cara/thing")!)).toBe("https://github.com/cara/thing.git");
+  rmSync(home, { recursive: true, force: true });
+  // Only the owner changes where the code is; cara, a member, may not. A page invite into someone else's project: refused.
+  expect((await post("project/repo", { project: "alice/workshop", repo: "git@github.com:alice/workshop.git" })).status).toBe(200);
+  expect(hub.repo(made.id)).toBe("git@github.com:alice/workshop.git");
+  const caraLink = hub.createLoginLink("cara").token;
+  const caraCookie = (await fetch(`${base}/ui/login/${caraLink}`, { method: "POST", redirect: "manual" })).headers.get("set-cookie")!.split(";")[0]!;
+  expect((await post("project/repo", { project: "alice/workshop", repo: "x" }, caraCookie)).status).toBe(400);
+  expect((await post("invite", { name: "dan", project: "alice/workshop" }, caraCookie)).status).toBe(400);
+  hub.setOperator("alice", false); // the next test starts from a hub without an operator
+}, 30_000);
 
 test("the second person's path: invite from the page, the setup script, the one-time login, hello from an unlinked folder, the reply back", async () => {
   const login = await fetch(`${base}/ui?key=${uiKey}`, { redirect: "manual" });
