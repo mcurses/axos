@@ -346,20 +346,69 @@ function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// The setup for one machine, as a shell script the invite page offers: bun, the plugin, the command, the join, the
+// page. Every step says what failed; the code inside dies with the join, so the script is worthless afterwards.
+// The plugin's source as it may appear in a shell script or on the page: a GitHub owner/repo or a git URL, nothing else.
+function pluginSource(): string {
+  const s = process.env.AXOS_PLUGIN_SOURCE ?? "mcurses/axos";
+  return /^[A-Za-z0-9._\/:@-]+$/.test(s) ? s : "mcurses/axos";
+}
+
+function setupScript(hub: Hub, origin: string, code: string, inviter: string | null): string {
+  const base = hub.publicUrl || origin;
+  return `#!/bin/sh
+# AXOS setup for this machine, served by ${base}. It installs bun and the Claude Code plugin, joins with your invite
+# (once), and opens your page. Safe to read first; it changes only ~/.bun, ~/.claude/plugins, ~/.local/bin and ~/.config/axos.
+set -eu
+LINK="${base}/join/${code}"
+say() { printf '%s\n' "$*"; }
+if ! command -v claude >/dev/null 2>&1; then
+  say "Claude Code (the claude command) is not installed. Install it first (https://claude.com/claude-code), then run this again."; exit 1
+fi
+if ! command -v bun >/dev/null 2>&1 && [ ! -x "$HOME/.bun/bin/bun" ]; then
+  say "Installing bun (the AXOS plugin runs on it)..."
+  curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || { say "bun did not install; see https://bun.sh/docs/installation, then run this again."; exit 1; }
+fi
+export PATH="$HOME/.bun/bin:$PATH"
+say "Installing the AXOS plugin for Claude Code..."
+claude plugin marketplace add '${pluginSource()}' >/dev/null 2>&1 || true
+claude plugin install axos@axos --scope user >/dev/null 2>&1 || claude plugin update axos@axos >/dev/null 2>&1 || { say "The plugin did not install; run: claude plugin install axos@axos --scope user"; exit 1; }
+AXOS="$HOME/.claude/plugins/marketplaces/axos/plugin/bin/axos"
+[ -x "$AXOS" ] || { say "The plugin is installed but $AXOS is missing; tell ${inviter ?? "the hub's operator"}."; exit 1; }
+mkdir -p "$HOME/.local/bin" && ln -sf "$AXOS" "$HOME/.local/bin/axos"
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) say "Note: ~/.local/bin is not on your PATH, so 'axos' works inside Claude Code but not in this shell until you add it." ;; esac
+"$AXOS" join "$LINK"
+say ""
+say "Done. Restart Claude Code (every open window), then say in any of them: tell ${inviter ?? "<a person here>"} hello"
+`;
+}
+
 function handleJoinPage(hub: Hub, url: URL, code: string): Response {
   const status = hub.inviteStatus(code);
-  const link = `${hub.publicUrl || url.origin}/join/${code}`;
+  const base = hub.publicUrl || url.origin;
+  const link = `${base}/join/${code}`;
+  const inv = hub.inviteOf(code);
+  const invited = inv?.invited_by && inv.invited_by !== inv.human ? inv.invited_by : null;
   const body = status !== "open"
     ? `<p>This invite link ${status === "unknown" ? "is not valid" : `was already ${status === "used" ? "used" : "expired"}`}. Ask for a new one.</p>`
-    : `<p>This link sets up one machine for AXOS. It works once and expires within a day.</p>
+    : `<p>${invited ? `<b>${esc(invited)}</b> invited you to their AXOS hub. You will be <b>${esc(inv!.human)}</b> here.` : `This link sets up one machine for <b>${esc(inv!.human)}</b> on this AXOS hub.`}
+It works once and expires ${esc(new Date(inv!.expires_at).toUTCString().replace(/:\d\d GMT$/, " UTC"))}.</p>
+${base.startsWith("https:") ? `<p>On the machine you use Claude Code on, paste this into a terminal. It installs what is needed, joins, and opens your page:</p>
+<pre>curl -fsSL ${esc(link)}/setup | sh</pre>
+<p>Or say this to Claude Code, which shows the script before running it:</p>
+<pre>Set up AXOS from ${esc(link)}</pre>` : `<p>Say this to Claude Code on the machine you use it on; it shows the setup script before running it:</p>
+<pre>Set up AXOS from ${esc(link)}</pre>`}
+<p>Then restart Claude Code and say in any window: <b>tell ${esc(invited ?? "<a person here>")} hello</b>.</p>
+<details><summary>By hand instead</summary>
 <ol>
-<li>Install <a href="https://bun.sh">bun</a> and, for Claude Code, the AXOS plugin:<pre>claude plugin marketplace add ${esc(process.env.AXOS_PLUGIN_SOURCE ?? "mcurses/axos")}
+<li>Install <a href="https://bun.sh">bun</a> and the AXOS plugin for Claude Code:<pre>claude plugin marketplace add ${esc(pluginSource())}
 claude plugin install axos@axos --scope user</pre></li>
-<li>Put the <code>axos</code> command on your PATH (once):<pre>ln -s ~/.claude/plugins/marketplaces/axos/plugin/bin/axos ~/.local/bin/axos</pre></li>
-<li>Join with this machine:<pre>axos join ${esc(link)}</pre></li>
-<li>In each repo of the project, once:<pre>axos link &lt;owner&gt;/&lt;project&gt;</pre></li>
+<li>Put the <code>axos</code> command on your PATH:<pre>mkdir -p ~/.local/bin &amp;&amp; ln -sf ~/.claude/plugins/marketplaces/axos/plugin/bin/axos ~/.local/bin/axos</pre></li>
+<li>Join with this machine (it opens your page):<pre>axos join ${esc(link)}</pre></li>
+<li>Restart Claude Code.</li>
 </ol>
-<p>Other MCP clients (Codex and others) use the token <code>axos join</code> writes to <code>~/.config/axos/token</code> against <code>${esc(hub.publicUrl || url.origin)}/mcp</code>.</p>`;
+<p>Other MCP clients (Codex and others) use the token <code>axos join</code> writes to <code>~/.config/axos/token</code> against <code>${esc(base)}/mcp</code>.</p>
+</details>`;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Join AXOS</title><style>body{font:15px/1.5 -apple-system,system-ui,sans-serif;max-width:720px;margin:2em auto;padding:0 16px}
 pre{background:#f5f5f7;padding:8px;border-radius:6px;white-space:pre-wrap}@media(prefers-color-scheme:dark){body{background:#000;color:#f5f5f7}pre{background:#1c1c1e}}</style>
@@ -374,10 +423,11 @@ async function handleJoin(hub: Hub, req: Request): Promise<Response> {
   if (typeof body.code !== "string" || typeof body.machine !== "string") return json({ error: "body must be JSON: {code, machine}" }, 400);
   try {
     const r = hub.redeemInvite(body.code, body.machine);
+    const base = hub.publicUrl || new URL(req.url).origin;
     return json({
-      protocol: PROTOCOL, hub: hub.publicUrl || new URL(req.url).origin, human: r.human, agent: hub.agentLabel(r.agent), token: r.token,
-      page: r.uiKey ? `${hub.publicUrl || new URL(req.url).origin}/ui?key=${r.uiKey}` : null,
-      projects: r.projects.map((p) => hub.projectName(p)),
+      protocol: PROTOCOL, hub: base, human: r.human, agent: hub.agentLabel(r.agent), token: r.token,
+      page: `${base}/ui/login/${r.login}`, // one-time, ten minutes: logs this machine's browser in
+      invited_by: r.invited_by, projects: r.projects.map((p) => hub.projectName(p)),
     });
   } catch (e) {
     if (e instanceof AxosError) return json({ error: e.message }, 400);
@@ -408,6 +458,13 @@ export function makeFetch(hub: Hub) {
       return json({ ok: true, version: VERSION, protocol: PROTOCOL });
     }
     if (path === "/api/join") return handleJoin(hub, req);
+    const setup = /^\/join\/(axosinv_[A-Za-z0-9_-]+)\/setup$/.exec(path);
+    if (setup && req.method === "GET") {
+      if (hub.inviteStatus(setup[1]!) !== "open") return new Response("echo 'This invite link is not open any more; ask for a new one.'; exit 1\n", { status: 410, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+      const inv = hub.inviteOf(setup[1]!);
+      return new Response(setupScript(hub, url.origin, setup[1]!, inv?.invited_by && inv.invited_by !== inv.human ? inv.invited_by : null),
+        { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
+    }
     const join = /^\/join\/(axosinv_[A-Za-z0-9_-]+)$/.exec(path);
     if (join) return handleJoinPage(hub, url, join[1]!);
     if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/unshown" || path === "/api/attach" || path === "/api/inbox") {

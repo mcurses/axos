@@ -9,13 +9,14 @@ import { ago } from "./render.ts";
 const USAGE = `axos — hub admin
 
   axos init <your name>                          first run: you, your page link and a join link for your first machine
-  axos invite [<project>] --human <name>         a one-time join link (24 h) for a machine of <name>; a new person
+  axos invite [<project>] --human <name>         a one-time join link (7 days) for a machine of <name>; a new person
                                                  joins <project> with it
   axos backup <file>                             a consistent copy of the database, safe while the hub runs
   axos human add <name> [--ntfy <topic>]         add a human; prints their UI key
   axos human key <name>                          new UI key
   axos human ntfy <name> <topic|->               set or clear the ntfy topic
   axos human devices <name> [--clear]            the devices the page registered for pushes; --clear forgets them all
+  axos human operator <name> [--off]             let <name> invite new people from their page (the first person is one)
   axos project add <owner>/<name> [--brief <file|->]
                                                  add a project (- reads the brief from stdin); prints its id
   axos project list                              every project with its id, people and links
@@ -79,6 +80,7 @@ async function main(argv: string[]): Promise<void> {
     if (!name) throw new AxosError("usage: axos init <your name>");
     if (hub.db.query("SELECT 1 FROM humans").get()) throw new AxosError("this hub is set up already; axos invite brings more machines and people");
     const { uiKey } = hub.addHuman(name);
+    hub.setOperator(name, true);
     const { code } = hub.createInvite(name, null);
     console.log(`Welcome, ${name}. Two links, each shown once:
 
@@ -88,7 +90,7 @@ async function main(argv: string[]): Promise<void> {
   Your first machine (open it in a browser for the steps, or run there):
     axos join ${joinLink(code)}
 
-The join link works once and expires in 24 hours; axos invite --human ${name} makes another.`);
+The join link works once and expires in 7 days; axos invite --human ${name} makes another. You invite other people from your page.`);
     return;
   }
   if (noun === "invite") {
@@ -163,6 +165,12 @@ The join link works once and expires in 24 hours; axos invite --human ${name} ma
       need(2);
       hub.setNtfyTopic(rest[0]!, rest[1] === "-" ? null : rest[1]!);
       out("ok");
+      return;
+    }
+    case "human operator": {
+      need(1);
+      hub.setOperator(rest[0]!, !rest.includes("--off"));
+      out(rest.includes("--off") ? `${rest[0]} no longer invites people from their page.` : `${rest[0]} may invite new people from their page.`);
       return;
     }
     case "human devices": {

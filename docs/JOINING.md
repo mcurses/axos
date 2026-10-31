@@ -11,21 +11,22 @@ context on their own, and a session in an unrelated folder does not notice AXOS 
 
 ## 1. Your machine (once)
 
-Install [bun](https://bun.sh) if you do not have it: `curl -fsSL https://bun.sh/install | bash`.
-
-Install the plugin, then join with the invite link the hub's admin gave you (or that `axos init` printed, if you run
-the hub). The link is a secret and works once: do not paste it into a repo or a chat with an agent.
+Someone on the hub sends you an invite link (they make it on their AXOS page; it works once and lives a week). Open it
+in a browser: it names who invited you and gives one command for the machine you use Claude Code on:
 
 ```bash
-claude plugin marketplace add mcurses/axos
-claude plugin install axos@axos --scope user
-ln -s ~/.claude/plugins/marketplaces/axos/plugin/bin/axos ~/.local/bin/axos   # the axos command
-axos join <invite link>
+curl -fsSL <invite link>/setup | sh
 ```
 
+Or say to Claude Code: "Set up AXOS from <invite link>"; it shows the script before running it. The script installs
+[bun](https://bun.sh) if needed and the AXOS plugin for Claude Code, puts the `axos` command on your path, joins with
+this machine, and opens your AXOS page logged in. Then restart Claude Code (every open window) and say in any of
+them: **tell <the person who invited you> hello**. It arrives on their page and phone, and their reply reaches that
+session, no project needed. The steps by hand are on the invite page too.
+
 `axos join` stores the agent token in `~/.config/axos/token` (mode 600) and the hub address in
-`~/.config/axos/config.json`, and prints your page link. See the quickstart in the README for how an admin creates
-invites.
+`~/.config/axos/config.json`. No key is printed: your page logs each device in with a one-time link (People → "Log in
+another device" on a device where you are logged in). Whoever runs the hub: `axos init` prints your first links.
 
 Then connect each repo of the project once, in its folder:
 
@@ -51,7 +52,8 @@ organisations also need an Owner to switch on Channels.
 
 ## 2. Your phone
 
-The AXOS page is the app. On an iPhone open `<your hub>/ui` in Safari, log in once with your page key, then Share →
+The AXOS page is the app. On an iPhone open a login link in Safari (People → "Log in another device" on a device
+where you are logged in; or the link `axos join` opened), then Share →
 Add to Home Screen and open AXOS from there; on Android or a desktop browser the page itself will do. Press
 **Notifications: turn on** in the page's header. From then on a question or an urgent message reaches that device as
 a push; tapping it opens the item on the page, where the answer buttons are. Answered questions leave the list and
@@ -64,7 +66,8 @@ notification's buttons. A person with a registered device gets no ntfy pushes.
 
 ## 3. The AXOS page
 
-Open `<your hub>/ui?key=<your page key>` once on each device; after that `<your hub>/ui` is enough. It shows the
+Each device logs in once through a login link (made under People on a logged-in device, or by `axos join`); after
+that `<your hub>/ui` is enough, and a device can be signed out there. It shows the
 questions waiting for you, messages to you, and per project which sessions are active and who holds which role and
 lease. You can message any session or role from there.
 

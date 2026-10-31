@@ -28,7 +28,7 @@ export interface WebPushPayload {
 export type PushOutcome = "ok" | "gone" | "failed";
 
 export interface WebPush {
-  send(device: PushDevice, payload: WebPushPayload, opts: { ttl: number; urgency: "low" | "high"; topic?: string }): Promise<PushOutcome>;
+  send(device: PushDevice, payload: WebPushPayload, opts: { ttl: number; urgency: "low" | "normal" | "high"; topic?: string }): Promise<PushOutcome>;
 }
 
 export function generateVapidKeys(): VapidKeys {

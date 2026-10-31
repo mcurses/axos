@@ -62,7 +62,7 @@ test("tools are listed and the server explains itself", async () => {
   const c = await connect(tokens.dev1!);
   const names = (await c.listTools()).tools.map((t) => t.name).sort();
   expect(names).toEqual(["ack", "ask_human", "asks", "claim_role", "create_project", "define_role", "inbox", "join", "lease", "leases", "presence", "projects",
-    "release_lease", "release_role", "send", "set_brief", "subscribe", "subscriptions", "thread", "unsubscribe", "wait"]);
+    "release_lease", "release_role", "send", "set_brief", "subscribe", "subscriptions", "thread", "unsubscribe", "wait", "withdraw_ask"]);
   expect(c.getInstructions()).toContain("axos skill");
   await c.close();
 });
@@ -719,7 +719,7 @@ test("an invite link: a browser gets the steps, axos join gets the token once, t
     { error?: string; token?: string; agent?: string; page?: string; projects?: string[] };
   const r = await join();
   expect(r).toMatchObject({ agent: "lena/lena-laptop", projects: ["alice/shop"] });
-  expect(r.page).toContain("/ui?key=axosui_");
+  expect(r.page).toContain("/ui/login/axoslogin_");
   const c = await connect(r.token!);
   expect((await call(c, "projects")).text).toContain("alice/shop");
   await c.close();
@@ -1102,7 +1102,7 @@ test("the landing route needs a token and a project the agent is in", async () =
     method: "POST", body: JSON.stringify(body), headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   expect((await post({})).status).toBe(401);
-  const other = hub.addProject("alice/secret");
+  const other = hub.addProject("bob/secret"); // another person's project: the owner is in their own now
   const r = await post({ project: other, repo: "x", branch: "main", head: "a".repeat(40) }, tokens.dev1);
   expect(r.status).toBe(400);
   expect(((await r.json()) as { error: string }).error).toBe(`you are not a member of project '${other}'`);
@@ -1272,4 +1272,77 @@ test("the page registers this device for pushes; the manifest and the service wo
     if (before === undefined) delete process.env.AXOS_WEB_DIST; else process.env.AXOS_WEB_DIST = before;
     rmSync(dist, { recursive: true, force: true });
   }
+});
+
+test("the second person's path: invite from the page, the setup script, the one-time login, hello from an unlinked folder, the reply back", async () => {
+  const login = await fetch(`${base}/ui?key=${uiKey}`, { redirect: "manual" });
+  const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
+  const post = (path: string, body: unknown) =>
+    fetch(`${base}/ui/api/${path}`, { method: "POST", body: JSON.stringify(body), headers: { cookie, "Content-Type": "application/json" } });
+  // Not the operator yet: the page refuses; then alice is.
+  expect((await post("invite", { name: "ben" })).status).toBe(400);
+  hub.setOperator("alice", true);
+  const inv = await (await post("invite", { name: "Ben" })).json() as { id: number; link: string };
+  expect(inv.link).toMatch(/\/join\/axosinv_/);
+  // The invite page names the inviter and the one command; the script is served and names them too.
+  const page = await (await fetch(inv.link)).text();
+  expect(page).toContain("<b>alice</b> invited you");
+  expect(page).toContain("You will be <b>ben</b>");
+  expect(page).not.toContain("curl -fsSL"); // the one-line setup is offered on https hubs only; this test hub is http
+  expect(page).toContain(`Set up AXOS from ${inv.link}`);
+  expect(page).toContain("tell alice hello");
+  const script = await fetch(`${inv.link}/setup`);
+  expect(script.headers.get("content-type")).toContain("text/plain");
+  const sh = await script.text();
+  expect(sh).toContain("#!/bin/sh");
+  expect(sh).toContain(`LINK="${inv.link}"`);
+  expect(sh).toContain('"$AXOS" join "$LINK"');
+  expect(sh).toContain("tell alice hello");
+  // The script parses as POSIX sh.
+  const tmp = join(tmpdir(), `axos-setup-${Date.now()}.sh`);
+  writeFileSync(tmp, sh);
+  expect(Bun.spawnSync(["sh", "-n", tmp]).exitCode).toBe(0);
+  rmSync(tmp, { force: true });
+  // Redeeming: a token for the machine, a one-time login link for the browser, the pair project.
+  const code = inv.link.split("/join/")[1]!;
+  const r = await (await fetch(`${base}/api/join`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, machine: "bens-laptop" }) })).json() as
+    { token: string; page: string; invited_by: string; projects: string[] };
+  expect(r.invited_by).toBe("alice");
+  expect(r.projects).toEqual(["alice/ben"]);
+  expect((await fetch(`${inv.link}/setup`)).status).toBe(410);
+  // GET is a confirm page (a chat's link preview must not use the link up); the tap POSTs; once.
+  const preview = await fetch(r.page);
+  expect(preview.status).toBe(200);
+  expect(await preview.text()).toContain("Log in as <b>ben</b>");
+  const first = await fetch(r.page, { method: "POST", redirect: "manual" });
+  expect(first.status).toBe(303);
+  const benCookie = first.headers.get("set-cookie")!.split(";")[0]!;
+  expect((await fetch(r.page, { method: "POST", redirect: "manual" })).status).toBe(410);
+  expect((await fetch(r.page)).status).toBe(410);
+  const benState = await (await fetch(`${base}/ui/api/state`, { headers: { cookie: benCookie } })).json() as { human: string; people: { name: string }[]; me: { logins: { label: string }[] } };
+  expect(benState.human).toBe("ben");
+  expect(benState.people.map((p) => p.name)).toEqual(["alice"]);
+  expect(benState.me.logins).toHaveLength(1);
+  // A session of ben's in a folder that belongs to no project says hello to alice; it goes through the pair.
+  const ben = await connect(r.token, { "x-axos-session": "ben-hello", "x-axos-name": "hello" });
+  const hello = await call(ben, "send", { to: "human:alice", summary: "hello from ben" });
+  expect(hello.text).toContain("Sent through the project you share with alice");
+  expect(hello.isError).toBe(false);
+  expect((await call(ben, "send", { to: "human:nobody", summary: "x" })).text).toContain("share no project");
+  expect((await call(ben, "send", { to: "project", summary: "x" })).isError).toBe(true);
+  const id = hub.inbox("human:alice").find((m) => m.summary === "hello from ben")!.id;
+  // Alice replies on her page; the reply reaches ben's session's own mailbox.
+  expect((await post("send", { project: "alice/ben", to: "", re: id, summary: "hello back, ben" })).status).toBe(200);
+  expect((await call(ben, "inbox", {})).text).toContain("hello back, ben");
+  await ben.close();
+  // Alice's page lists the invite as joined; a second device link for alice logs in once.
+  const aliceState = await (await fetch(`${base}/ui/api/state`, { headers: { cookie } })).json() as { invites: { name: string; used_at: number | null }[]; people: { name: string; pair: string | null }[] };
+  expect(aliceState.invites[0]).toMatchObject({ name: "ben" });
+  expect(aliceState.invites[0]!.used_at).not.toBeNull();
+  expect(aliceState.people.find((p) => p.name === "ben")!.pair).not.toBeNull();
+  const dl = await (await post("login-link", {})).json() as { link: string };
+  expect((await fetch(dl.link, { method: "POST", redirect: "manual", headers: { origin: "https://evil.example" } })).status).toBe(403);
+  expect((await fetch(dl.link, { method: "POST", redirect: "manual" })).status).toBe(303);
+  // Inviting a person who is here already is refused: sharing is the way.
+  expect(await (await post("invite", { name: "ben" })).json()).toMatchObject({ error: expect.stringContaining("here already") });
 });

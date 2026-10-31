@@ -132,12 +132,12 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }, tool(() => {
     const mine = hub.projectsOf(agent.id);
     const links = (p: string) => hub.linkedProjects(p);
-    return `${mine.length ? mine.map((p) => `- ${p}${p === conn.project ? " (this session)" : ""}${links(p).length ? `, linked with ${links(p).join(", ")}` : ""}`).join("\n") : "No projects yet; create_project opens one."}` +
+    return `${mine.length ? mine.map((p) => `- ${p}${p === conn.project ? " (this session)" : ""}${hub.isPair(p) ? ` (direct messages with ${hub.projectHumans(p).filter((h) => h !== agent.human).join(", ")}; no folder)` : ""}${links(p).length ? `, linked with ${links(p).join(", ")}` : ""}`).join("\n") : "No projects yet; create_project opens one."}` +
       (conn.project ? "" : "\nThis session is not tied to a project: its folder is not linked (axos link) and has no trusted .axos.json. See the axos skill, 'connect'.");
   }));
 
   server.registerTool("create_project", {
-    description: "Open a new AXOS project for your human (e.g. for the repo you are in). Other humans are added by a human on the AXOS page.",
+    description: "Open a new AXOS project for your human (e.g. for the repo you are in). Another person joins it when the hub's admin adds them (axos project human); sharing from the page is coming.",
     inputSchema: strict({
       name: z.string().describe("lowercase, e.g. the repo name; the project is called '<your human>/<name>'"),
       brief: z.string().optional().describe("What the project is and where its rules live, in two or three sentences"),
@@ -186,13 +186,18 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const across = a.re !== undefined && a.project && conn.project && hub.projectId(a.project, hub.linkedProjects(conn.project));
     const body = a.body ?? "";
     const summary = a.summary ?? (body.trim().split("\n")[0]!.trim().length <= 300 ? body.trim().split("\n")[0]!.trim() : "");
-    const r = hub.send({ ...actor, as }, {
-      ...a, type: a.type ?? "note", summary, project: across ? conn.project! : project(a.project),
-      to: a.to === undefined ? undefined : Array.isArray(a.to) ? a.to : [a.to],
-    });
+    const to = a.to === undefined ? undefined : Array.isArray(a.to) ? a.to : [a.to];
+    // From a folder that belongs to no project, a person can still be reached: through the project the two share
+    // (the pair project an invite made, else any). Nothing else works from such a folder.
+    const person = !a.project && !conn.project && !as && to?.length && to.every((x) => x.startsWith("human:")) && new Set(to).size === 1 ? to[0]!.slice(6) : null;
+    const viaPerson = person ? hub.projectWithHuman(agent.id, person) : null;
+    if (person && !viaPerson) throw new AxosError(`you share no project with ${person}, so there is no way to reach them from here`);
+    const sentIn = across ? conn.project! : viaPerson ?? project(a.project);
+    if (viaPerson && conn.session) hub.requireMember(agent.id, viaPerson);
+    const r = hub.send({ ...actor, as }, { ...a, type: a.type ?? "note", summary, project: sentIn, to, to_person: !!viaPerson });
     if (r.duplicate) return `Already sent as message ${r.id}; not sent again.`;
     const parts = [`Sent message ${r.id} (${body ? `summary and a ${body.length}-character body` : "summary only, no body"}).`];
-    const sentIn = across ? conn.project! : project(a.project);
+    if (viaPerson) parts.push(`Sent through the project you share with ${person}; their reply reaches this session's own mailbox (check it with inbox).`);
     if (r.delivered_to.length) parts.push(`Delivered to ${r.delivered_to.map((d) => peer(d, sentIn)).join(", ")}.`);
     const roles = r.waiting_for_role.filter((w) => w.startsWith("role:"));
     if (roles.length) parts.push(`Held for ${roles.join(", ")} until someone takes the role.`);
@@ -436,10 +441,19 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
         a.reminded_at ? `reminded ${when(a.reminded_at)}` : a.remind_at && a.answer === null ? `reminder at ${when(a.remind_at)}` : "",
       ].filter(Boolean);
       const state = a.answer !== null
-        ? a.answered_by?.startsWith("default") ? `the default applied ${when(a.answered_at!)}: ${a.answer}` : `answered ${when(a.answered_at!)}: ${a.answer.split("\n")[0]}`
+        ? a.answered_by?.startsWith("default") ? `the default applied ${when(a.answered_at!)}: ${a.answer}`
+          : a.answered_by?.startsWith("withdrawn") ? `withdrawn ${when(a.answered_at!)}: ${a.answer}` : `answered ${when(a.answered_at!)}: ${a.answer.split("\n")[0]}`
         : a.stale_at ? "open, stale (no answer for days)" : a.deadline ? `open, default "${a.default_answer}" at ${when(a.deadline)}` : "open";
       return `- ask ${a.id} to ${a.human}: ${a.question.split("\n")[0]!.slice(0, 120)}\n  ${state}; ${steps.join(", ")}`;
     }).join("\n");
+  }));
+
+  server.registerTool("withdraw_ask", {
+    description: "Settle your own open question without an answer because it was decided elsewhere (in a chat, a file, by events): it leaves the human's page and phone, the reminder stops, and asks shows it as withdrawn with your reason. Only the asker (its session, agent or role) can.",
+    inputSchema: strict({ ask_id: z.number().int(), reason: z.string().describe("One line: where it was settled, e.g. 'answered in chat at 10:09'") }),
+  }, tool(({ ask_id, reason }) => {
+    hub.withdrawAsk(agent.id, ask_id, reason, conn.session);
+    return `Ask ${ask_id} withdrawn: ${reason}. It is off the human's page and phone.`;
   }));
 
   server.registerTool("presence", {

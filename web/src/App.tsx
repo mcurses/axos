@@ -4,6 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AskCard, InboxItem, SentItem } from "@/features/inbox";
 import { Composer } from "@/features/composer";
 import { Notifications } from "@/features/notifications";
+import { People } from "@/features/people";
 import { ProjectCard } from "@/features/projects";
 import { loadState, NotLoggedIn, type State } from "@/lib/api";
 import { syncPush } from "@/lib/push";
@@ -53,6 +54,7 @@ export default function App() {
           <TabsTrigger value="inbox">Inbox{unread > 0 && <Badge className="ml-1 h-5 px-1.5">{unread}</Badge>}</TabsTrigger>
           <TabsTrigger value="map">Map</TabsTrigger>
           <TabsTrigger value="projects">Projects</TabsTrigger>
+          <TabsTrigger value="people">People</TabsTrigger>
           <TabsTrigger value="send">Send</TabsTrigger>
         </TabsList>
         <TabsContent value="inbox" className="flex flex-col gap-6 pt-2">
@@ -77,7 +79,11 @@ export default function App() {
           <Suspense fallback={<p className="text-muted-foreground text-sm">Loading the map…</p>}><LinkMap state={state} /></Suspense>
         </TabsContent>
         <TabsContent value="projects" className="flex flex-col gap-4 pt-2">
-          {state.projects.map((p) => <ProjectCard key={p.id} p={p} now={state.now} me={state.human} />)}
+          {state.projects.filter((p) => !p.pair).map((p) => <ProjectCard key={p.id} p={p} now={state.now} me={state.human} />)}
+          {!state.projects.some((p) => !p.pair) && <p className="text-muted-foreground text-sm">No projects yet. In a repo, tell Claude Code "connect this folder to AXOS".</p>}
+        </TabsContent>
+        <TabsContent value="people" className="pt-2">
+          <People state={state} onChange={refresh} />
         </TabsContent>
         <TabsContent value="send" className="pt-2">
           <Composer state={state} onSent={refresh} />
@@ -94,7 +100,7 @@ function Login() {
   return (
     <main className="mx-auto max-w-xl p-6">
       <h1 className="mb-2 font-semibold text-xl">AXOS</h1>
-      <p className="mb-4 text-muted-foreground">Open the link with your key once (<code>/ui?key=…</code>, from <code>axos human key</code>), or paste the key here. It is remembered after that.</p>
+      <p className="mb-4 text-muted-foreground">Open a login link here: on a device where you are logged in, People → "Log in another device" makes one. Or paste your page key, if you have one.</p>
       <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (key.trim()) location.assign(`/ui?key=${encodeURIComponent(key.trim())}`); }}>
         <input className="flex-1 rounded-md border bg-background px-3 py-2 text-sm" type="password" autoComplete="off" placeholder="your key" value={key} onChange={(e) => setKey(e.target.value)} />
         <button className="rounded-md border px-3 py-2 text-sm" type="submit">Log in</button>

@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.20.0`, protocol `1`.
+Current numbers: hub release `0.21.0`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -159,7 +159,8 @@ Common arguments:
 | `release_lease` | `resource*`, `project`, `as` | Releases the lease or leaves the queue. |
 | `leases` | `project` | Live leases and waiters. |
 | `ask_human` | `human*`, `question*`, `options`, `default_answer`, `deadline_minutes`, `remind_hours` (0.25-168), `images`, `project`, `as` | `Asked <human> (ask <id>)`. The answer arrives later as a message. |
-| `asks` | `project` | The caller's questions to humans (its session's and its roles'), open ones first: asked, pushed to the phone, seen on the page, reminded, stale, answered or defaulted. |
+| `asks` | `project` | The caller's questions to humans (its session's and its roles'), open ones first: asked, pushed to the phone, seen on the page, reminded, stale, answered, defaulted or withdrawn. |
+| `withdraw_ask` | `ask_id*`, `reason*` | The asker (its session, agent or a role it holds in that project) settles its own open question without an answer, because it was decided elsewhere: the question leaves the human's page and phone (the notification is replaced by "Settled elsewhere"), the reminder and deadline stop, `asks` shows "withdrawn: <reason>". An answered or withdrawn ask is refused. |
 | `presence` | `project` | Live sessions and session-less agents: online or idle, last seen, unread, roles. |
 | `subscribe` | `branch*` (a branch or any ref name, e.g. `refs/evidence/<id>`; `*` for any characters), `sha`, `remote`, `repo`, `note`, `hours` (0.1-720, default 24), `subject`, `replace`, `project`, `as` | `Subscription <id>: …, until <time>.` (and `Subscription <old> has ended.` with `replace`), or `Already landed: …` when the commit landed within the last 30 days (then nothing is opened). |
 | `unsubscribe` | `id*`, `project`, `as` | `Subscription <id> ended.` |
@@ -271,6 +272,7 @@ An address names who receives a message. Resolution happens at send time, in the
 |---|---|
 | `role:<role>` | The role's mailbox in the message's project. The role must exist; it may be vacant: the mail waits. |
 | `role:<project>/<role>` | The same in a linked project. `<project>` is a slug, `<owner>/<slug>` or an id. |
+| `human:<name>` | A person in the message's project: their page, and their phone when the message is high or an ask, or when the sender is another person or their agent (not for priority low, and at most ten such pushes per sender per ten minutes; the rest wait on the page). From a session whose folder belongs to no project, `send` with only this address and no `project` goes through the project the two people share (their pair first); that session then reads its own mailbox, so the reply reaches it. |
 | `session:<name>` | The one live session with that name. Looks in the message's project, then in linked projects. If several sessions of different people share a name, one of the sender's own is preferred; otherwise the error lists keys. A session renamed by a restart also answers to its last five names while no live session has that name now. |
 | `session:<key>` | A session by key, as `<agent id>#<8>` or `<human>/<agent name>#<8>`. A key also works for a session that is not live if it belongs to the project or a linked one. |
 | `human:<name>` | The human's mailbox (read on their page). Only humans in the message's own project, not linked ones. |
@@ -533,28 +535,46 @@ id.
 
 ## Invites
 
-An admin makes a one-time link (`axos invite`, or `axos init` for the first one). It is valid 24 hours and works once.
-The code looks like `axosinv_…`; only its hash is stored.
+A one-time link brings a machine onto the hub, and a new person with it. The hub's operator makes one on their page
+("Invite someone", `POST /ui/api/invite {"name"}`), the admin with `axos invite` (or `axos init` for the first one);
+anyone makes one for another machine of their own on the page. It is valid 7 days and works once; the maker can
+withdraw it (`POST /ui/api/invite/withdraw {"id"}`); at most five open ones per person. A page invite for a person
+who is here already is refused (sharing a project is the way to them). One made for a new name is refused at
+redemption if someone has the name by then. The code looks like `axosinv_…`; only its hash is stored.
 
-`GET /join/<code>`: an HTML page with setup steps for a person. `200` if the code is open, `410` if it is unknown,
-used or expired.
+An invite made on someone's page names no project: redeeming it creates a project of exactly the two people (the
+"pair", named `<inviter>/<invitee>` or `<inviter>/with-<invitee>`), through which their sessions reach each other
+from any folder (see Addresses, `human:<name>`).
+
+`GET /join/<code>`: an HTML page for the person: who invited them, the name they will have, one setup command
+(`curl -fsSL <link>/setup | sh`), the same as a sentence for Claude Code, and the steps by hand. `200` if the code
+is open, `410` if it is unknown, used or expired.
+
+`GET /join/<code>/setup`: the setup as a shell script (`text/plain`): installs bun if missing and the Claude Code
+plugin, links the `axos` command, runs `axos join <link>`, which opens the page. `410` once the code is not open.
 
 `POST /api/join`, body `{"code": "axosinv_…", "machine": "<name of this machine>"}`:
 
 ```json
 { "protocol": 1, "hub": "https://axos.example.com", "human": "alice", "agent": "alice/py",
-  "token": "axos_…", "page": null, "projects": ["alice/demo"] }
+  "token": "axos_…", "page": "https://axos.example.com/ui/login/axoslogin_…", "invited_by": "max", "projects": ["max/alice"] }
 ```
 
 - `agent` is the new agent's label. Its name comes from `machine`: lowercased, other characters turned into `-`, at
   most 40 characters; a taken name gets `-2`, `-3`, and so on.
 - `token` is shown once. Write it to a file only its owner can read; do not print it or send it through chat.
-- `page` is the person's login URL, only when this invite created the person; else `null`.
+- `page` is a one-time login link for this machine's browser (ten minutes, once). `GET` shows a confirm page and
+  uses nothing up (a chat's link preview fetches it); the tap is a same-origin `POST` that sets the page's cookie with
+  a key of that device's own. A person made by an invite has no page key at all. Any logged-in device makes another
+  such link (`POST /ui/api/login-link`); a device is signed out with `POST /ui/api/login/remove {"id"}` (its pushes
+  end with it; id 0 ends the page key of an older setup); `POST /ui/api/logout-all` signs every device out.
+- `invited_by` is who made the invite on their page, or `null` for an admin's invite.
 - `hub` is the configured public URL, or the origin the request came to.
 - `projects` are names of the agent's projects.
 - Errors: `400 {"error": "…"}`: not JSON or missing fields, or a code that is unknown, used or expired. Not `POST`: `405`.
 
-A new invite for a person who already exists adds them to the named project at creation time.
+A new invite for a person who already exists adds them to the named project at creation time; one made on a page
+pairs the two people when it is redeemed, if they were not paired already.
 
 ## Answer links
 
@@ -581,7 +601,7 @@ HMAC-SHA256 of `ask:<id>` with the hub's link secret.
 
 ## Health
 
-`GET /healthz`, no auth: `{"ok":true,"version":"0.20.0","protocol":1}`. The hub reads its database for this; if that
+`GET /healthz`, no auth: `{"ok":true,"version":"0.21.0","protocol":1}`. The hub reads its database for this; if that
 fails, status 503 and `ok:false` with the same fields.
 
 ## Versioning

@@ -42,7 +42,9 @@ README), as itself or with `--as <role>` for a role you hold.
   get something done, so when it cannot wait, also tell someone who is there, or ask your human.
 - `session:<name>`: one particular session.
 - `project`: every live session in the project. Use rarely: a freeze, a release, a broken main.
-- `human:<name>`: a person; it shows on their AXOS page. Use `ask_human` for questions.
+- `human:<name>`: a person; it shows on their AXOS page, and reaches their phone when you are another person's
+  session. From a folder that belongs to no project you can still send to a person you share a project with ("tell
+  max hello"): leave `project` out; the reply reaches this session. Use `ask_human` for questions.
 - `next`: held for the next session of your human that starts in this project. Before a restart or at the end of a
   long piece of work, leave where things stand here instead of in a local memory file.
 
@@ -94,6 +96,8 @@ message. With a deadline, the default applies if nobody answers. When a picture 
 layout, a chart), pass `images` with up to 4 paths of PNG, JPEG, GIF or WebP files inside your repo; they show with the
 question on their page. `remind_hours` pushes it once more if still open; `asks` shows how far each of your questions
 got (pushed, seen, answered). A question without a deadline that stays open 3 days gets you a note.
+If the question gets settled elsewhere before they answer (they told you in chat, the file changed, events decided it),
+`withdraw_ask(ask_id, reason)` at once: their page and phone must hold no leftovers.
 
 ## Roles
 

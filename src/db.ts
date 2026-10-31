@@ -14,7 +14,24 @@ CREATE TABLE IF NOT EXISTS humans (
   name          TEXT PRIMARY KEY,
   ntfy_topic    TEXT,
   ui_key_hash   TEXT UNIQUE,
-  created_at    INTEGER NOT NULL
+  created_at    INTEGER NOT NULL,
+  operator      INTEGER NOT NULL DEFAULT 0     -- may invite new people onto the hub from the page
+);
+-- A device's login to the page, made from a one-time login link; the key lives in that device's cookie only.
+CREATE TABLE IF NOT EXISTS logins (
+  id            INTEGER PRIMARY KEY,
+  human         TEXT NOT NULL REFERENCES humans(name),
+  key_hash      TEXT NOT NULL UNIQUE,
+  label         TEXT NOT NULL DEFAULT '',
+  created_at    INTEGER NOT NULL,
+  last_seen     INTEGER
+);
+CREATE TABLE IF NOT EXISTS login_links (     -- one-time, short-lived: opening one logs that device in
+  token_hash    TEXT PRIMARY KEY,
+  human         TEXT NOT NULL REFERENCES humans(name),
+  created_at    INTEGER NOT NULL,
+  expires_at    INTEGER NOT NULL,
+  used_at       INTEGER
 );
 -- Projects and agents are known by ids that never change; names are labels. A project's name is '<owner>/<slug>',
 -- unique per owner, so two people can each have an 'axos'. Stored addresses ('role:<project id>/<role>',
@@ -25,6 +42,7 @@ CREATE TABLE IF NOT EXISTS projects (
   slug          TEXT NOT NULL,
   brief         TEXT NOT NULL DEFAULT '',
   created_at    INTEGER NOT NULL,
+  pair          INTEGER NOT NULL DEFAULT 0,    -- the project of exactly two people, made when one invited the other
   UNIQUE (owner, slug)
 );
 CREATE TABLE IF NOT EXISTS project_aliases (  -- names a project had before a rename; they keep resolving
@@ -179,7 +197,9 @@ CREATE TABLE IF NOT EXISTS invites (     -- one-time links that set up a machine
   created_at    INTEGER NOT NULL,
   expires_at    INTEGER NOT NULL,
   used_at       INTEGER,
-  agent_id      TEXT                           -- the agent the redemption created
+  agent_id      TEXT,                          -- the agent the redemption created
+  invited_by    TEXT,                          -- the person who made it on their page; for another person, redemption pairs the two
+  new_human     INTEGER                        -- made for a name nobody had: refused if someone has it by redemption
 );
 -- "Tell me when it lands": a mailbox waiting for a commit to reach a branch, or for every landing there. The hub never
 -- sees a repository; the script that lands reports what it pushed, and the hub compares strings.
@@ -225,7 +245,8 @@ CREATE TABLE IF NOT EXISTS push_devices (
   auth          TEXT NOT NULL,
   label         TEXT NOT NULL DEFAULT '',
   created_at    INTEGER NOT NULL,
-  last_ok       INTEGER
+  last_ok       INTEGER,
+  login_id      INTEGER                        -- the device's login (logins.id); signing it out ends its pushes too
 );
 CREATE TABLE IF NOT EXISTS kv (
   k             TEXT PRIMARY KEY,
@@ -288,6 +309,16 @@ function migrate(db: Database): void {
     if (asks && !asks.sql.includes(col)) db.exec(`ALTER TABLE asks ADD COLUMN ${col} INTEGER`);
   }
   migrateToIds(db);
+  // After the rebuild above (it copies tables by position): columns added since, on databases that kept their shape.
+  const column = (table: string, col: string, ddl: string) => {
+    const t = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string } | null;
+    if (t && !t.sql.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+  };
+  column("humans", "operator", "INTEGER NOT NULL DEFAULT 0");
+  column("projects", "pair", "INTEGER NOT NULL DEFAULT 0");
+  column("invites", "invited_by", "TEXT");
+  column("invites", "new_human", "INTEGER");
+  column("push_devices", "login_id", "INTEGER");
 }
 
 // Databases from before ids (2026-10-26) keyed projects and agents by their names, and stored addresses carried the
@@ -336,7 +367,7 @@ function migrateToIds(db: Database): void {
   };
 
   const tables: Record<string, (r: Record<string, unknown>) => Record<string, unknown>> = {
-    projects: (r) => ({ id: P(r.name), owner: ownerOf(r.name as string), slug: r.name, brief: r.brief, created_at: r.created_at }),
+    projects: (r) => ({ id: P(r.name), owner: ownerOf(r.name as string), slug: r.name, brief: r.brief, created_at: r.created_at, pair: 0 }),
     agents: (r) => ({ ...r, id: holder(r.id as string) }),
     memberships: (r) => ({ agent_id: holder(r.agent_id as string), project: P(r.project) }),
     human_projects: (r) => ({ ...r, project: P(r.project) }),

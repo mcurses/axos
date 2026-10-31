@@ -183,6 +183,10 @@ const MAX_UNCLAIMED = 8; // uploads per agent not yet on a question
 const IMAGES_KEPT_MS = 30 * 86_400_000;
 const UNCLAIMED_KEPT_MS = 3_600_000;
 const ANSWERED_ON_PHONE_MS = 86_400_000;
+const INVITE_TTL_S = 7 * 86_400; // an invite link lives a week (the operator's choice, 2026-10-31), or until withdrawn
+const MAX_OPEN_INVITES = 5; // per person, from the page
+const OTHER_PUSH_CAP = 10; // pushes to a phone from one other person's side per ten minutes; the rest wait on the page
+const OTHER_PUSH_WINDOW_MS = 600_000;
 const SCRIPT_KEPT_MS = 30 * 86_400_000;
 const SCRIPT_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 const ASK_STALE_MS = 3 * 86_400_000; // an open question without a deadline
@@ -297,13 +301,94 @@ export class Hub {
 
   // ---------------------------------------------------------------- admin
 
-  addHuman(name: string, ntfyTopic?: string): { uiKey: string } {
+  // withKey: a page key, for the admin's own commands; a person made by an invite gets none (their devices log in
+  // through links), so no unused secret exists for them.
+  addHuman(name: string, ntfyTopic?: string, withKey = true): { uiKey: string } {
     checkName("human", name);
-    const uiKey = newSecret("axosui");
+    const uiKey = withKey ? newSecret("axosui") : "";
     this.db.query("INSERT INTO humans (name, ntfy_topic, ui_key_hash, created_at) VALUES (?, ?, ?, ?)")
-      .run(name, ntfyTopic ?? null, hashSecret(uiKey), this.now());
+      .run(name, ntfyTopic ?? null, withKey ? hashSecret(uiKey) : null, this.now());
     this.event(`human:${name}`, "human.added", null, {});
     return { uiKey };
+  }
+
+  // The operator may invite new people onto the hub from their page (the hub's human, 2026-10-31: "only me").
+  setOperator(name: string, on: boolean): void {
+    const r = this.db.query("UPDATE humans SET operator = ? WHERE name = ?").run(on ? 1 : 0, name);
+    if (r.changes === 0) throw new AxosError(`no human '${name}'`);
+    this.event("admin", on ? "human.operator" : "human.operator_removed", null, { human: name });
+  }
+
+  isOperator(name: string): boolean {
+    return !!(this.db.query("SELECT operator FROM humans WHERE name = ?").get(name) as { operator: number } | null)?.operator;
+  }
+
+  // ---------------------------------------------------------------- logins (per device, from a one-time link)
+
+  // A link that logs one device in, made on a device that is logged in already (or by the hub on redemption); ten
+  // minutes, once. The page key itself is never shown again.
+  createLoginLink(human: string, ttlS = 600): { token: string; expires_at: number } {
+    if (!this.db.query("SELECT 1 FROM humans WHERE name = ?").get(human)) throw new AxosError(`no human '${human}'`);
+    const token = newSecret("axoslogin");
+    const t = this.now();
+    this.db.query("INSERT INTO login_links (token_hash, human, created_at, expires_at) VALUES (?, ?, ?, ?)").run(hashSecret(token), human, t, t + ttlS * 1000);
+    return { token, expires_at: t + ttlS * 1000 };
+  }
+
+  // Whether a login link is good, without using it (the confirm page a browser opens; a link preview must not use it up).
+  loginLinkStatus(token: string): { status: "open" | "used" | "expired" | "unknown"; human?: string } {
+    const l = this.db.query("SELECT human, expires_at, used_at FROM login_links WHERE token_hash = ?").get(hashSecret(token)) as { human: string; expires_at: number; used_at: number | null } | null;
+    if (!l) return { status: "unknown" };
+    if (l.used_at) return { status: "used", human: l.human };
+    return { status: l.expires_at < this.now() ? "expired" : "open", human: l.human };
+  }
+
+  // Opening the link: the device gets a key of its own (into its cookie), the link dies.
+  redeemLoginLink(token: string, label = ""): { human: string; key: string } {
+    const l = this.db.query("SELECT * FROM login_links WHERE token_hash = ?").get(hashSecret(token)) as { human: string; expires_at: number; used_at: number | null } | null;
+    if (!l) throw new AxosError("this login link is not valid");
+    if (l.used_at) throw new AxosError("this login link was already used; make a new one on a device where you are logged in");
+    if (l.expires_at < this.now()) throw new AxosError("this login link has expired; make a new one on a device where you are logged in");
+    const key = newSecret("axosui");
+    const t = this.now();
+    this.db.transaction(() => {
+      this.db.query("UPDATE login_links SET used_at = ? WHERE token_hash = ?").run(t, hashSecret(token));
+      this.db.query("INSERT INTO logins (human, key_hash, label, created_at, last_seen) VALUES (?, ?, ?, ?, ?)").run(l.human, hashSecret(key), oneLine(label, 120), t, t);
+    })();
+    this.event(`human:${l.human}`, "login.added", null, { label });
+    return { human: l.human, key };
+  }
+
+  // Every way into this person's page: id 0 is the page key (from before per-device logins), which every device that
+  // used it shares; the others are devices.
+  logins(human: string): { id: number; label: string; created_at: number; last_seen: number | null }[] {
+    const h = this.db.query("SELECT ui_key_hash, created_at FROM humans WHERE name = ?").get(human) as { ui_key_hash: string | null; created_at: number } | null;
+    const rows = this.db.query("SELECT id, label, created_at, last_seen FROM logins WHERE human = ? ORDER BY created_at").all(human) as
+      { id: number; label: string; created_at: number; last_seen: number | null }[];
+    return h?.ui_key_hash ? [{ id: 0, label: "the page key (every device that logged in with it)", created_at: h.created_at, last_seen: null }, ...rows] : rows;
+  }
+
+  // Signs one device out ("lost my phone"): its cookie stops working at its next request, and its pushes end with it.
+  // Id 0 ends the page key, so every device that used it must log in again through a link.
+  removeLogin(human: string, id: number): void {
+    if (id === 0) {
+      const r = this.db.query("UPDATE humans SET ui_key_hash = NULL WHERE name = ? AND ui_key_hash IS NOT NULL").run(human);
+      if (!r.changes) throw new AxosError("no page key is in use");
+      this.db.query("DELETE FROM push_devices WHERE human = ? AND login_id IS NULL").run(human);
+    } else {
+      const r = this.db.query("DELETE FROM logins WHERE id = ? AND human = ?").run(id, human);
+      if (!r.changes) throw new AxosError(`no login ${id}`);
+      this.db.query("DELETE FROM push_devices WHERE login_id = ?").run(id);
+    }
+    this.event(`human:${human}`, "login.removed", null, { id });
+  }
+
+  // Every device out, pushes off, the page key dead: the device this is done from logs in again through a link.
+  signOutAll(human: string): void {
+    this.db.query("DELETE FROM logins WHERE human = ?").run(human);
+    this.db.query("UPDATE humans SET ui_key_hash = NULL WHERE name = ?").run(human);
+    this.db.query("DELETE FROM push_devices WHERE human = ?").run(human);
+    this.event(`human:${human}`, "login.removed_all", null, {});
   }
 
   rotateHumanKey(name: string): { uiKey: string } {
@@ -318,20 +403,78 @@ export class Hub {
 
   // A one-time code that sets up one machine. The person it names is created when it is redeemed if they are new (and
   // put into the project); an existing person is put into the project now. The code is shown once and kept as a hash.
-  createInvite(human: string, project: string | null, ttlS = 86_400): { code: string; expires_at: number } {
+  // by: the person making it on their page. A new person needs no project then: redeeming pairs the two (a project of
+  // exactly them). Only the operator invites new people; anyone may invite another machine of their own. Seven days.
+  createInvite(human: string, project: string | null, ttlS = INVITE_TTL_S, by?: string): { code: string; expires_at: number; id: number } {
     checkName("human", human);
     const exists = !!this.db.query("SELECT 1 FROM humans WHERE name = ?").get(human);
     if (project && !this.db.query("SELECT 1 FROM projects WHERE id = ?").get(project)) throw new AxosError(`no project '${project}'`);
-    if (!exists && !project && this.db.query("SELECT 1 FROM humans").get()) {
-      throw new AxosError(`'${human}' is new here: say which project they join (axos invite <project> --human ${human})`);
+    if (by) {
+      if (project) throw new AxosError("an invite from the page names no project; share the project once they are here");
+      if (human !== by && !this.isOperator(by)) throw new AxosError("only the hub's operator invites new people; ask them");
+      if (human !== by && exists) throw new AxosError(`${human} is here already; share a project with them instead of inviting them`);
+      const open = (this.db.query("SELECT COUNT(*) AS n FROM invites WHERE invited_by = ? AND used_at IS NULL AND expires_at > ?").get(by, this.now()) as { n: number }).n;
+      if (open >= MAX_OPEN_INVITES) throw new AxosError(`you have ${open} open invites; withdraw one first`);
+    } else if (!exists && !project && this.db.query("SELECT 1 FROM humans").get()) {
+      throw new AxosError(`'${human}' is new here: say which project they join (axos invite <project> --human ${human}), or invite them from your page`);
     }
     if (exists && project) this.addHumanToProject(human, project);
     const code = newSecret("axosinv");
     const t = this.now();
-    this.db.query("INSERT INTO invites (code_hash, human, project, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
-      .run(hashSecret(code), human, project, t, t + ttlS * 1000);
-    this.event("admin", "invite.created", project, { human, new_human: !exists });
-    return { code, expires_at: t + ttlS * 1000 };
+    const r = this.db.query("INSERT INTO invites (code_hash, human, project, created_at, expires_at, invited_by, new_human) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(hashSecret(code), human, project, t, t + ttlS * 1000, by ?? null, exists ? 0 : 1);
+    this.event(by ? `human:${by}` : "admin", "invite.created", project, { human, new_human: !exists });
+    return { code, expires_at: t + ttlS * 1000, id: Number(r.lastInsertRowid) };
+  }
+
+  // The invites a person made on their page, newest first: pending, used (by whom) or expired.
+  invitesBy(human: string): { id: number; human: string; created_at: number; expires_at: number; used_at: number | null; withdrawn: boolean }[] {
+    return (this.db.query("SELECT id, human, created_at, expires_at, used_at FROM invites WHERE invited_by = ? ORDER BY id DESC LIMIT 50").all(human) as
+      { id: number; human: string; created_at: number; expires_at: number; used_at: number | null }[]).map((i) => ({ ...i, withdrawn: !i.used_at && i.expires_at < i.created_at }));
+  }
+
+  // Withdrawing sets the link to expired at once.
+  withdrawInvite(id: number, by: string): void {
+    const r = this.db.query("UPDATE invites SET expires_at = created_at - 1 WHERE id = ? AND invited_by = ? AND used_at IS NULL").run(id, by);
+    if (!r.changes) throw new AxosError(`no open invite ${id} of yours`);
+    this.event(`human:${by}`, "invite.withdrawn", null, { id });
+  }
+
+  // The project of exactly two people, where their sessions reach each other outside any repo. Found or made.
+  pairProject(a: string, b: string): string {
+    const have = this.db.query(`SELECT p.id FROM projects p WHERE p.pair = 1
+      AND EXISTS (SELECT 1 FROM human_projects WHERE project = p.id AND human = ?1) AND EXISTS (SELECT 1 FROM human_projects WHERE project = p.id AND human = ?2)`)
+      .get(a, b) as { id: string } | null;
+    if (have) return have.id;
+    let slug = b;
+    if (this.findProjects(`${a}/${slug}`).length) slug = `with-${b}`;
+    for (let n = 2; this.findProjects(`${a}/${slug}`).length; n++) slug = `with-${b}-${n}`;
+    const id = newId("prj");
+    this.db.query("INSERT INTO projects (id, owner, slug, brief, created_at, pair) VALUES (?, ?, ?, ?, ?, 1)")
+      .run(id, a, slug, `Direct messages between ${a} and ${b}: where their sessions reach each other outside any shared repo.`, this.now());
+    this.db.query("INSERT OR IGNORE INTO human_projects (human, project) VALUES (?, ?)").run(a, id);
+    this.db.query("INSERT OR IGNORE INTO human_projects (human, project) VALUES (?, ?)").run(b, id);
+    this.event("axos", "project.paired", id, { humans: [a, b] });
+    return id;
+  }
+
+  isPair(project: string): boolean {
+    return !!(this.db.query("SELECT pair FROM projects WHERE id = ?").get(project) as { pair: number } | null)?.pair;
+  }
+
+  // The project through which this agent's human and another person reach each other: their pair project first, else
+  // any they share. For a session whose folder belongs to no project, sending to a person goes through it.
+  projectWithHuman(agentId: string, human: string): string | null {
+    const mine = this.projectsOf(agentId);
+    if (!mine.length) return null;
+    const r = this.db.query(`SELECT p.id FROM projects p JOIN human_projects h ON h.project = p.id
+      WHERE h.human = ? AND p.id IN (${mine.map(() => "?").join(", ")}) ORDER BY p.pair DESC, p.owner, p.slug LIMIT 1`).get(human, ...mine) as { id: string } | null;
+    return r?.id ?? null;
+  }
+
+  // What an open code is for, without using it (the invite page says who invited whom).
+  inviteOf(code: string): { human: string; invited_by: string | null; expires_at: number } | null {
+    return this.db.query("SELECT human, invited_by, expires_at FROM invites WHERE code_hash = ?").get(hashSecret(code)) as { human: string; invited_by: string | null; expires_at: number } | null;
   }
 
   // Whether a code is good, without using it (for the page a browser opens).
@@ -343,23 +486,30 @@ export class Hub {
   }
 
   // Sets up the machine: its agent (named after the machine, made unique), its token, and the person if new.
-  redeemInvite(code: string, machine: string): { human: string; agent: string; token: string; uiKey?: string; projects: string[] } {
+  // Also: a new person's page key is made and never shown (a one-time login link stands in for it); an invite made on
+  // someone's page pairs the two people in a project of their own.
+  redeemInvite(code: string, machine: string): { human: string; agent: string; token: string; login: string; invited_by: string | null; projects: string[] } {
     const status = this.inviteStatus(code);
     if (status !== "open") throw new AxosError(status === "unknown" ? "this invite link is not valid" : `this invite link was already ${status === "used" ? "used" : "expired"}; ask for a new one`);
-    const inv = this.db.query("SELECT * FROM invites WHERE code_hash = ?").get(hashSecret(code)) as { id: number; human: string; project: string | null };
+    const inv = this.db.query("SELECT * FROM invites WHERE code_hash = ?").get(hashSecret(code)) as { id: number; human: string; project: string | null; invited_by: string | null; new_human: number | null };
+    if (inv.new_human && this.db.query("SELECT 1 FROM humans WHERE name = ?").get(inv.human)) {
+      throw new AxosError(`the name '${inv.human}' was taken since this invite was made; ask for a new one`);
+    }
     const base = machine.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 40) || "machine";
     return this.db.transaction(() => {
-      let uiKey: string | undefined;
       if (!this.db.query("SELECT 1 FROM humans WHERE name = ?").get(inv.human)) {
-        uiKey = this.addHuman(inv.human).uiKey;
+        this.addHuman(inv.human, undefined, false);
         if (inv.project) this.addHumanToProject(inv.human, inv.project);
+      }
+      if (inv.invited_by && inv.invited_by !== inv.human && this.db.query("SELECT 1 FROM humans WHERE name = ?").get(inv.invited_by)) {
+        this.pairProject(inv.invited_by, inv.human);
       }
       let name = base;
       for (let n = 2; this.agentId(`${inv.human}/${name}`); n++) name = `${base}-${n}`;
       const { id, token } = this.addAgent(inv.human, name, []);
       this.db.query("UPDATE invites SET used_at = ?, agent_id = ? WHERE id = ?").run(this.now(), id, inv.id);
-      this.event(`agent:${id}`, "invite.redeemed", inv.project, { human: inv.human });
-      return { human: inv.human, agent: id, token, uiKey, projects: this.projectsOf(id) };
+      this.event(`agent:${id}`, "invite.redeemed", inv.project, { human: inv.human, invited_by: inv.invited_by });
+      return { human: inv.human, agent: id, token, login: this.createLoginLink(inv.human).token, invited_by: inv.invited_by, projects: this.projectsOf(id) };
     })();
   }
 
@@ -377,13 +527,13 @@ export class Hub {
 
   // The page registers the device it runs on. Registering the same endpoint again refreshes it; a human has at most
   // ten devices, the oldest unused goes when an eleventh comes.
-  pushSubscribe(human: string, device: PushDevice, label = ""): { added: boolean } {
+  pushSubscribe(human: string, device: PushDevice, label = "", loginId: number | null = null): { added: boolean } {
     if (!this.webPush) throw new AxosError("this hub has no public URL, so it cannot push to devices");
     const t = this.now();
     const have = this.db.query("SELECT endpoint FROM push_devices WHERE endpoint = ?").get(device.endpoint) as { endpoint: string } | null;
-    this.db.query(`INSERT INTO push_devices (endpoint, human, p256dh, auth, label, created_at, last_ok)
-      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET human = excluded.human, p256dh = excluded.p256dh, auth = excluded.auth, label = excluded.label`)
-      .run(device.endpoint, human, device.p256dh, device.auth, oneLine(label, 120), t, t);
+    this.db.query(`INSERT INTO push_devices (endpoint, human, p256dh, auth, label, created_at, last_ok, login_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET human = excluded.human, p256dh = excluded.p256dh, auth = excluded.auth, label = excluded.label, login_id = excluded.login_id`)
+      .run(device.endpoint, human, device.p256dh, device.auth, oneLine(label, 120), t, t, loginId);
     for (const old of this.db.query(`SELECT endpoint FROM push_devices WHERE human = ? ORDER BY COALESCE(last_ok, created_at) DESC LIMIT -1 OFFSET 10`)
       .all(human) as { endpoint: string }[]) this.db.query("DELETE FROM push_devices WHERE endpoint = ?").run(old.endpoint);
     if (!have) this.event(`human:${human}`, "push.device_added", null, { label });
@@ -402,6 +552,22 @@ export class Hub {
   // Can a question reach this person away from the page: a registered device, or an ntfy topic.
   hasPhone(human: string): boolean {
     return (!!this.webPush && this.pushDevices(human).length > 0) || (!!this.ntfyTopic(human) && this.notifier !== nullNotifier);
+  }
+
+  // Another person's side may ring a phone only so often; what is over the cap waits on the page.
+  private otherPushes = new Map<string, number[]>();
+  private otherPushAllowed(from: string, to: string): boolean {
+    const key = `${from}>${to}`;
+    const t = this.now();
+    const recent = (this.otherPushes.get(key) ?? []).filter((x) => t - x < OTHER_PUSH_WINDOW_MS);
+    if (recent.length >= OTHER_PUSH_CAP) {
+      this.otherPushes.set(key, recent);
+      this.event("axos", "push.capped", null, { from, to });
+      return false;
+    }
+    recent.push(t);
+    this.otherPushes.set(key, recent);
+    return true;
   }
 
   // What the app badge shows: open questions and unread messages on the page.
@@ -423,6 +589,8 @@ export class Hub {
     if (this.findProjects(`${owner}/${slug}`).length) throw new AxosError(`${owner} already has a project '${slug}'`);
     const id = newId("prj");
     this.db.query("INSERT INTO projects (id, owner, slug, brief, created_at) VALUES (?, ?, ?, ?, ?)").run(id, owner, slug, brief, this.now());
+    // The owner is in their own project (until 0.21.0 `axos project add` left them out; the onboarding study, 2026-10-31).
+    this.db.query("INSERT OR IGNORE INTO human_projects (human, project) VALUES (?, ?)").run(owner, id);
     this.event("admin", "project.added", id, { name: `${owner}/${slug}` });
     return id;
   }
@@ -646,9 +814,19 @@ export class Hub {
     return a;
   }
 
+  // The page key (from `axos init` or `axos human key`; login null) or a device's own login key.
+  authenticateLogin(uiKey: string): { human: string; login: number | null } | null {
+    const hash = hashSecret(uiKey);
+    const h = this.db.query("SELECT name FROM humans WHERE ui_key_hash = ?").get(hash) as { name: string } | null;
+    if (h) return { human: h.name, login: null };
+    const l = this.db.query("SELECT id, human FROM logins WHERE key_hash = ?").get(hash) as { id: number; human: string } | null;
+    if (!l) return null;
+    this.db.query("UPDATE logins SET last_seen = ? WHERE id = ?").run(this.now(), l.id);
+    return { human: l.human, login: l.id };
+  }
+
   authenticateHuman(uiKey: string): string | null {
-    const h = this.db.query("SELECT name FROM humans WHERE ui_key_hash = ?").get(hashSecret(uiKey)) as { name: string } | null;
-    return h?.name ?? null;
+    return this.authenticateLogin(uiKey)?.human ?? null;
   }
 
   touch(agentId: string): void {
@@ -834,7 +1012,8 @@ export class Hub {
         bell: this.streams.has(r.id), wake: this.wake(r.id), online: this.streams.has(r.id) || (r.last_seen !== null && t - r.last_seen < this.onlineWindowMs),
         unread: this.unreadCount(`agent:${r.id}`), unseen: this.unshownCount([`agent:${r.id}`]), roles: rolesOf(r.id),
       }));
-    return [...sessions, ...agents];
+    // A project of two people lists only the sessions that work in it, not every machine of each (security review 7).
+    return [...sessions, ...(this.isPair(project) ? [] : agents)];
   }
 
   // ---------------------------------------------------------------- projects
@@ -894,7 +1073,7 @@ export class Hub {
     return (this.db.query("SELECT human FROM agents WHERE id = ?").get(agent) as { human: string } | null)?.human ?? "";
   }
 
-  private requireMember(agentId: string, project: string): void {
+  requireMember(agentId: string, project: string): void {
     if (!this.isMember(agentId, project)) {
       throw new AxosError(`you are not a member of project '${project}'; your projects: ${this.projectsOf(agentId).join(", ") || "none"}`);
     }
@@ -988,8 +1167,11 @@ export class Hub {
 
   // The holder key an agent acts under: itself, or a role it holds in the project.
   // With a session and no `as`: the one role the session holds in the project, else the session itself.
-  seat(agentId: string, project: string, as?: string, session?: string): string {
-    this.requireScope(agentId, project, session);
+  // toPerson: a send to a person from a session whose folder belongs to no project, through the project the two share
+  // (membership is checked; the folder's scope is not, since there is none).
+  seat(agentId: string, project: string, as?: string, session?: string, toPerson = false): string {
+    if (toPerson && session && !this.session(session)?.project && !as) this.requireMember(agentId, project);
+    else this.requireScope(agentId, project, session);
     const me = session ?? agentId;
     if (as === "human") throw new AxosError('there is no "human" seat: to pass on what your human typed, send with quotes_human: true and their words as the body');
     if (!as) {
@@ -1105,6 +1287,7 @@ export class Hub {
     // its own mailbox when it next connects). A mailbox nobody has read for a week, or ever, is not in the room.
     if (a === "project" || a.startsWith("project:")) {
       const p = a === "project" ? project : this.reach(project, a.slice(8), a);
+      if (this.isPair(p)) throw new AxosError("a project of two people has no room to address; send to the person (human:<name>) or their session");
       const live = this.liveSessions(p);
       const withSessions = new Set(live.map((x) => x.agent_id));
       return [
@@ -1193,11 +1376,14 @@ export class Hub {
     priority?: Priority;
     dedupe_key?: string;
     no_push?: boolean;
-    quotes_human?: boolean; // the body is what the sender's human typed, as the plugin checked (actor.human_words)
+    quotes_human?: boolean; to_person?: boolean; // the body is what the sender's human typed, as the plugin checked (actor.human_words)
     queue?: boolean; // accepted and ignored since 0.18.0: mail to a role always waits
   }): { id: number; duplicate: boolean; delivered_to: string[]; waiting_for_role: string[]; not_sent: { to: string; reason: string }[]; unattended: string[] } {
     this.requireActorInProject(actor, input.project);
-    const sender = actor.kind === "agent" ? addr(this.seat(actor.id, input.project, actor.as, actor.session)) : `human:${actor.name}`;
+    if (input.to_person && !(input.to?.length === 1 && input.to[0]!.startsWith("human:") && !(actor.kind === "agent" && actor.as))) {
+      throw new AxosError("from a folder outside every project only one person can be addressed (human:<name>)");
+    }
+    const sender = actor.kind === "agent" ? addr(this.seat(actor.id, input.project, actor.as, actor.session, input.to_person)) : `human:${actor.name}`;
     // A session may quote its human: the body is what the human typed, checked by the plugin on the human's machine.
     // The message stays the session's (its trust, its walls, its caps); quotes_human only says whose words the body
     // holds. Only the human's own page speaks as human:<name>. (Security review of 2026-10-30.)
@@ -1311,9 +1497,17 @@ export class Hub {
     const ev: HubEvent = { kind: "message", message_id: id, from: sender, summary, type: input.type, priority };
     for (const recipient of recipients.keys()) {
       this.emit(recipient, ev);
-      if (recipient.startsWith("human:") && !input.no_push && (input.priority === "high" || input.type === "ask")) {
-        void this.pushToHuman(recipient.slice(6), `${this.senderTitle(sender)} (${this.projectName(input.project)})`, summary, `#m${id}`, [],
-          { priority: input.priority === "high" ? "high" : "default" });
+      // What reaches a phone: a question, an urgent message, and (the hub's human, 2026-10-31: "I trust the people I invite")
+      // anything from another person or their agents; one's own agents' ordinary notes wait on the page.
+      if (recipient.startsWith("human:") && !input.no_push) {
+        const to = recipient.slice(6);
+        const other = !!human && human !== to;
+        const wants = input.priority === "high" || input.type === "ask" || (other && priority !== "low");
+        // Everything from another person's side, asks and urgent ones included, counts against their cap.
+        if (wants && (!other || this.otherPushAllowed(human!, to))) {
+          void this.pushToHuman(to, `${this.senderTitle(sender)} (${this.projectName(input.project)})`, summary, `#m${id}`, [],
+            { priority: input.priority === "high" ? "high" : "default" });
+        }
       }
     }
     const vacant = (r: string) => (r.startsWith("role:") && !this.roleHolder(r)) || r.startsWith("next:");
@@ -1878,8 +2072,11 @@ export class Hub {
     ).run(input.project, asker, input.human, input.question, JSON.stringify(options), input.default_answer ?? null, deadline, remind, sent.id);
     const askId = Number(res.lastInsertRowid);
     for (const i of images) this.db.query("UPDATE attachments SET ask_id = ? WHERE id = ?").run(askId, i.id);
-    this.pushAsk(askId, false);
-    return { ask_id: askId, message_id: sent.id, pushed: this.hasPhone(input.human) };
+    // A question from another person's side counts against their cap like any push of theirs.
+    const askerHuman = (this.db.query("SELECT human FROM agents WHERE id = ?").get(agentId) as { human: string }).human;
+    const allowed = askerHuman === input.human || this.otherPushAllowed(askerHuman, input.human);
+    if (allowed) this.pushAsk(askId, false);
+    return { ask_id: askId, message_id: sent.id, pushed: allowed && this.hasPhone(input.human) };
   }
 
   // The question on the phone, with up to three options as buttons; a reminder is the same push again, replacing it.
@@ -1913,12 +2110,30 @@ export class Hub {
       WHERE a.asker IN (${askers.map(() => "?").join(", ")}) ORDER BY a.answer IS NOT NULL, a.id DESC LIMIT ?`).all(...askers, limit) as (AskRow & { created_at: number })[];
   }
 
+  // The asker settles its own open question when it was decided elsewhere (a chat, a file), so the human's page and
+  // phone hold no leftovers (a user, 1041; their human: "make sure this board is always clean"). Any seat the caller may be
+  // known by in the ask's project (its session, its agent, a role it holds) counts as the asker.
+  withdrawAsk(agentId: string, askId: number, reason: string, session?: string): void {
+    const ask = this.db.query("SELECT * FROM asks WHERE id = ?").get(askId) as AskRow | null;
+    if (!ask) throw new AxosError(`no ask ${askId}`);
+    if (!this.seatsOf(agentId, ask.project, undefined, session).includes(ask.asker)) throw new AxosError(`ask ${askId} was asked by ${ask.asker}, not by you`);
+    if (ask.answer !== null) throw new AxosError(ask.answered_by?.startsWith("withdrawn") ? `ask ${askId} is withdrawn already` : `ask ${askId} was already answered by ${ask.answered_by}`);
+    const why = oneLine(reason, 200) || "settled elsewhere";
+    const t = this.now();
+    this.db.query("UPDATE asks SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(why, `withdrawn:${ask.asker}`, t, askId);
+    this.ack(`human:${ask.human}`, [ask.message_id]);
+    this.event(session ? `session:${session}` : `agent:${agentId}`, "ask.withdrawn", ask.project, { ask: askId });
+    this.settledOnPhone(ask, "Settled elsewhere, no answer needed", why, ask.message_id);
+  }
+
   // Stored verbatim. Only the asked human answers.
   answerAsk(human: string, askId: number, answer: string): { message_id: number } {
     const ask = this.db.query("SELECT * FROM asks WHERE id = ?").get(askId) as AskRow | null;
     if (!ask) throw new AxosError(`no ask ${askId}`);
     if (ask.human !== human) throw new AxosError(`ask ${askId} was put to ${ask.human}, not ${human}`);
-    if (ask.answer !== null) throw new AxosError(`ask ${askId} was already answered by ${ask.answered_by}`);
+    if (ask.answer !== null) {
+      throw new AxosError(ask.answered_by?.startsWith("withdrawn") ? `ask ${askId} was settled elsewhere and withdrawn by its asker: ${ask.answer}` : `ask ${askId} was already answered by ${ask.answered_by}`);
+    }
     if (!answer.trim()) throw new AxosError("answer is empty");
     const t = this.now();
     this.db.query("UPDATE asks SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(answer, `human:${human}`, t, askId);
@@ -2001,7 +2216,7 @@ export class Hub {
       let ok = 0;
       for (const d of devices) {
         try {
-          const r = await this.webPush!.send(d, payload, { ttl: 86_400, urgency: payload.priority, topic: opts.sequence?.slice(0, 32) });
+          const r = await this.webPush!.send(d, payload, { ttl: 86_400, urgency: priority === "high" ? "high" : priority === "low" ? "low" : "normal", topic: opts.sequence?.slice(0, 32) });
           if (r === "gone") {
             this.db.query("DELETE FROM push_devices WHERE endpoint = ?").run(d.endpoint);
             this.event(`human:${human}`, "push.device_gone", null, { label: d.label });

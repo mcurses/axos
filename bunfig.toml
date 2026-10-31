@@ -1,0 +1,3 @@
+# The suite lives in test/; the critics' probes under docs/internal/research/probes are run on purpose, never by `bun test`.
+[test]
+root = "test"

@@ -21,6 +21,17 @@ const TYPES: Record<string, string> = {
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; " +
   "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
+// "iPhone, Safari" from a user agent, for the person's own list of logins; never shown to anyone else.
+function deviceLabel(ua: string): string {
+  const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Mac OS/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "device";
+  const app = /Firefox/.test(ua) ? "Firefox" : /Edg\//.test(ua) ? "Edge" : /Chrome/.test(ua) ? "Chrome" : /Safari/.test(ua) ? "Safari" : "browser";
+  return `${os}, ${app}`;
+}
+
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function cookie(req: Request, name: string): string | null {
   for (const part of (req.headers.get("cookie") ?? "").split(/;\s*/)) {
     const i = part.indexOf("=");
@@ -44,7 +55,36 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
       Location: "/ui", "Set-Cookie": `${COOKIE}=${encodeURIComponent(key)}; Path=/ui; HttpOnly; SameSite=Strict; Max-Age=31536000${secure}`,
     } });
   }
-  const human = hub.authenticateHuman(cookie(req, COOKIE) ?? "");
+  // A one-time login link (from `axos join`, or made on a device that is logged in): this device gets a key of its own.
+  // GET shows a confirm page and uses nothing up (a chat's link preview fetches it); the tap is a same-origin POST.
+  const login = /^\/ui\/login\/(axoslogin_[A-Za-z0-9_-]+)$/.exec(url.pathname);
+  if (login && (req.method === "GET" || req.method === "POST")) {
+    const plain = (text: string, status: number) => new Response(`${text}\n`, { status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
+    const st = hub.loginLinkStatus(login[1]!);
+    if (st.status !== "open") return plain(st.status === "unknown" ? "This login link is not valid." : `This login link was already ${st.status}; make a new one on a device where you are logged in.`, 410);
+    if (req.method === "GET") {
+      const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer">
+<title>Log in to AXOS</title><style>body{font:17px/1.5 -apple-system,system-ui,sans-serif;max-width:480px;margin:3em auto;padding:0 16px}button{font:inherit;padding:10px 18px;border-radius:8px;border:1px solid #888;background:#171717;color:#fff}
+@media(prefers-color-scheme:dark){body{background:#000;color:#f5f5f7}button{background:#f5f5f7;color:#000}}</style></head>
+<body><h1>AXOS</h1><p>Log in as <b>${esc(st.human!)}</b> on this device? The link works once.</p><form method="post"><button type="submit">Log in</button></form></body></html>`;
+      return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'" } });
+    }
+    const origin = req.headers.get("origin");
+    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+    if (origin && host && new URL(origin).host !== host) return plain("bad origin", 403);
+    try {
+      const r = hub.redeemLoginLink(login[1]!, deviceLabel(req.headers.get("user-agent") ?? ""));
+      const secure = url.protocol === "https:" || req.headers.get("x-forwarded-proto") === "https" ? "; Secure" : "";
+      return new Response(null, { status: 303, headers: {
+        Location: "/ui", "Set-Cookie": `${COOKIE}=${encodeURIComponent(r.key)}; Path=/ui; HttpOnly; SameSite=Strict; Max-Age=31536000${secure}`,
+      } });
+    } catch (e) {
+      if (e instanceof AxosError) return plain(e.message, 410);
+      throw e;
+    }
+  }
+  const auth = hub.authenticateLogin(cookie(req, COOKIE) ?? "");
+  const human = auth?.human ?? null;
 
   if (url.pathname.startsWith("/ui/api/")) {
     if (!human) return json({ error: "not logged in: open the page link with your key once (/ui?key=…, from axos human key)" }, 401);
@@ -60,11 +100,28 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
     try {
       if (url.pathname === "/ui/api/answer") {
         return json(hub.answerAsk(human, Number(b.ask), str("answer")));
+      } else if (url.pathname === "/ui/api/login-link") {
+        // For another device of the same person: shown once on this one, ten minutes, single use.
+        const l = hub.createLoginLink(human);
+        return json({ link: `${hub.publicUrl || url.origin}/ui/login/${l.token}`, expires_at: l.expires_at });
+      } else if (url.pathname === "/ui/api/login/remove") {
+        hub.removeLogin(human, Number(b.id));
+        return json({ ok: true });
+      } else if (url.pathname === "/ui/api/logout-all") {
+        hub.signOutAll(human);
+        return json({ ok: true });
+      } else if (url.pathname === "/ui/api/invite") {
+        // Only the operator invites a new person (the hub refuses otherwise); the link is shown once.
+        const inv = hub.createInvite(str("name").trim().toLowerCase(), null, undefined, human);
+        return json({ id: inv.id, link: `${hub.publicUrl || url.origin}/join/${inv.code}`, expires_at: inv.expires_at });
+      } else if (url.pathname === "/ui/api/invite/withdraw") {
+        hub.withdrawInvite(Number(b.id), human);
+        return json({ ok: true });
       } else if (url.pathname === "/ui/api/push/subscribe") {
         // This device's Web Push subscription, as the browser serialised it; the label is for the human's own list.
         const device = parseDevice(b.subscription);
         if (!device) return json({ error: "not a push subscription" }, 400);
-        return json(hub.pushSubscribe(human, device, str("label")));
+        return json(hub.pushSubscribe(human, device, str("label"), auth!.login));
       } else if (url.pathname === "/ui/api/push/unsubscribe") {
         hub.pushUnsubscribe(human, str("endpoint"));
         return json({ ok: true });
@@ -148,10 +205,15 @@ function state(hub: Hub, human: string) {
   }));
   // The page's own pushes: the key this browser subscribes with (null: this hub cannot push), and the devices registered.
   const push = { key: hub.vapidPublicKey(), devices: hub.pushDevices(human).map((d) => ({ label: d.label, created_at: d.created_at, last_ok: d.last_ok })) };
+  // People: those who share a project with this person (never the hub's whole list); the invites this person made.
+  const people = [...new Set(mine.flatMap((p) => hub.projectHumans(p)))].filter((h) => h !== human).sort()
+    .map((h) => ({ name: h, pair: mine.find((p) => hub.isPair(p) && hub.projectHumans(p).includes(h)) ?? null }));
+  const invites = hub.invitesBy(human).map((i) => ({ id: i.id, name: i.human, created_at: i.created_at, expires_at: i.expires_at, used_at: i.used_at }));
+  const me = { operator: hub.isOperator(human), logins: hub.logins(human) };
   const projects = mine.map((p) => {
     const leases = hub.leases(p);
     return {
-      id: p, brief: hub.brief(p), humans: hub.projectHumans(p), links: hub.linkedProjects(p),
+      id: p, pair: hub.isPair(p), brief: hub.brief(p), humans: hub.projectHumans(p), links: hub.linkedProjects(p),
       sessions: hub.presence(p).map((x) => ({
         label: hub.label(x.address), name: x.name, human: x.human, profile: x.profile, online: x.online, bell: x.wake === "wakes",
         unread: x.unread, unseen: x.unseen, roles: x.roles, last_seen: x.last_seen,
@@ -161,5 +223,5 @@ function state(hub: Hub, human: string) {
       leases: leases.live.map((l) => ({ resource: l.resource, holder: hub.label(l.holder), until: l.expires_at, note: l.note })),
     };
   });
-  return { human, push, now: hub.now(), types: MESSAGE_TYPES, asks, inbox, sent, projects };
+  return { human, me, people, invites, push, now: hub.now(), types: MESSAGE_TYPES, asks, inbox, sent, projects };
 }

@@ -293,6 +293,20 @@ async function hookCall(id: Identity, event: string, stop = false): Promise<{ co
 
 const HOOK_EVENT: Record<string, string> = { start: "SessionStart", prompt: "UserPromptSubmit", tool: "PostToolUse" };
 
+// A session in a folder outside every project that has sent through AXOS: its hooks read its mailbox from then on,
+// so a reply reaches it. Kept in the session's state file.
+function usedAxos(sessionId: string): boolean {
+  return !!readJson<{ used?: boolean }>(stateFile(sessionId))?.used;
+}
+
+function markUsed(sessionId: string): void {
+  const f = stateFile(sessionId);
+  const state = readJson<Record<string, unknown>>(f) ?? {};
+  if (state.used) return;
+  mkdirSync(dirname(f), { recursive: true });
+  writeFileSync(f, JSON.stringify({ ...state, used: true }));
+}
+
 function stateFile(sessionId: string): string {
   const dir = join(process.env.CLAUDE_PLUGIN_DATA ?? join(tmpdir(), "axos-plugin"), "state");
   mkdirSync(dir, { recursive: true });
@@ -408,7 +422,9 @@ async function hook(kind: string): Promise<void> {
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } }));
     return;
   }
-  if (!id || id.quiet || !id.project) return; // not configured, a quiet role, or a folder outside every project: no cost
+  // Not configured, a quiet role, or a folder outside every project: no cost. A folder outside every project whose
+  // session has sent through AXOS (to a person, through the project the two share) reads its own mailbox from then on.
+  if (!id || id.quiet || (!id.project && !usedAxos(id.sessionId))) return;
   const state = readJson<{ last_check?: number; unreachable?: boolean }>(stateFile(id.sessionId)) ?? {};
   if (kind === "tool") {
     const every = (id.c.check_every_s ?? 30) * 1000;
@@ -509,7 +525,9 @@ async function forward(id: Identity, msg: { id?: unknown; method?: string; param
       body: JSON.stringify(msg),
     });
     if (res.status === 202 || msg.id === undefined) return;
-    const body = (await res.json()) as { result?: { capabilities?: Record<string, unknown>; instructions?: string } };
+    const body = (await res.json()) as { result?: { capabilities?: Record<string, unknown>; instructions?: string; isError?: boolean } };
+    // A send from a folder outside every project went through (to a person): from now on this session reads its mailbox.
+    if (call?.name === "send" && !id.project && body.result && !body.result.isError) markUsed(id.sessionId);
     if (msg.method === "initialize" && body.result) {
       // Offer the channel; Claude Code only uses it when the session was started with channels on.
       const caps = (body.result.capabilities ??= {}) as { experimental?: Record<string, unknown> };
@@ -590,7 +608,7 @@ function bell(): Promise<void> {
     // content that Claude Code drops would count as shown and never be seen.
     if (off === false) {
       const id = currentIdentity();
-      if (!id || id.quiet || !id.project) return;
+      if (!id || id.quiet || (!id.project && !usedAxos(id.sessionId))) return;
       try {
         const r = await hookCall(id, "check");
         if (r.context) channel(r.context);
@@ -701,15 +719,20 @@ async function joinHub(args: string[]): Promise<void> {
   if (existsSync(tokenFile) && !force) throw new Error(`this machine already has an AXOS token in ${tokenFile}; axos join --force replaces it`);
   const machine = name ?? hostname().split(".")[0]!;
   const res = await fetch(`${hubUrl}/api/join`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, machine }) });
-  const r = (await res.json().catch(() => ({ error: `the hub answered ${res.status}` }))) as { error?: string; hub?: string; agent?: string; token?: string; page?: string | null; projects?: string[] };
+  const r = (await res.json().catch(() => ({ error: `the hub answered ${res.status}` }))) as { error?: string; hub?: string; agent?: string; token?: string; invited_by?: string | null; page?: string | null; projects?: string[] };
   if (r.error || !r.token) throw new Error(r.error ?? "the hub sent no token");
   mkdirSync(dirname(CONFIG_PATH), { recursive: true });
   writeFileSync(CONFIG_PATH, `${JSON.stringify({ ...(existing ?? {}), url: r.hub ?? hubUrl }, null, 2)}\n`, { mode: 0o600 });
   mkdirSync(dirname(tokenFile), { recursive: true });
   writeFileSync(tokenFile, `${r.token}\n`, { mode: 0o600 });
   console.log(`This machine is ${r.agent} on ${r.hub ?? hubUrl}${r.projects?.length ? `, in ${r.projects.join(", ")}` : ""}.`);
-  if (r.page) console.log(`Your page, shown once (open it on each device; it remembers you):\n  ${r.page}`);
-  console.log("Connect a repo once, in its folder: axos link <project> (or axos trust, if it commits an .axos.json).");
+  // The page: a one-time login link (ten minutes), opened in the browser here; the page key itself is never shown.
+  if (r.page) {
+    console.log(`Your page (this link logs this machine's browser in; it works once, within ten minutes):\n  ${r.page}`);
+    try { Bun.spawn([process.platform === "darwin" ? "open" : "xdg-open", r.page], { stdout: "ignore", stderr: "ignore" }); } catch { /* no browser here: the link is printed */ }
+  }
+  console.log(`Restart Claude Code (every open window), then say in any of them: tell ${r.invited_by ?? "<a person here>"} hello.`);
+  console.log("To work with others in a repo, connect it once, in its folder: axos link <owner>/<project> (or axos trust, if it commits an .axos.json).");
 }
 
 // For a landing script, run in the repository after the push succeeded. The hub never sees the repository: this reads

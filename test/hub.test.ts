@@ -1300,17 +1300,22 @@ describe("invites", () => {
     const r = hub.redeemInvite(code, "Ana's MacBook Pro");
     expect(r.human).toBe("ana");
     expect(hub.agentLabel(r.agent)).toBe("ana/ana-s-macbook-pro");
-    expect(r.uiKey).toMatch(/^axosui_/);
+    // The page key is never shown: a one-time login link logs the first device in and gives it a key of its own.
+    expect(r.login).toMatch(/^axoslogin_/);
+    const login = hub.redeemLoginLink(r.login, "Ana's laptop");
+    expect(login.human).toBe("ana");
+    expect(hub.authenticateHuman(login.key)).toBe("ana");
+    expect(() => hub.redeemLoginLink(r.login)).toThrow(/already used/);
     expect(hub.authenticateAgent(r.token)?.id).toBe(r.agent);
     expect(hub.projectsOfHuman("ana")).toEqual([GAME]);
     expect(hub.inviteStatus(code)).toBe("used");
     expect(() => hub.redeemInvite(code, "again")).toThrow(/already used/);
   });
 
-  test("an existing person's invite adds a machine and no page key; a taken machine name gets a suffix", () => {
+  test("an existing person's invite adds a machine with a login link for it; a taken machine name gets a suffix", () => {
     const a = hub.redeemInvite(hub.createInvite("alice", null).code, "dev1");
     expect(hub.agentLabel(a.agent)).toBe("alice/dev1-2");
-    expect(a.uiKey).toBeUndefined();
+    expect(hub.redeemLoginLink(a.login).human).toBe("alice");
   });
 
   test("an invite expires, a made-up code is not valid, and a new person needs a project", () => {
@@ -1689,7 +1694,7 @@ describe("the page's own pushes", () => {
     await Bun.sleep(0);
     expect(pushes).toEqual([]);
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ endpoint: "https://push.example/d1", urgency: "high", topic: `axos-ask-${r.ask_id}` });
+    expect(sent[0]).toMatchObject({ endpoint: "https://push.example/d1", urgency: "normal", topic: `axos-ask-${r.ask_id}` });
     expect(sent[0]!.payload).toMatchObject({ title: "alice/dev1 (alice/shop)", body: "Deploy now?", url: `https://axos.example/ui#m${r.message_id}`, tag: `axos-ask-${r.ask_id}`, priority: "high", open: 1 });
     wp.answerAsk("alice", r.ask_id, "yes");
     await Bun.sleep(0);
@@ -1737,5 +1742,193 @@ describe("the page's own pushes", () => {
     expect(wp.pushDevices("alice")).toHaveLength(10);
     wp.pushUnsubscribe("alice", "https://push.example/d2");
     expect(wp.pushDevices("alice")).toHaveLength(9);
+  });
+});
+
+describe("the second person's path (0.21.0)", () => {
+  test("only the operator invites a new person from the page; redeeming pairs the two in a project of their own", () => {
+    expect(refusal(() => hub.createInvite("ben", null, undefined, "bob"))).toContain("operator");
+    hub.setOperator("alice", true);
+    expect(refusal(() => hub.createInvite("ben", GAME, undefined, "alice"))).toContain("names no project");
+    const inv = hub.createInvite("ben", null, undefined, "alice");
+    expect(inv.expires_at - t).toBe(7 * 86_400_000);
+    expect(hub.invitesBy("alice")).toMatchObject([{ id: inv.id, human: "ben", used_at: null }]);
+    const r = hub.redeemInvite(inv.code, "bens-laptop");
+    expect(r.invited_by).toBe("alice");
+    const [pair] = hub.projectsOfHuman("ben");
+    expect(hub.projectsOfHuman("ben")).toHaveLength(1);
+    expect(hub.isPair(pair!)).toBe(true);
+    expect(hub.projectName(pair!)).toBe("alice/ben");
+    expect(hub.projectHumans(pair!).sort()).toEqual(["alice", "ben"]);
+    expect(hub.brief(pair!)).toContain("Direct messages between alice and ben");
+    expect(hub.invitesBy("alice")[0]!.used_at).toBe(t);
+    // A second machine of ben's, from his own page: the same pair, no second project.
+    hub.redeemInvite(hub.createInvite("ben", null, undefined, "ben").code, "bens-desktop");
+    expect(hub.projectsOfHuman("ben")).toEqual([pair!]);
+    // Anyone invites another machine of their own from the page.
+    expect(hub.createInvite("bob", null, undefined, "bob").code).toMatch(/^axosinv_/);
+  });
+
+  test("an invite is withdrawn by its maker only; a withdrawn link is expired", () => {
+    hub.setOperator("alice", true);
+    const inv = hub.createInvite("ben", null, undefined, "alice");
+    expect(refusal(() => hub.withdrawInvite(inv.id, "bob"))).toContain("no open invite");
+    hub.withdrawInvite(inv.id, "alice");
+    expect(hub.inviteStatus(inv.code)).toBe("expired");
+    expect(refusal(() => hub.redeemInvite(inv.code, "x"))).toContain("expired");
+  });
+
+  test("the project through which two people reach each other: their pair first, else any they share", () => {
+    hub.setOperator("alice", true);
+    const r = hub.redeemInvite(hub.createInvite("ben", null, undefined, "alice").code, "bens-laptop");
+    const pair = hub.projectsOfHuman("ben")[0]!;
+    expect(hub.projectWithHuman(r.agent, "alice")).toBe(pair);
+    expect(hub.projectWithHuman(r.agent, "bob")).toBeNull();
+    expect(hub.projectWithHuman(DEV1, "bob")).toBe(GAME);
+    // The pair is an ordinary project: a message to the person goes through, and their reply comes back.
+    const id = hub.send({ kind: "agent", id: r.agent, human: "ben" }, { project: pair, to: ["human:alice"], type: "note", summary: "hello from ben" }).id;
+    expect(hub.inbox("human:alice").map((m) => m.summary)).toContain("hello from ben");
+    hub.send({ kind: "human", name: "alice" }, { project: pair, to: [], re: id, type: "note", summary: "hello back" });
+    expect(hub.inbox(`agent:${r.agent}`).map((m) => m.summary)).toContain("hello back");
+  });
+
+  test("a message from another person pushes to the phone; one's own agent's ordinary note waits on the page", async () => {
+    hub.send(S, { project: GAME, to: ["human:alice"], type: "note", summary: "bob's agent says hi" });
+    await Bun.sleep(0);
+    expect(pushes.map((p) => [p.body, p.priority])).toEqual([["bob's agent says hi", "default"]]);
+    hub.send(A, { project: GAME, to: ["human:alice"], type: "note", summary: "own agent, plain note" });
+    hub.send({ kind: "human", name: "bob" }, { project: GAME, to: ["human:alice"], type: "note", summary: "bob himself" });
+    hub.send(A, { project: GAME, to: ["human:alice"], type: "note", summary: "own agent, urgent", priority: "high" });
+    await Bun.sleep(0);
+    expect(pushes.map((p) => p.body)).toEqual(["bob's agent says hi", "bob himself", "own agent, urgent"]);
+  });
+
+  test("a one-time login link logs one device in with a key of its own; signing it out ends that key only", () => {
+    const l = hub.createLoginLink("alice");
+    expect(l.expires_at - t).toBe(600_000);
+    const a = hub.redeemLoginLink(l.token, "iPhone, Safari");
+    expect(hub.authenticateHuman(a.key)).toBe("alice");
+    expect(refusal(() => hub.redeemLoginLink(l.token))).toContain("already used");
+    const b = hub.redeemLoginLink(hub.createLoginLink("alice").token, "Mac, Chrome");
+    const devices = () => hub.logins("alice").filter((x) => x.id !== 0); // id 0 is the fixture's page key
+    expect(devices().map((x) => x.label)).toEqual(["iPhone, Safari", "Mac, Chrome"]);
+    hub.removeLogin("alice", devices()[0]!.id);
+    expect(hub.authenticateHuman(a.key)).toBeNull();
+    expect(hub.authenticateHuman(b.key)).toBe("alice");
+    const late = hub.createLoginLink("alice");
+    t += 601_000;
+    expect(refusal(() => hub.redeemLoginLink(late.token))).toContain("expired");
+    expect(refusal(() => hub.redeemLoginLink("axoslogin_made-up"))).toContain("not valid");
+    expect(refusal(() => hub.removeLogin("bob", devices()[0]!.id))).toContain("no login");
+  });
+
+  test("a project made by the admin contains its owner", () => {
+    const p = hub.addProject("bob/thing");
+    expect(hub.humanInProject("bob", p)).toBe(true);
+    expect(hub.projectsOfHuman("bob")).toContain(p);
+  });
+});
+
+describe("withdrawing an ask", () => {
+  test("the asker settles its own open question; it leaves the page and phone, reminders stop, an answer is refused", async () => {
+    const r = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Deploy now?", options: ["yes", "no"], remind_s: 3600 });
+    await Bun.sleep(0);
+    expect(refusal(() => hub.withdrawAsk(DEV3, r.ask_id, "x"))).toContain("not by you");
+    hub.withdrawAsk(DEV1, r.ask_id, "answered in chat at 10:09");
+    await Bun.sleep(0);
+    expect(hub.asks({ human: "alice", open: true })).toEqual([]);
+    expect(hub.inbox("human:alice", { unreadOnly: true }).map((m) => m.id)).not.toContain(r.message_id);
+    expect(pushes.at(-1)).toMatchObject({ title: "Settled elsewhere, no answer needed", sequence: `axos-ask-${r.ask_id}`, priority: "low" });
+    expect(pushes.at(-1)!.body).toContain("answered in chat at 10:09");
+    expect(refusal(() => hub.answerAsk("alice", r.ask_id, "yes"))).toContain("withdrawn by its asker");
+    expect(refusal(() => hub.withdrawAsk(DEV1, r.ask_id, "again"))).toContain("withdrawn already");
+    t += 2 * 3600_000;
+    hub.sweep();
+    expect(pushes.filter((p) => p.title.startsWith("Reminder"))).toEqual([]);
+    expect(hub.asksOf([DEV1])[0]).toMatchObject({ answered_by: `withdrawn:${DEV1}`, answer: "answered in chat at 10:09" });
+  });
+
+  test("a role's question is withdrawn by whoever holds the role now, with their session", () => {
+    hub.defineRole(SHOP, "coordinator", "runs the release");
+    const s1 = hub.openSession(DEV1, { client_session: "client-s1", project: SHOP });
+    hub.claimRole(DEV1, SHOP, "coordinator", undefined, s1);
+    const r = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Ship?", as: "coordinator", session: s1 });
+    const s2 = hub.openSession(DEV3, { client_session: "client-s2", project: SHOP });
+    expect(refusal(() => hub.withdrawAsk(DEV3, r.ask_id, "x", s2))).toContain("not by you");
+    hub.releaseRole(DEV1, SHOP, "coordinator", s1);
+    hub.claimRole(DEV3, SHOP, "coordinator", undefined, s2);
+    hub.withdrawAsk(DEV3, r.ask_id, "the release went out", s2);
+    expect(hub.asks({ human: "alice", open: true })).toEqual([]);
+  });
+});
+
+describe("the second person's path: the security review's fixes", () => {
+  test("a page invite for a person who is here already is refused; a self-invite is listed, withdrawable and capped; a taken name is refused at redemption", () => {
+    hub.setOperator("alice", true);
+    expect(refusal(() => hub.createInvite("bob", null, undefined, "alice"))).toContain("here already");
+    const mine = hub.createInvite("bob", null, undefined, "bob");
+    expect(hub.invitesBy("bob")).toMatchObject([{ id: mine.id, human: "bob", used_at: null }]);
+    hub.withdrawInvite(mine.id, "bob");
+    expect(hub.inviteStatus(mine.code)).toBe("expired");
+    const one = hub.createInvite("ben", null, undefined, "alice");
+    for (let i = 0; i < 4; i++) hub.createInvite(`guest${i}`, null, undefined, "alice");
+    expect(refusal(() => hub.createInvite("guest9", null, undefined, "alice"))).toContain("open invites");
+    hub.addHuman("ben");
+    expect(refusal(() => hub.redeemInvite(one.code, "x"))).toContain("taken since");
+  });
+
+  test("signing a device out ends its pushes and its key; the page key is listed and can be ended; sign out everywhere", () => {
+    const db = openDb(":memory:");
+    const sent: string[] = [];
+    const h = new Hub(db, { now: () => t, webPush: () => ({ async send(d) { sent.push(d.endpoint); return "ok"; } }), publicUrl: "https://axos.example" });
+    const { uiKey } = h.addHuman("alice");
+    const P = h.addProject("alice/shop");
+    const dev = h.addAgent("alice", "dev", [P]).id;
+    const phone = h.redeemLoginLink(h.createLoginLink("alice").token, "iPhone");
+    const phoneLogin = h.authenticateLogin(phone.key)!.login!;
+    h.pushSubscribe("alice", { endpoint: "https://push.example/phone", p256dh: "B".repeat(87), auth: "a".repeat(22) }, "iPhone", phoneLogin);
+    h.pushSubscribe("alice", { endpoint: "https://push.example/mac", p256dh: "B".repeat(87), auth: "a".repeat(22) }, "Mac", null); // registered with the page key
+    expect(h.logins("alice").map((l) => l.label)).toEqual(["the page key (every device that logged in with it)", "iPhone"]);
+    h.removeLogin("alice", phoneLogin);
+    expect(h.authenticateHuman(phone.key)).toBeNull();
+    expect(h.pushDevices("alice").map((d) => d.label)).toEqual(["Mac"]);
+    h.removeLogin("alice", 0);
+    expect(h.authenticateHuman(uiKey)).toBeNull();
+    expect(h.pushDevices("alice")).toEqual([]);
+    expect(h.logins("alice")).toEqual([]);
+    const again = h.redeemLoginLink(h.createLoginLink("alice").token, "Mac");
+    h.pushSubscribe("alice", { endpoint: "https://push.example/mac2", p256dh: "B".repeat(87), auth: "a".repeat(22) }, "Mac", h.authenticateLogin(again.key)!.login);
+    h.signOutAll("alice");
+    expect(h.authenticateHuman(again.key)).toBeNull();
+    expect(h.pushDevices("alice")).toEqual([]);
+    h.askHuman(dev, { project: P, human: "alice", question: "still there?" });
+    expect(sent).toEqual([]);
+  });
+
+  test("another person's side rings the phone at most ten times in ten minutes, never for a low note; a pair has no room address", async () => {
+    for (let i = 0; i < 12; i++) hub.send(S, { project: GAME, to: ["human:alice"], type: "note", summary: `ping ${i}` });
+    hub.send(S, { project: GAME, to: ["human:alice"], type: "note", summary: "quiet", priority: "low" });
+    await Bun.sleep(0);
+    expect(pushes.filter((p) => p.body.startsWith("ping"))).toHaveLength(10);
+    expect(pushes.some((p) => p.body === "quiet")).toBe(false);
+    // Over the cap, even an urgent note or a question from that side waits on the page; own agents are not capped.
+    hub.send(S, { project: GAME, to: ["human:alice"], type: "note", summary: "urgent too", priority: "high" });
+    hub.askHuman(SC, { project: GAME, human: "alice", question: "over the cap?" });
+    hub.send(A, { project: GAME, to: ["human:alice"], type: "note", summary: "own, urgent", priority: "high" });
+    await Bun.sleep(0);
+    expect(pushes.map((p) => p.body)).not.toContain("urgent too");
+    expect(pushes.map((p) => p.body)).not.toContain("over the cap?");
+    expect(pushes.map((p) => p.body)).toContain("own, urgent");
+    expect(hub.events(0, 1000).filter((e) => e.kind === "push.capped").every((e) => JSON.parse(e.data_json).to === "alice")).toBe(true);
+    expect(hub.inbox("human:alice").map((m) => m.summary)).toContain("ping 11");
+    t += 601_000;
+    hub.send(S, { project: GAME, to: ["human:alice"], type: "note", summary: "later" });
+    await Bun.sleep(0);
+    expect(pushes.at(-1)!.body).toBe("later");
+    hub.setOperator("alice", true);
+    const r = hub.redeemInvite(hub.createInvite("ben", null, undefined, "alice").code, "bens-laptop");
+    const pair = hub.projectsOfHuman("ben")[0]!;
+    expect(refusal(() => hub.send({ kind: "agent", id: r.agent, human: "ben" }, { project: pair, to: ["project"], type: "note", summary: "all" }))).toContain("no room");
+    expect(hub.presence(pair).filter((x) => !x.address.startsWith("session:"))).toEqual([]);
   });
 });
