@@ -359,7 +359,8 @@ function setupScript(hub: Hub, origin: string, code: string, inviter: string | n
   const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`; // one shell word, whatever the hub's data says
   return `#!/bin/sh
 # AXOS setup for this machine, served by ${base}. It installs bun and the Claude Code plugin, joins with your invite
-# (once), and opens your page. Safe to read first; it changes only ~/.bun, ~/.claude/plugins, ~/.local/bin and ~/.config/axos.
+# (once), and opens your page. Safe to read first; it changes only ~/.bun, ~/.claude/plugins, ~/.local/bin and ~/.config/axos${work?.repo ? `,
+# and clones the project's code into the folder you run it in (${work.repo}) unless this folder is that clone already` : ""}.
 set -eu
 LINK="${base}/join/${code}"
 say() { printf '%s\n' "$*"; }
@@ -392,7 +393,19 @@ say "Done. Restart Claude Code (every open window), then say in any of them: tel
 say ""
 ${work
     ? `say ${q(`You are in ${work.name} with ${inviter ?? "them"}.${work.repo ? ` The code: ${work.repo}` : ""}`)}
-say ${q(`Get the code onto this machine, open its folder in Claude Code and say: connect this folder to AXOS (it picks ${work.name}).`)}`
+${work.repo ? `# The code: this folder if it is a clone of it already, else a fresh clone next to where this runs; connected either way.
+REPO=${q(work.repo)}
+DIR=$(basename "$REPO" .git)
+if "$AXOS" link >/dev/null 2>&1; then
+  say "This folder is a clone of that code: connected. Open it in Claude Code."
+elif [ -e "$DIR" ]; then
+  say "There is a '$DIR' here already; if it is a clone of the code, run inside it: axos link"
+elif command -v git >/dev/null 2>&1 && git clone -q "$REPO" "$DIR" 2>/dev/null && (cd "$DIR" && "$AXOS" link >/dev/null 2>&1); then
+  say "The code is in $PWD/$DIR and connected: open that folder in Claude Code."
+else
+  rm -rf "$DIR" 2>/dev/null
+  say "Could not clone $REPO here (no access to it yet, or no git). Once you have it: git clone $REPO && cd $DIR && axos link"
+fi` : `say ${q(`Get the code onto this machine, open its folder in Claude Code and say: connect this folder to AXOS (it picks ${work.name}).`)}`}`
     : `say "After that, when you like: in a repo you work in, say to Claude Code: connect this folder to AXOS."`}
 say "Your page is the app on a phone too: People, Log in another device, open the link on the phone, Add to Home Screen, Notifications on."
 `;
@@ -413,14 +426,16 @@ function handleJoinPage(hub: Hub, url: URL, code: string): Response {
       : `This link sets up one machine for <b>${esc(inv!.human)}</b> on this AXOS hub.`}
 It works once and expires ${esc(new Date(inv!.expires_at).toUTCString().replace(/:\d\d GMT$/, " UTC"))}.</p>
 ${inv!.project && (inv!.project.brief || inv!.project.repo) ? `<blockquote>${inv!.project.brief ? `<p>${esc(inv!.project.brief)}</p>` : ""}${inv!.project.repo ? `<p>The code: <code>${esc(inv!.project.repo)}</code></p>` : ""}</blockquote>` : ""}
-${base.startsWith("https:") ? `<p>On the machine you use Claude Code on, paste this into a terminal. It installs what is needed, joins, and opens your page:</p>
+${base.startsWith("https:") ? `<p>On the machine you use Claude Code on, paste this into a terminal${inv!.project?.repo ? ", in the folder where you keep your code" : ""}. It installs what is needed, joins${inv!.project?.repo ? `, clones the code (<code>${esc(inv!.project.repo)}</code>, or uses this folder if it is that clone) and connects it` : ""}, and opens your page:</p>
 <pre>curl -fsSL ${esc(link)}/setup | sh</pre>
 <p>Or say this to Claude Code, which shows the script before running it:</p>
 <pre>Set up AXOS from ${esc(link)}</pre>` : `<p>Say this to Claude Code on the machine you use it on; it shows the setup script before running it:</p>
 <pre>Set up AXOS from ${esc(link)}</pre>`}
 <p>Then restart Claude Code and say in any window: <b>tell ${esc(invited ?? "<a person here>")} hello</b>. Their reply reaches that window.</p>
 ${inv!.project
-    ? `<p>Then get the code onto your machine, open its folder in Claude Code and say <b>connect this folder to AXOS</b>: it picks ${esc(inv!.project.name)}, and your sessions there work with ${esc(invited ?? "theirs")}'s: they find each other, hand work over, and reach your phone with questions. Your page is the app on a phone too.</p>`
+    ? inv!.project.repo
+      ? `<p>Then open the clone in Claude Code: your sessions there work with ${esc(invited ?? "theirs")}'s in ${esc(inv!.project.name)}: they find each other, hand work over, and reach your phone with questions. (If the clone failed for lack of access, ask ${esc(invited ?? "them")} for it, then clone and say <b>connect this folder to AXOS</b> in that folder.) Your page is the app on a phone too.</p>`
+      : `<p>Then get the code onto your machine, open its folder in Claude Code and say <b>connect this folder to AXOS</b>: it picks ${esc(inv!.project.name)}, and your sessions there work with ${esc(invited ?? "theirs")}'s: they find each other, hand work over, and reach your phone with questions. Your page is the app on a phone too.</p>`
     : `<p>After that, when you like: in a repo you work in, say to Claude Code <b>connect this folder to AXOS</b>, and your sessions there find each other, hand work over, and reach your phone with questions. Your page is the app on a phone too.</p>`}
 <details><summary>By hand instead</summary>
 <ol>

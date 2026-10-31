@@ -1290,12 +1290,39 @@ test("an invite that carries the work: the page and the script say the project a
   expect(page).toContain("<b>alice</b> invited you to work on <b>alice/workshop</b>");
   expect(page).toContain("The shared tools.");
   expect(page).toContain("The code: <code>https://github.com/alice/workshop.git</code>");
-  expect(page).toContain("connect this folder to AXOS</b>: it picks alice/workshop");
+  expect(page).toContain("Then open the clone in Claude Code: your sessions there work with alice's in alice/workshop");
   const sh = await (await fetch(`${inv.link}/setup`)).text();
   expect(sh).toContain("You are in alice/workshop with alice. The code: https://github.com/alice/workshop.git");
   const tmp = join(tmpdir(), `axos-setup-${Date.now()}.sh`);
   writeFileSync(tmp, sh);
   expect(Bun.spawnSync(["sh", "-n", tmp]).exitCode).toBe(0);
+  // Run it with stubs: `git clone` makes the folder; the stub axos connects (`link`) only inside a folder of that name.
+  // In an empty folder the script clones and connects; in the clone itself it connects without cloning; when git fails
+  // it says what to do by hand.
+  const home0 = mkdtempSync(join(tmpdir(), "axos-home-"));
+  const stubs = join(home0, "stubs");
+  mkdirSync(stubs);
+  writeFileSync(join(stubs, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  writeFileSync(join(stubs, "git"), "#!/bin/sh\n[ \"$1\" = clone ] || exit 1\n[ -n \"$GIT_FAILS\" ] && exit 128\nmkdir -p \"$4\"\n", { mode: 0o755 });
+  mkdirSync(join(home0, "checkout", "plugin", "bin"), { recursive: true });
+  writeFileSync(join(home0, "checkout", "plugin", "bin", "axos"), "#!/bin/sh\ncase \"$1\" in link) [ \"$(basename \"$PWD\")\" = workshop ] || exit 1;; esac\necho \"stub axos $*\"\n", { mode: 0o755 });
+  mkdirSync(join(home0, ".claude", "plugins"), { recursive: true });
+  writeFileSync(join(home0, ".claude", "plugins", "known_marketplaces.json"), JSON.stringify({ axos: { installLocation: join(home0, "checkout") } }));
+  const setup = (cwd: string, extra: Record<string, string> = {}) => {
+    const run = Bun.spawnSync(["sh", tmp], { cwd, env: { ...process.env, HOME: home0, PATH: `${stubs}:${process.env.PATH}`, ...extra } });
+    return run.stdout.toString() + run.stderr.toString();
+  };
+  const code0 = join(home0, "code");
+  mkdirSync(code0);
+  expect(setup(code0)).toContain(`The code is in ${realpathSync(code0)}/workshop and connected: open that folder in Claude Code.`);
+  expect(existsSync(join(code0, "workshop"))).toBe(true);
+  expect(setup(join(code0, "workshop"))).toContain("This folder is a clone of that code: connected.");
+  expect(setup(code0)).toContain("There is a 'workshop' here already");
+  const code1 = join(home0, "code1");
+  mkdirSync(code1);
+  expect(setup(code1, { GIT_FAILS: "1" })).toContain("Could not clone https://github.com/alice/workshop.git here (no access to it yet, or no git). Once you have it: git clone https://github.com/alice/workshop.git && cd workshop && axos link");
+  expect(existsSync(join(code1, "workshop"))).toBe(false);
+  rmSync(home0, { recursive: true, force: true });
   rmSync(tmp, { force: true });
   const state = await (await fetch(`${base}/ui/api/state`, { headers: { cookie } })).json() as { invites: { name: string; project: string | null }[]; projects: { id: string; repo: string }[] };
   expect(state.invites[0]).toMatchObject({ name: "cara", project: "alice/workshop" });

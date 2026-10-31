@@ -575,7 +575,10 @@ with the agent's token makes a project for its human (`axos link --new`).
 is open, `410` if it is unknown, used or expired.
 
 `GET /join/<code>/setup`: the setup as a shell script (`text/plain`): installs bun if missing and the Claude Code
-plugin, links the `axos` command, runs `axos join <link>`, which opens the page. `410` once the code is not open.
+plugin, links the `axos` command, runs `axos join <link>`, which opens the page; when the invite carries a project
+with a code address, it then connects the folder it runs in if that is a clone of the code, else clones the code
+into `./<name>` and connects the clone, and if the clone fails (no access yet) prints the two commands for later.
+`410` once the code is not open.
 
 `POST /api/join`, body `{"code": "axosinv_…", "machine": "<name of this machine>"}`:
 
