@@ -1787,19 +1787,33 @@ describe("the second person's path (0.21.0)", () => {
     // The inviter hears of the join, quietly.
     await Bun.sleep(0);
     expect(pushes.at(-1)).toMatchObject({ title: `ben joined ${hub.projectName(GAME)}`, priority: "low" });
-    // A project linked with someone else's is not carried (third members of a link: the human's open question).
-    hub.linkProjects(SHOP, GAME);
-    expect(refusal(() => hub.createInvite("eve", GAME, undefined, "alice"))).toContain("linked with someone else's");
-    // Checked again at redemption: a project that became linked after the link was made is dropped, the person still joins.
-    hub.unlinkProjects(SHOP, GAME);
-    const later = hub.createInvite("eve", GAME, undefined, "alice");
-    hub.linkProjects(SHOP, GAME);
-    const r2 = hub.redeemInvite(later.code, "eves-laptop");
+    // A carried project that is linked: the other side's owner is told of the join, quietly (the human's answer (a),
+    // 2026-10-31: told, nothing else). Here bob's project is linked with alice's game.
+    const bobs = hub.addProject("bob/thing");
+    hub.setNtfyTopic("bob", "bob-topic");
+    hub.setNtfyTopic("ben", "ben-topic");
+    pushes.length = 0;
+    hub.linkProjects(GAME, bobs, ["bob"]);
+    await Bun.sleep(0);
+    // Linking told every member of either side who did not link: alice and ben (in game), not bob.
+    expect(pushes.map((p) => [p.topic, p.title]).sort()).toEqual([["alice-topic", `${hub.projectName(GAME)} is now linked with bob/thing`], ["ben-topic", `${hub.projectName(GAME)} is now linked with bob/thing`]]);
+    pushes.length = 0;
+    hub.redeemInvite(hub.createInvite("eve", GAME, undefined, "alice").code, "eves-laptop");
+    await Bun.sleep(0);
+    expect(hub.projectHumans(GAME)).toContain("eve");
+    expect(pushes.map((p) => [p.topic, p.title]).sort()).toEqual([["alice-topic", `eve joined ${hub.projectName(GAME)}`], ["bob-topic", `eve joined ${hub.projectName(GAME)}, which is linked with bob/thing`]]);
+    hub.setNtfyTopic("bob", null);
+    hub.setNtfyTopic("ben", null);
+    // Checked again at redemption: a maker who is no longer the operator carries nothing; the person still joins.
+    const later = hub.createInvite("fay", GAME, undefined, "alice");
+    hub.setOperator("alice", false);
+    const r2 = hub.redeemInvite(later.code, "fays-laptop");
+    hub.setOperator("alice", true);
     expect(r2.project).toBeNull();
-    expect(hub.projectHumans(GAME)).not.toContain("eve");
-    expect(hub.projectsOfHuman("eve")).toHaveLength(1);
+    expect(hub.projectHumans(GAME)).not.toContain("fay");
+    expect(hub.projectsOfHuman("fay")).toHaveLength(1);
     const redeemed = hub.events().filter((e) => e.kind === "invite.redeemed").at(-1)!;
-    expect(JSON.parse(redeemed.data_json)).toMatchObject({ human: "eve", dropped: GAME });
+    expect(JSON.parse(redeemed.data_json)).toMatchObject({ human: "fay", dropped: GAME });
   });
 
   test("where the code is: one address without credentials, set by the owner or the owner's agents only", () => {

@@ -10,7 +10,7 @@ const USAGE = `axos — hub admin
 
   axos init <your name>                          first run: you, your page link and a join link for your first machine
   axos invite [<project>] --human <name>         a one-time join link (7 days) for a machine of <name>; a new person
-                                                 joins <project> with it
+                                                 joins <project> with it; --by <person>: as from that person's page
   axos backup <file>                             a consistent copy of the database, safe while the hub runs
   axos human add <name> [--ntfy <topic>]         add a human; prints their UI key
   axos human key <name>                          new UI key
@@ -97,9 +97,10 @@ The join link works once and expires in 7 days; axos invite --human ${name} make
   if (noun === "invite") {
     const args = [verb, ...rest].filter((x): x is string => x !== undefined);
     const human = flag(args, "--human");
-    if (!human) throw new AxosError("usage: axos invite [<project>] --human <name>");
-    const { code, expires_at } = hub.createInvite(human, args[0] ? project(args[0]) : null);
-    console.log(`Join link for a machine of ${human} (works once, until ${iso(expires_at)}):\n  ${joinLink(code)}\nSend it over a private channel.`);
+    const by = flag(args, "--by"); // as if made on that person's page: the two are paired on redemption, the project carried
+    if (!human) throw new AxosError("usage: axos invite [<project>] --human <name> [--by <person>]");
+    const { code, expires_at } = hub.createInvite(human, args[0] ? project(args[0]) : null, undefined, by);
+    console.log(`Join link for a machine of ${human}${by ? `, as from ${by}'s page` : ""} (works once, until ${iso(expires_at)}):\n  ${joinLink(code)}\nSend it over a private channel.`);
     return;
   }
   if (noun === "backup") {

@@ -557,11 +557,10 @@ export class Hub {
     checkName("human", human);
     const exists = !!this.db.query("SELECT 1 FROM humans WHERE name = ?").get(human);
     if (by) {
-      // A page invite may carry the work: a project the maker owns (not the pair, not one linked with someone else's
-      // until the human rules on third members of a link); the new person is in it on redemption.
+      // A page invite may carry the work: a project the maker owns (not the pair); the new person is in it on
+      // redemption, and the owner of a project linked with it is told then.
       if (project && this.projectOwner(project) !== by) throw new AxosError(`no project of yours '${project}'`);
       if (project && this.isPair(project)) throw new AxosError("a project of two people is not shared; make a project for the work");
-      if (project && this.linkedProjects(project).length) throw new AxosError("that project is linked with someone else's; share it with them once they are here, so the other side is not surprised");
       if (project && human === by) throw new AxosError("your own machine is in your projects already; invite it without one");
       if (human !== by && !this.isOperator(by)) throw new AxosError("only the hub's operator invites new people; ask them");
       if (human !== by && exists) throw new AxosError(`${human} is here already; share a project with them instead of inviting them`);
@@ -685,12 +684,13 @@ export class Hub {
     }
     if (inv.kind === "share") {
       this.addHumanToProject(human, inv.project);
+      this.tellLinkedSides(inv.project, human, [inv.invited_by]);
       this.db.query("UPDATE invites SET decided_at = ?, decision = 'accepted' WHERE id = ?").run(t, id);
       this.event(`human:${human}`, "project.share_accepted", inv.project, { by: inv.invited_by });
       if (this.otherPushAllowed(human, inv.invited_by)) void this.pushToHuman(inv.invited_by, `${human} joined ${this.projectName(inv.project)}`, "Their sessions reach it once they link a folder to it.", "", [], { priority: "low" });
     } else {
       if (!target || this.projectOwner(target) !== human || this.isPair(target)) throw new AxosError("pick one of your own projects to link with");
-      this.linkProjects(inv.project, target);
+      this.linkProjects(inv.project, target, [human, inv.invited_by]);
       this.db.query("UPDATE invites SET decided_at = ?, decision = 'accepted', target_project = ? WHERE id = ?").run(t, target, id);
       this.event(`human:${human}`, "project.link_accepted", inv.project, { by: inv.invited_by, with: target });
       if (this.otherPushAllowed(human, inv.invited_by)) void this.pushToHuman(inv.invited_by, `${human} linked ${this.projectName(target)} with ${this.projectName(inv.project)}`, "Sessions on both sides reach each other now.", "", [], { priority: "low" });
@@ -770,17 +770,20 @@ export class Hub {
     const base = machine.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 40) || "machine";
     const out = this.db.transaction(() => {
       // A carried project is checked again now, not only when the link was made: the maker must still own it, it
-      // must still be no pair and not linked, and a page maker must still be the operator; otherwise the person joins
-      // without it (the pair with the inviter still happens) and the event says so.
+      // must still be no pair, and a page maker must still be the operator; otherwise the person joins without it
+      // (the pair with the inviter still happens) and the event says so.
       let project = inv.project && this.projectName(inv.project) ? inv.project : null;
       if (project && inv.invited_by) {
-        const ok = this.projectOwner(project) === inv.invited_by && !this.isPair(project) && !this.linkedProjects(project).length
+        const ok = this.projectOwner(project) === inv.invited_by && !this.isPair(project)
           && (inv.invited_by === inv.human || this.isOperator(inv.invited_by));
         if (!ok) project = null;
       }
       if (!this.db.query("SELECT 1 FROM humans WHERE name = ?").get(inv.human)) {
         this.addHuman(inv.human, undefined, false);
-        if (project) this.addHumanToProject(inv.human, project);
+        if (project) {
+          this.addHumanToProject(inv.human, project);
+          this.tellLinkedSides(project, inv.human, inv.invited_by ? [inv.invited_by] : []);
+        }
       }
       if (inv.invited_by && inv.invited_by !== inv.human && this.db.query("SELECT 1 FROM humans WHERE name = ?").get(inv.invited_by)) {
         this.pairProject(inv.invited_by, inv.human);
@@ -983,12 +986,32 @@ export class Hub {
   }
 
   // Linked projects message each other's roles, sessions and agents; nothing else crosses (briefs, leases, presence).
-  linkProjects(p: string, q: string): void {
+  // Every member of either side who did not do the linking is told, quietly, that the project is now linked and with
+  // which (the human's answer, 2026-10-31: told, nothing else).
+  linkProjects(p: string, q: string, except: string[] = []): void {
     if (p === q) throw new AxosError("a project cannot be linked to itself");
     for (const x of [p, q]) if (!this.db.query("SELECT 1 FROM projects WHERE id = ?").get(x)) throw new AxosError(`no project '${x}'`);
     const [a, b] = [p, q].sort();
-    this.db.query("INSERT OR IGNORE INTO project_links (a, b, created_at) VALUES (?, ?, ?)").run(a!, b!, this.now());
+    const r = this.db.query("INSERT OR IGNORE INTO project_links (a, b, created_at) VALUES (?, ?, ?)").run(a!, b!, this.now());
     this.event("admin", "project.linked", a!, { with: b });
+    if (!r.changes) return;
+    for (const [mine, other] of [[p, q], [q, p]] as const) {
+      for (const h of this.projectHumans(mine)) {
+        if (except.includes(h) || this.projectHumans(other).includes(h)) continue;
+        void this.pushToHuman(h, `${this.projectName(mine)} is now linked with ${this.projectName(other)}`,
+          "Sessions on both sides reach each other's roles and sessions; nothing else crosses.", "", [], { priority: "low" });
+      }
+    }
+  }
+
+  // Someone joined a project that is linked: the other side's owner is told, quietly (the same answer).
+  private tellLinkedSides(project: string, joiner: string, except: string[]): void {
+    for (const other of this.linkedProjects(project)) {
+      const owner = this.projectOwner(other);
+      if (!owner || owner === joiner || except.includes(owner)) continue;
+      void this.pushToHuman(owner, `${joiner} joined ${this.projectName(project)}, which is linked with ${this.projectName(other)}`,
+        "Their sessions there reach your project's roles and sessions.", "", [], { priority: "low" });
+    }
   }
 
   unlinkProjects(p: string, q: string): void {

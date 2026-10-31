@@ -546,13 +546,15 @@ redemption if someone has the name by then. The code looks like `axosinv_…`; o
 An invite made on someone's page pairs the two: redeeming it creates a project of exactly the two people (the
 "pair", named `<inviter>/<invitee>` or `<inviter>/with-<invitee>`), through which their sessions reach each other
 from any folder (see Addresses, `human:<name>`). It may also carry the work: `POST /ui/api/invite {"name","project"}`
-with a project the maker owns (not a pair, and not one linked with someone else's: the other side would get a
-third member unasked; the page offers it as "Share with… someone new" on the project's card and as "to work on…"
-under People). The invite page and the setup script then say the project, its brief and where its code is; the
+with a project the maker owns (not a pair; the page offers it as "Share with… someone new" on the project's card and
+as "to work on…" under People). The invite page and the setup script then say the project, its brief and where its code is; the
 person is a member of it the moment they join, as if they had accepted a share, and the inviter's phone hears
 quietly that the link was used (by whom, into what). The checks are repeated at redemption: if the maker no longer
-owns the project, it became a pair or got linked, or the maker is no longer the operator, the person joins without it
-(the event says `dropped`). A project's "where the code is" is one git address in printable ASCII with no
+owns the project, it became a pair, or the maker is no longer the operator, the person joins without it (the event
+says `dropped`). **Third members and links:** when two projects are linked, every member of either side who did not
+do the linking is told quietly that the project is now linked and with which; when someone joins a project that is
+linked (a share accepted, an invite that carried it), the owner of the project on the other side is told quietly.
+Nobody is asked, nothing waits. A project's "where the code is" is one git address in printable ASCII with no
 credentials: the query and fragment are dropped, before an http(s) host nothing stays, before an ssh host or in the
 scp form only a plain user name stays (`repo` in `create_project`, in `POST /api/projects` and in
 `POST /ui/api/project/new`; `axos link --new` records the folder's remote; the owner changes it with
