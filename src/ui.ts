@@ -285,7 +285,7 @@ function state(hub: Hub, human: string) {
   }));
   // The page's own pushes: the key this browser subscribes with (null: this hub cannot push), and the devices registered.
   const push = { key: hub.vapidPublicKey(), devices: hub.pushDevices(human).map((d) => ({ label: d.label, created_at: d.created_at, last_ok: d.last_ok })) };
-  // People: those who share a project with this person (never the hub's whole list); the invites this person made.
+  // Humans: those who share a project with this person (never the hub's whole list); the invites this person made.
   const people = hub.people(human).map((h) => ({ name: h, pair: mine.find((p) => hub.isPair(p) && hub.projectHumans(p).includes(h)) ?? null }));
   // Share and link requests waiting for this person; the project names are the asker's, which the person may see.
   const pending = hub.pendingFor(human).map((r) => ({ ...r, project: hub.projectName(r.project) ?? r.project }));

@@ -1,3 +1,5 @@
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -5,7 +7,7 @@ import { ago, post, splitLabel, type Project } from "@/lib/api";
 import { useState } from "react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { BellIcon, LinkIcon, UserIcon } from "lucide-react";
+import { BellIcon, LinkIcon, UserIcon, PlusIcon, FolderGit2Icon, Settings2Icon } from "lucide-react";
 
 export function Dot({ on }: { on: boolean }) {
   return <span className={cn("inline-block size-2 shrink-0 rounded-full", on ? "bg-emerald-500" : "bg-muted-foreground/40")} />;
@@ -25,10 +27,13 @@ export function ProjectCard({ p, now, me, people = [], operator = false, onChang
   const [repo, setRepo] = useState<string | null>(null);
   const copy = (text: string) => navigator.clipboard?.writeText(text).then(() => toast.success("Copied."), () => toast.error("Could not copy; select it by hand."));
   return (
-    <Card>
+    <Card className="project-card">
       <CardHeader>
-        <CardTitle>{p.id}</CardTitle>
-        {p.brief && <CardDescription className="whitespace-pre-wrap">{p.brief}</CardDescription>}
+        <div className="flex items-start justify-between gap-4"><div className="flex min-w-0 items-center gap-3"><span className="project-symbol"><FolderGit2Icon className="size-5" /></span><div className="min-w-0"><p className="eyebrow mb-1">{p.owner ?? "Shared project"}</p><CardTitle className="text-lg">{p.id.split("/").slice(-1)[0]}</CardTitle></div></div><span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground"><Dot on={p.sessions.some((s) => s.online)} />{p.sessions.filter((s) => s.online).length} online</span></div>
+        {p.brief && <CardDescription className="max-w-2xl whitespace-pre-wrap leading-relaxed">{p.brief}</CardDescription>}
+        <details className="project-settings">
+          <summary className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground"><Settings2Icon className="size-3.5" /> Project settings <span className="ml-auto">Code, humans & links</span></summary>
+          <div className="mt-5 flex flex-col gap-3 border-t pt-5">
         {/* Where the code is: one git address; the owner edits it, members and an invite's page read it. */}
         {repo === null
           ? <CardDescription className="text-xs">{p.repo ? <>Code: <code>{p.repo}</code></> : mine ? "No code address yet" : null}{mine && <button className="ml-2 underline opacity-60 hover:opacity-100" disabled={busy} onClick={() => setRepo(p.repo)}>{p.repo ? "change" : "set"}</button>}</CardDescription>
@@ -81,17 +86,19 @@ export function ProjectCard({ p, now, me, people = [], operator = false, onChang
             <div className="flex items-center gap-2"><code className="break-all">{invite.link}</code><Button size="sm" variant="outline" onClick={() => copy(invite.link)}>Copy</Button></div>
           </div>
         )}
+          </div>
+        </details>
       </CardHeader>
-      <CardContent className="grid gap-6 md:grid-cols-3">
+      <CardContent className="grid gap-6 border-t pt-6 md:grid-cols-3">
         <section>
           <h3 className="mb-2 font-medium text-muted-foreground text-xs uppercase tracking-wide">Sessions</h3>
           <ul className="flex flex-col gap-1.5 text-sm">
             {p.sessions.map((s) => {
               const { name, detail } = splitLabel(s.label);
               return (
-                <li key={s.label} className="flex items-start gap-2">
+                <li key={s.label} className="flex items-start gap-2 py-1">
                   <Dot on={s.online} />
-                  <div className="min-w-0 -mt-1">
+                  <div className="min-w-0 -mt-0.5">
                     <div className="flex items-center gap-1">
                       <span className="truncate">{name}</span>
                       {s.bell && <BellIcon className="size-3 text-muted-foreground" aria-label="wakes on messages" />}
@@ -141,16 +148,19 @@ export function ProjectCard({ p, now, me, people = [], operator = false, onChang
 export function NewProject({ onChange }: { onChange: () => void }) {
   const [name, setName] = useState("");
   const [made, setMade] = useState<string | null>(null);
-  return (
-    <div className="flex flex-col gap-2">
-      <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (!name.trim()) return;
-        post("project/new", { name: name.trim() }).then((r) => { setMade((r as { name: string }).name); setName(""); onChange(); }, (err) => toast.error(err instanceof Error ? err.message : String(err))); }}>
-        <input className="flex-1 rounded-md border bg-background px-3 py-2 text-sm" placeholder="new project (lowercase, e.g. the repo's name)" value={name} onChange={(e) => setName(e.target.value)} />
-        <Button type="submit" size="sm" variant="outline">New project</Button>
-      </form>
-      {made && <p className="text-muted-foreground text-sm">Made. In the repo's folder, once: <code>axos link {made}</code>, or say to Claude Code there "connect this folder to AXOS as {made}".</p>}
-    </div>
-  );
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  return <>
+    <header className="screen-heading"><div><p className="eyebrow">Shared workspaces</p><h2>Projects</h2><p>A place for each piece of work, with its own humans, agents and responsibilities.</p></div><Button onClick={() => { setMade(null); setOpen(true); }}><PlusIcon /> New project</Button></header>
+    <Dialog open={open} onOpenChange={setOpen}><DialogContent>
+      <DialogHeader><DialogTitle>{made ? "Your project is ready" : "Create a project"}</DialogTitle><DialogDescription>{made ? "Connect a repository to bring your agents into this space." : "Give your work a home. You can invite humans once it’s created."}</DialogDescription></DialogHeader>
+      {made ? <div className="space-y-4"><p className="supporting-text">In your repository, run:</p><code className="block overflow-x-auto rounded-lg bg-muted p-3 text-xs">axos link {made}</code><p className="supporting-text">Or ask your agent to connect this folder to AXOS as {made}.</p><DialogFooter><Button onClick={() => setOpen(false)}>Done</Button></DialogFooter></div> :
+      <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); if (!name.trim() || busy) return; setBusy(true); post("project/new", { name: name.trim() }).then((r) => { setMade((r as { name: string }).name); setName(""); onChange(); }, (err) => toast.error(err instanceof Error ? err.message : String(err))).finally(() => setBusy(false)); }}>
+        <label className="field-label">Project name<Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. website" required /><span className="field-hint">Lowercase, usually your repository’s name.</span></label>
+        <DialogFooter><Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button><Button type="submit" disabled={busy || !name.trim()}>Create project</Button></DialogFooter>
+      </form>}
+    </DialogContent></Dialog>
+  </>;
 }
 
 // Share and link requests from people you know, answered here like a question.
@@ -162,7 +172,7 @@ export function PendingRequests({ pending, projects, onChange }: { pending: { id
   if (!pending.length) return null;
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="font-medium">Requests from people you know <span className="text-muted-foreground">({pending.length})</span></h2>
+      <h2 className="font-medium">Requests from humans you know <span className="text-muted-foreground">({pending.length})</span></h2>
       {pending.map((r) => (
         <Card key={r.id} id={`invite-${r.id}`} className="border-l-4 border-l-primary">
           <CardContent className="flex flex-wrap items-center gap-2 pt-4 text-sm">

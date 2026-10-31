@@ -1,16 +1,15 @@
 import { Canvas } from "@/components/ai-elements/canvas";
 import { Controls } from "@/components/ai-elements/controls";
-import { Node, NodeContent, NodeDescription, NodeHeader, NodeTitle } from "@/components/ai-elements/node";
+import { Node } from "@/components/ai-elements/node";
 import { Panel } from "@/components/ai-elements/panel";
-import { Badge } from "@/components/ui/badge";
 import { splitLabel, type State } from "@/lib/api";
-import { BaseEdge, useInternalNode, type EdgeProps, type Edge as FlowEdge, type InternalNode, type Node as FlowNode, type NodeProps } from "@xyflow/react";
-import { LinkIcon, UserIcon } from "lucide-react";
-import { useMemo } from "react";
+import { BaseEdge, getNodesBounds, useStore, useInternalNode, type CoordinateExtent, type EdgeProps, type Edge as FlowEdge, type InternalNode, type Node as FlowNode, type NodeProps } from "@xyflow/react";
+import { ArrowLeftRightIcon, FolderGit2Icon, LinkIcon } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Dot } from "./projects";
 
 // What is linked to what: the person's projects and the projects linked to them, placed on a grid so the links are
-// short and do not cross. People other than the viewer show as pills in their projects. A linked project that is not
+// short and do not cross. Project cards show activity and humans. A linked project that is not
 // the viewer's shows by name only: nothing else of it crosses a link.
 
 type Data = Record<string, unknown>;
@@ -18,45 +17,34 @@ type ProjectData = State["projects"][number] & { me: string } & Data;
 type ForeignData = { name: string } & Data;
 
 // Grid cells: wide enough for a card and the gap around it.
-const CELL = { w: 360, h: 270 };
+const CELL = { w: 410, h: 320 };
 
 function ProjectNode({ data }: NodeProps<FlowNode<ProjectData>>) {
   const live = data.sessions.filter((s) => s.online).length;
-  const held = data.roles.filter((r) => r.holder);
+  const sessions = [...data.sessions].sort((a, b) => Number(b.online) - Number(a.online)).slice(0, 3);
   const others = data.humans.filter((h) => h !== data.me);
   return (
-    <Node handles={{ target: true, source: true }} className="w-72 hidden-handles">
-      <NodeHeader>
-        <NodeTitle className="text-sm">{data.id}</NodeTitle>
-        <NodeDescription>{live} of {data.sessions.length} sessions online · {held.length}/{data.roles.length} roles held</NodeDescription>
-        {others.length > 0 && (
-          <div className="flex flex-wrap gap-1 pt-1">
-            {others.map((h) => <Badge key={h} variant="outline" className="rounded-full"><UserIcon />{h}</Badge>)}
-          </div>
-        )}
-      </NodeHeader>
-      <NodeContent className="flex flex-col gap-1.5 text-xs">
-        {data.sessions.slice(0, 6).map((s) => (
-          <div key={s.label} className="flex items-center gap-2">
-            <Dot on={s.online} />
-            <span className="truncate">{splitLabel(s.label).name}</span>
-            {s.roles.map((r) => <Badge key={r} variant="secondary" className="h-4 px-1 text-[10px]">{r}</Badge>)}
-          </div>
-        ))}
-        {data.sessions.length > 6 && <div className="text-muted-foreground">and {data.sessions.length - 6} more</div>}
-        {!data.sessions.length && <div className="text-muted-foreground">Nobody is live.</div>}
-      </NodeContent>
+    <Node handles={{ target: true, source: true }} className="map-project hidden-handles">
+      <div className="map-project-heading">
+        <span className="map-project-symbol"><FolderGit2Icon /></span>
+        <div className="min-w-0"><p className="eyebrow truncate">{data.owner ?? "Shared project"}</p><h3 title={data.id} className="truncate text-base font-semibold">{data.id.split("/").slice(-1)[0]}</h3></div>
+      </div>
+      <div className="map-project-activity"><Dot on={live > 0} /><span>{live ? `${live} agent${live === 1 ? "" : "s"} online` : "No agents online"}</span>{data.roles.length > 0 && <span className="ml-auto text-muted-foreground">{data.roles.filter((r) => r.holder).length} roles held</span>}</div>
+      <div className="map-project-sessions">
+        {sessions.map((s) => <div key={s.label} className="flex min-w-0 items-center justify-between gap-3"><span title={s.label} className="truncate">{splitLabel(s.label).name}</span><span className="shrink-0 text-[10px] text-muted-foreground">{s.online ? "Online" : "Away"}</span></div>)}
+        {data.sessions.length > 3 && <p className="text-muted-foreground">+{data.sessions.length - 3} more agents</p>}
+        {!data.sessions.length && <p className="text-muted-foreground">Ready for your first agent.</p>}
+      </div>
+      <div className="map-project-people"><span className="eyebrow">Humans</span><span title={data.humans.join(", ")} className="truncate">{data.humans.includes(data.me) ? "You" : ""}{others.length ? `${data.humans.includes(data.me) ? " + " : ""}${others.length === 1 ? others[0] : `${others.length} others`}` : ""}</span></div>
     </Node>
   );
 }
 
 function ForeignNode({ data }: NodeProps<FlowNode<ForeignData>>) {
   return (
-    <Node handles={{ target: true, source: false }} className="w-56 border-dashed hidden-handles">
-      <NodeHeader className="bg-transparent">
-        <NodeTitle className="flex items-center gap-2 text-sm"><LinkIcon className="size-4" />{data.name}</NodeTitle>
-        <NodeDescription>Linked, not yours: messages cross, nothing else.</NodeDescription>
-      </NodeHeader>
+    <Node handles={{ target: true, source: false }} className="map-project map-project-foreign hidden-handles">
+      <div className="map-project-heading"><span className="map-project-symbol"><LinkIcon /></span><div className="min-w-0"><p className="eyebrow">Linked project</p><h3 title={data.name} className="truncate text-sm font-semibold">{data.name}</h3></div></div>
+      <p className="px-4 pb-4 text-xs leading-relaxed text-muted-foreground">Messages can travel both ways. Humans and activity stay private.</p>
     </Node>
   );
 }
@@ -82,14 +70,16 @@ function LinkEdge({ id, source, target, data }: EdgeProps) {
   if (!s || !t) return null;
   const a = border(s, centre(t)), b = border(t, centre(s));
   const path = `M ${a.x} ${a.y} L ${b.x} ${b.y}`;
+  const angle = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
   return (
     <g className="group">
       <title>{(data as { label?: string } | undefined)?.label}</title>
       <path d={path} fill="none" stroke="transparent" strokeWidth={14} />
-      <BaseEdge id={id} path={path} className="transition-[stroke-width] group-hover:stroke-[3px]!" style={{ stroke: "var(--primary)", strokeWidth: 1.5 }} />
-      <circle fill="var(--primary)" r="3">
-        <animateMotion dur="3s" path={path} repeatCount="indefinite" />
-      </circle>
+      <BaseEdge id={id} path={path} style={{ stroke: "var(--map-link)", strokeWidth: 1.5 }} />
+      <g transform={`translate(${(a.x + b.x) / 2} ${(a.y + b.y) / 2}) rotate(${angle})`} aria-hidden="true">
+        <circle r="13" fill="var(--sidebar)" />
+        <path d="M -7 -3 H 7 L 3 -7 M 7 3 H -7 L -3 7" fill="none" stroke="var(--map-link)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      </g>
     </g>
   );
 }
@@ -185,23 +175,44 @@ export function graph(state: State): { nodes: FlowNode<Data>[]; edges: FlowEdge[
   const nodes: FlowNode<Data>[] = [
     ...state.projects.map((p) => ({ id: `p:${p.id}`, type: "project", position: pos.get(p.id)!, data: { ...p, me: state.human } as ProjectData })),
     // Smaller cards: centred in their cell.
-    ...foreign.map((f) => ({ id: `p:${f}`, type: "foreign", position: { x: pos.get(f)!.x + 32, y: pos.get(f)!.y + 40 }, data: { name: f } })),
+    ...foreign.map((f) => ({ id: `p:${f}`, type: "foreign", position: { x: pos.get(f)!.x + 24, y: pos.get(f)!.y + 40 }, data: { name: f } })),
   ];
   const edges = pairs.map(([a, b]) => ({ id: `l:${a}|${b}`, source: `p:${a}`, target: `p:${b}`, type: "link", data: { label: `${a} ↔ ${b}` } }));
   return { nodes, edges, foreign: foreign.length };
 }
 
+// Use measured cards, including linked projects, so tall cards stay inside the boundary.
+// React Flow centres an extent smaller than the viewport, and clamps panning at larger zooms.
+const PAN_PADDING = 80;
+function MapBoundary({ onChange }: { onChange: (extent: CoordinateExtent) => void }) {
+  // Controlled nodes do not receive measured dimensions unless the caller applies
+  // onNodesChange. Read the internal lookup, which always has the rendered sizes.
+  const bounds = useStore((s) => {
+    const nodes = [...s.nodeLookup.values()];
+    return nodes.some((n) => !n.measured.width || !n.measured.height) ? null : getNodesBounds(nodes, { nodeLookup: s.nodeLookup });
+  }, (a, b) => a === b || (!!a && !!b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height));
+  const { x = 0, y = 0, width = 0, height = 0 } = bounds ?? {};
+  const measured = bounds !== null;
+  useEffect(() => {
+    if (measured) onChange([[x - PAN_PADDING, y - PAN_PADDING], [x + width + PAN_PADDING, y + height + PAN_PADDING]]);
+  }, [measured, x, y, width, height, onChange]);
+  return null;
+}
+
 export function LinkMap({ state }: { state: State }) {
   const { nodes, edges, foreign } = useMemo(() => graph(state), [state]);
+  const [extent, setExtent] = useState<CoordinateExtent>();
   return (
-    <div className="h-[75vh] min-h-[420px] overflow-hidden rounded-lg border">
+    <div className="map-surface h-[70vh] min-h-[420px] overflow-hidden rounded-lg border">
       <Canvas nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} panOnDrag selectionOnDrag={false} nodesConnectable={false}
-        nodesDraggable={false} deleteKeyCode={null} proOptions={{ hideAttribution: true }} fitView fitViewOptions={{ padding: 0.2 }} minZoom={0.2}>
+        translateExtent={extent} nodesDraggable={false} deleteKeyCode={null} proOptions={{ hideAttribution: true }} fitView fitViewOptions={{ padding: 0.2, maxZoom: 1 }} minZoom={0.2}>
+        <MapBoundary onChange={setExtent} />
         <Controls showInteractive={false} />
-        <Panel position="top-left" className="px-3 py-2 text-muted-foreground text-xs">
-          {state.projects.length} projects · {edges.length} link{edges.length === 1 ? "" : "s"}
+        <Panel position="top-left" className="map-caption px-3 py-2 text-muted-foreground text-xs">
+          {state.projects.length} project{state.projects.length === 1 ? "" : "s"} · {edges.length} connection{edges.length === 1 ? "" : "s"}
           {foreign > 0 && ` · ${foreign} linked project${foreign === 1 ? "" : "s"} of others (dashed)`}
         </Panel>
+        <Panel position="bottom-right" className="map-caption flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground"><ArrowLeftRightIcon className="size-3.5" /> Connections work both ways</Panel>
       </Canvas>
     </div>
   );

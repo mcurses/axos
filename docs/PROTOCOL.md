@@ -547,7 +547,7 @@ An invite made on someone's page pairs the two: redeeming it creates a project o
 "pair", named `<inviter>/<invitee>` or `<inviter>/with-<invitee>`), through which their sessions reach each other
 from any folder (see Addresses, `human:<name>`). It may also carry the work: `POST /ui/api/invite {"name","project"}`
 with a project the maker owns (not a pair; the page offers it as "Share with… someone new" on the project's card and
-as "to work on…" under People). The invite page and the setup script then say the project, its brief and where its code is; the
+as "to work on…" under Humans). The invite page and the setup script then say the project, its brief and where its code is; the
 person is a member of it the moment they join, as if they had accepted a share, and the inviter's phone hears
 quietly that the link was used (by whom, into what). The checks are repeated at redemption: if the maker no longer
 owns the project, it became a pair, or the maker is no longer the operator, the person joins without it (the event

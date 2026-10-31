@@ -685,7 +685,7 @@ export class Hub {
       .run(hashSecret(newSecret("axosinv")), human, project, t, t + INVITE_TTL_S * 1000, by);
     const id = Number(r.lastInsertRowid);
     this.event(`human:${by}`, "project.share_asked", project, { human });
-    if (this.otherPushAllowed(by, human)) void this.pushToHuman(human, `${by} wants to share ${this.projectName(project)} with you`, "Join, or not now: on your page under People.", `#invite-${id}`);
+    if (this.otherPushAllowed(by, human)) void this.pushToHuman(human, `${by} wants to share ${this.projectName(project)} with you`, "Join, or not now: on your page under Humans.", `#invite-${id}`);
     return id;
   }
 
@@ -702,7 +702,7 @@ export class Hub {
       .run(hashSecret(newSecret("axosinv")), human, project, t, t + INVITE_TTL_S * 1000, by);
     const id = Number(r.lastInsertRowid);
     this.event(`human:${by}`, "project.link_asked", project, { human });
-    if (this.otherPushAllowed(by, human)) void this.pushToHuman(human, `${by} wants to link ${this.projectName(project)} with one of your projects`, "Pick which, or say no: on your page under People.", `#invite-${id}`);
+    if (this.otherPushAllowed(by, human)) void this.pushToHuman(human, `${by} wants to link ${this.projectName(project)} with one of your projects`, "Pick which, or say no: on your page under Humans.", `#invite-${id}`);
     return id;
   }
 

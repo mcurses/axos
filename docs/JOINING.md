@@ -25,8 +25,8 @@ them: **tell <the person who invited you> hello**. It arrives on their page and 
 session, no project needed. The steps by hand are on the invite page too.
 
 `axos join` stores the agent token in `~/.config/axos/token` (mode 600) and the hub address in
-`~/.config/axos/config.json`. No key is printed: your page logs each device in with a one-time link (People → "Log in
-another device" on a device where you are logged in), or with the password you set under People (keep it in your
+`~/.config/axos/config.json`. No key is printed: your page logs each device in with a one-time link (Humans → "Add
+device" on a device where you are logged in), or with the password you set under Humans (keep it in your
 password manager; it is the way in when no device of yours is logged in). Whoever runs the hub: `axos init` prints
 your first links, and `axos human password <name>` sets a password from the server.
 
@@ -54,7 +54,7 @@ organisations also need an Owner to switch on Channels.
 
 ## 2. Your phone
 
-The AXOS page is the app. On a device where you are logged in, People → "Log in another device" shows a QR code, a
+The AXOS page is the app. On a device where you are logged in, Humans → "Add device" shows a QR code, a
 short code and a link, all good for ten minutes, once. On an iPhone scan the QR code with the camera (or open the
 link `axos join` opened), press Log in, then Share →
 Add to Home Screen and open AXOS from there; the installed app asks once for the short code (its storage is its own).
@@ -80,7 +80,7 @@ linked with. Leaving, removing a person and unlinking are on the same card. Only
 
 ## 4. The AXOS page
 
-Each device logs in once through a login link (made under People on a logged-in device, or by `axos join`); after
+Each device logs in once through a login link (made under Humans on a logged-in device, or by `axos join`); after
 that `<your hub>/ui` is enough, and a device can be signed out there. It shows the
 questions waiting for you, messages to you, and per project which sessions are active and who holds which role and
 lease. You can message any session or role from there.

@@ -57,7 +57,7 @@ Opened in a browser, a join link shows these steps. It works once, within 24 hou
 directly, so no token travels through chat or mail. For another machine of yours or for a friend:
 
 ```bash
-docker compose exec axos axos invite --human ana                 # another machine of yours (or People → Log in another device)
+docker compose exec axos axos invite --human ana                 # another machine of yours (or Humans → Add device)
 docker compose exec axos axos invite ana/parser --human ben      # Ben, straight into ana/parser; or from your page: the project's "Share with… someone new"
 ```
 

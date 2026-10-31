@@ -14,7 +14,7 @@ export interface Session {
   unread: number; unseen: number; roles: string[]; last_seen: number | null; // unread: not acked; unseen: not read yet
 }
 export interface Project {
-  // pair: the project of exactly two people, shown under People
+  // pair: the project of exactly two people, shown under Humans
   id: string; pair: boolean; owner: string | null; brief: string; repo: string; humans: string[]; links: string[]; sessions: Session[];
   roles: { role: string; description: string; holder: string | null; unread: number; unseen: number }[];
   leases: { resource: string; holder: string; until: number; note: string }[];

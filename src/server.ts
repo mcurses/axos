@@ -407,7 +407,7 @@ else
   say "Could not clone $REPO here (no access to it yet, or no git). Once you have it: git clone $REPO && cd $DIR && axos link"
 fi` : `say ${q(`Get the code onto this machine, open its folder in Claude Code and say: connect this folder to AXOS (it picks ${work.name}).`)}`}`
     : `say "After that, when you like: in a repo you work in, say to Claude Code: connect this folder to AXOS."`}
-say "Your page is the app on a phone too: People, Log in another device, open the link on the phone, Add to Home Screen, Notifications on."
+say "Your page is the app on a phone too: Humans, Add device, Create login code, open the link on the phone, Add to Home Screen, Notifications on."
 `;
 }
 

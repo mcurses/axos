@@ -44,7 +44,7 @@ export default function App() {
 
   const unread = state.asks.length + state.inbox.length + state.pending.length;
   return (
-    <main className="mx-auto flex max-w-5xl flex-col gap-5 p-4 sm:p-8">
+    <main className="mx-auto flex max-w-6xl flex-col gap-6 p-5 sm:px-10 sm:py-8">
       <header className="axos-header flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3"><img src={axosIcon} alt="" className="axos-mark size-11 shrink-0" /><div className="min-w-0"><h1 className="font-semibold text-lg tracking-[0.16em]">AXOS</h1><p className="truncate text-xs text-muted-foreground">{state.human}</p></div></div>
         <span className="flex items-center gap-2">
@@ -52,37 +52,39 @@ export default function App() {
           <Notifications hubKey={state.push.key} devices={state.push.devices.length} />
         </span>
       </header>
-      <Tabs defaultValue={location.hash.startsWith("#m") || unread ? "inbox" : "map"}>
-        <TabsList className="axos-navigation w-full sm:w-auto">
+      <Tabs defaultValue={["people", "projects", "send", "map", "inbox"].includes(location.hash.slice(1)) ? location.hash.slice(1) : location.hash.startsWith("#m") || unread ? "inbox" : "map"} onValueChange={(tab) => history.replaceState(null, "", `#${tab}`)}>
+        <TabsList className="axos-navigation w-full sm:w-auto" onPointerDown={(e) => { e.currentTarget.dataset.pointer = "true"; }} onKeyDown={(e) => { delete e.currentTarget.dataset.pointer; }}>
           <TabsTrigger value="inbox">Inbox{unread > 0 && <Badge className="ml-1 h-5 px-1.5">{unread}</Badge>}</TabsTrigger>
           <TabsTrigger value="map">Map</TabsTrigger>
           <TabsTrigger value="projects">Projects</TabsTrigger>
-          <TabsTrigger value="people">People</TabsTrigger>
+          <TabsTrigger value="people">Humans</TabsTrigger>
           <TabsTrigger value="send">Send</TabsTrigger>
         </TabsList>
-        <TabsContent value="inbox" className="flex flex-col gap-6 pt-2">
+        <TabsContent value="inbox" className="screen-stack">
+          <header className="screen-heading"><div><p className="eyebrow">Your attention</p><h2>Inbox</h2><p>Decisions to make, updates to catch up on. This is where your agents reach you.</p></div></header>
           <PendingRequests pending={state.pending} projects={state.projects} onChange={refresh} />
           <section className="flex flex-col gap-3">
-            <h2 className="font-medium">Questions for you <span className="text-muted-foreground">({state.asks.length})</span></h2>
+            <h2 className="font-medium">Needs a decision <span className="ml-2 text-sm text-muted-foreground">{state.asks.length}</span></h2>
             {state.asks.map((a) => <AskCard key={a.id} ask={a} now={state.now} onDone={refresh} />)}
             {!state.asks.length && <p className="text-muted-foreground text-sm">None open.</p>}
           </section>
           <section className="flex flex-col gap-3">
-            <h2 className="font-medium">Messages to you <span className="text-muted-foreground">({state.inbox.length} unread)</span></h2>
+            <h2 className="font-medium">Updates <span className="ml-2 text-sm text-muted-foreground">{state.inbox.length} unread</span></h2>
             {state.inbox.map((m) => <InboxItem key={m.id} m={m} now={state.now} onDone={refresh} />)}
             {!state.inbox.length && <p className="text-muted-foreground text-sm">{state.projects.length ? "Nothing unread." : "Nothing yet. A question from one of your sessions, or a message from a person, appears here and on your phone."}</p>}
           </section>
           {state.sent.length > 0 && (
             <section className="flex flex-col gap-3">
-              <h2 className="font-medium">Sent by your agents to other people, and whatever they quoted as your words <span className="text-muted-foreground">(last {state.sent.length})</span></h2>
+              <h2 className="font-medium">Agent activity <span className="ml-2 text-sm text-muted-foreground">Last {state.sent.length}</span></h2>
               {state.sent.map((m) => <SentItem key={m.id} m={m} now={state.now} />)}
             </section>
           )}
         </TabsContent>
-        <TabsContent value="map" className="pt-2">
+        <TabsContent value="map" className="screen-stack">
+          <header className="screen-heading"><div><p className="eyebrow">The bigger picture</p><h2>Your network</h2><p>See where your agents are working and how your projects connect.</p></div></header>
           <Suspense fallback={<p className="text-muted-foreground text-sm">Loading the map…</p>}><LinkMap state={state} /></Suspense>
         </TabsContent>
-        <TabsContent value="projects" className="flex flex-col gap-4 pt-2">
+        <TabsContent value="projects" className="screen-stack">
           <NewProject onChange={refresh} />
           {state.projects.filter((p) => !p.pair).map((p) => <ProjectCard key={p.id} p={p} now={state.now} me={state.human} people={state.people.map((x) => x.name)} operator={state.me.operator} onChange={refresh} />)}
           {!state.projects.some((p) => !p.pair) && <p className="text-muted-foreground text-sm">No projects yet. In a repo, tell Claude Code "connect this folder to AXOS".</p>}
@@ -113,7 +115,7 @@ function Login() {
   const submit = (e: React.FormEvent) => { e.preventDefault(); void send("/ui/login", { name, password }); };
   return (
     <main className="mx-auto max-w-md px-4 py-12 sm:py-20">
-      <header className="mb-8 flex flex-col items-center gap-3 text-center"><img src={axosIcon} alt="" className="axos-mark size-20" /><h1 className="font-semibold text-2xl tracking-[0.18em]">AXOS</h1><p className="text-sm text-muted-foreground">Your people, projects and agents.</p></header>
+      <header className="mb-8 flex flex-col items-center gap-3 text-center"><img src={axosIcon} alt="" className="axos-mark size-20" /><h1 className="font-semibold text-2xl tracking-[0.18em]">AXOS</h1><p className="text-sm text-muted-foreground">Your humans, projects and agents.</p></header>
       <div className="axos-login rounded-2xl border bg-card p-5 sm:p-6">
       <h2 className="mb-4 text-lg font-medium">Welcome back</h2>
       <form className="flex flex-col gap-2" onSubmit={submit}>
@@ -125,7 +127,7 @@ function Login() {
         {error && <p className="text-destructive text-sm">{error}</p>}
       </form>
       <form className="mt-6 flex flex-col gap-3 border-t pt-5" onSubmit={(e) => { e.preventDefault(); void send("/ui/login/code", { code }); }}>
-        <p className="text-muted-foreground text-sm">Or the short code from a device where you are logged in (People → "Log in another device"):</p>
+        <p className="text-muted-foreground text-sm">Or the short code from a device where you are logged in (Humans → "Add device"):</p>
         <label htmlFor="login-code" className="text-sm font-medium">Login code</label>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input id="login-code" className="min-w-0 flex-1 uppercase tracking-widest" autoComplete="one-time-code" placeholder="ABCD-EFGH" value={code} onChange={(e) => setCode(e.target.value)} />
