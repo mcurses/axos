@@ -18,7 +18,8 @@ export interface Project {
   roles: { role: string; description: string; holder: string | null; unread: number; unseen: number }[];
   leases: { resource: string; holder: string; until: number; note: string }[];
 }
-export interface State { human: string; now: number; types: string[]; asks: Ask[]; inbox: InboxMessage[]; sent: SentMessage[]; projects: Project[] }
+// push: the hub's key this browser subscribes with (null: the hub cannot push) and the devices registered so far.
+export interface State { human: string; push: { key: string | null; devices: { label: string; created_at: number; last_ok: number | null }[] }; now: number; types: string[]; asks: Ask[]; inbox: InboxMessage[]; sent: SentMessage[]; projects: Project[] }
 
 export class NotLoggedIn extends Error {}
 
@@ -29,7 +30,7 @@ export async function loadState(): Promise<State> {
   return res.json();
 }
 
-export async function post(action: "answer" | "ack" | "send", body: Record<string, unknown>): Promise<unknown> {
+export async function post(action: "answer" | "ack" | "send" | "push/subscribe" | "push/unsubscribe", body: Record<string, unknown>): Promise<unknown> {
   const res = await fetch(`/ui/api/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const out = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new Error(out.error ?? `the hub answered ${res.status}`);

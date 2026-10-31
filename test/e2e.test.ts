@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { openDb } from "../src/db.ts";
 import { Hub } from "../src/hub.ts";
+import type { WebPushPayload } from "../src/webpush.ts";
 import { makeFetch } from "../src/server.ts";
 import { PLUGIN, VERSION } from "../src/version.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -17,11 +18,12 @@ let base: string;
 const tokens: Record<string, string> = {};
 const ids: Record<string, string> = {};
 let uiKey = "";
+let webPushes: WebPushPayload[] = [];
 // Projects by id. Agents see them by name: alice/shop.
 let SHOP = "", GAME = "";
 
 beforeAll(() => {
-  hub = new Hub(openDb(":memory:"));
+  hub = new Hub(openDb(":memory:"), { webPush: () => ({ async send(_d, payload) { webPushes.push(payload); return "ok"; } }) });
   uiKey = hub.addHuman("alice").uiKey;
   SHOP = hub.addProject("shop", "The shop. Rulings live in git: shop-meta/answers/.");
   hub.addHumanToProject("alice", SHOP);
@@ -1233,4 +1235,41 @@ test("across a link, another person's session is 'a session of <human>' in the s
   expect(back.text).toContain("Delivered to a session of alice.");
   await bobC.close();
   await ana.close();
+});
+
+test("the page registers this device for pushes; the manifest and the service worker are served", async () => {
+  const login = await fetch(`${base}/ui?key=${uiKey}`, { redirect: "manual" });
+  const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
+  const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+    fetch(`${base}/ui/api/${path}`, { method: "POST", body: JSON.stringify(body), headers: { cookie, "Content-Type": "application/json", ...headers } });
+  const state = JSON.parse(await (await fetch(`${base}/ui/api/state`, { headers: { cookie } })).text()) as { push: { key: string | null; devices: unknown[] } };
+  expect(typeof state.push.key).toBe("string");
+  expect(state.push.devices).toEqual([]);
+  const subscription = { endpoint: "https://web.push.apple.com/QW", keys: { p256dh: "B".repeat(87), auth: "a".repeat(22) }, expirationTime: null };
+  expect(await (await post("push/subscribe", { subscription, label: "iPhone, home screen" })).json()).toEqual({ added: true });
+  expect((await post("push/subscribe", { subscription: { endpoint: "http://plain.example/x", keys: subscription.keys } })).status).toBe(400);
+  expect((await fetch(`${base}/ui/api/push/subscribe`, { method: "POST", body: JSON.stringify({ subscription }), headers: { "Content-Type": "application/json" } })).status).toBe(401);
+  expect(hub.pushDevices("alice").map((d) => d.label)).toEqual(["iPhone, home screen"]);
+  const r = hub.askHuman(ids.dev1!, { project: SHOP, human: "alice", question: "Push this?", options: ["yes"] });
+  await Bun.sleep(0);
+  expect(webPushes.at(-1)).toMatchObject({ body: "Push this?", url: `/ui#m${r.message_id}` });
+  expect(await (await post("push/unsubscribe", { endpoint: subscription.endpoint })).json()).toEqual({ ok: true });
+  expect(hub.pushDevices("alice")).toEqual([]);
+
+  const dist = mkdtempSync(join(tmpdir(), "axos-dist-"));
+  writeFileSync(join(dist, "index.html"), "<!doctype html><title>AXOS</title>");
+  writeFileSync(join(dist, "manifest.webmanifest"), '{"name":"AXOS"}');
+  writeFileSync(join(dist, "sw.js"), "self.addEventListener('push', () => {})");
+  const before = process.env.AXOS_WEB_DIST;
+  process.env.AXOS_WEB_DIST = dist;
+  try {
+    const manifest = await fetch(`${base}/ui/manifest.webmanifest`);
+    expect(manifest.headers.get("content-type")).toBe("application/manifest+json");
+    const sw = await fetch(`${base}/ui/sw.js`);
+    expect(sw.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+    expect(sw.headers.get("cache-control")).toBe("no-cache");
+  } finally {
+    if (before === undefined) delete process.env.AXOS_WEB_DIST; else process.env.AXOS_WEB_DIST = before;
+    rmSync(dist, { recursive: true, force: true });
+  }
 });

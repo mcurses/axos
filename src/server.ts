@@ -3,6 +3,7 @@ import { openDb } from "./db.ts";
 import { AxosError, Hub, iso, MAX_IMAGE, type AgentRow, type InboxItem } from "./hub.ts";
 import { buildMcpServer, type Connection } from "./mcp.ts";
 import { ntfyNotifier } from "./notify.ts";
+import { webPushSender } from "./webpush.ts";
 import { FRAME_NOTE, FRAME_NOTE_SHORT, renderDigest, renderMessages } from "./render.ts";
 import { handleUi } from "./ui.ts";
 import { PLUGIN, PROTOCOL, VERSION } from "./version.ts";
@@ -449,6 +450,8 @@ if (import.meta.main) {
     publicUrl: process.env.AXOS_PUBLIC_URL,
     linkSecret: process.env.AXOS_LINK_SECRET || undefined,
     notifier: process.env.AXOS_NTFY_URL ? ntfyNotifier(process.env.AXOS_NTFY_URL, process.env.AXOS_NTFY_TOKEN) : undefined,
+    // The page's own pushes need a VAPID subject the push services accept: the hub's https URL.
+    webPush: /^https:/.test(process.env.AXOS_PUBLIC_URL ?? "") ? (keys) => webPushSender(process.env.AXOS_PUBLIC_URL!.replace(/\/$/, ""), keys) : undefined,
   });
   setInterval(() => { try { hub.sweep(); } catch (e) { console.error("sweep failed", e); } }, 15_000);
   // idleTimeout 0: long-polls (wait) and the bell's event stream stay open; heartbeats keep proxies honest.

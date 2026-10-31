@@ -3,8 +3,10 @@ import { Toaster } from "@/components/ui/sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AskCard, InboxItem, SentItem } from "@/features/inbox";
 import { Composer } from "@/features/composer";
+import { Notifications } from "@/features/notifications";
 import { ProjectCard } from "@/features/projects";
 import { loadState, NotLoggedIn, type State } from "@/lib/api";
+import { syncPush } from "@/lib/push";
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 
 // The map carries React Flow; it loads when its tab opens.
@@ -28,15 +30,12 @@ export default function App() {
   useEffect(() => {
     if (state && location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView({ block: "center" });
   }, [state !== null]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Each load: the hub hears of this device again, the badge shows what is open, shown notifications are taken off.
+  useEffect(() => {
+    if (state) void syncPush(state.push.key, state.asks.length + state.inbox.length);
+  }, [state]);
 
-  if (error instanceof NotLoggedIn) {
-    return (
-      <main className="mx-auto max-w-xl p-6">
-        <h1 className="mb-2 font-semibold text-xl">AXOS</h1>
-        <p className="text-muted-foreground">Open the link with your key once: <code>/ui?key=…</code> (from <code>axos human key</code>). It is remembered after that.</p>
-      </main>
-    );
-  }
+  if (error instanceof NotLoggedIn) return <Login />;
   if (!state) return <main className="p-6 text-muted-foreground">{error ? `Could not load: ${error.message}` : "Loading…"}</main>;
 
   const unread = state.asks.length + state.inbox.length;
@@ -44,7 +43,10 @@ export default function App() {
     <main className="mx-auto flex max-w-5xl flex-col gap-4 p-4 sm:p-6">
       <header className="flex items-center justify-between gap-2">
         <h1 className="font-semibold text-xl">AXOS <span className="font-normal text-muted-foreground">· {state.human}</span></h1>
-        {error && <Badge variant="destructive">offline: {error.message}</Badge>}
+        <span className="flex items-center gap-2">
+          {error && <Badge variant="destructive">offline: {error.message}</Badge>}
+          <Notifications hubKey={state.push.key} devices={state.push.devices.length} />
+        </span>
       </header>
       <Tabs defaultValue={location.hash.startsWith("#m") || unread ? "inbox" : "map"}>
         <TabsList className="w-full sm:w-auto">
@@ -82,6 +84,21 @@ export default function App() {
         </TabsContent>
       </Tabs>
       <Toaster />
+    </main>
+  );
+}
+
+// Not logged in: the key link once, or the key typed here (an installed app has no address bar to open the link in).
+function Login() {
+  const [key, setKey] = useState("");
+  return (
+    <main className="mx-auto max-w-xl p-6">
+      <h1 className="mb-2 font-semibold text-xl">AXOS</h1>
+      <p className="mb-4 text-muted-foreground">Open the link with your key once (<code>/ui?key=…</code>, from <code>axos human key</code>), or paste the key here. It is remembered after that.</p>
+      <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (key.trim()) location.assign(`/ui?key=${encodeURIComponent(key.trim())}`); }}>
+        <input className="flex-1 rounded-md border bg-background px-3 py-2 text-sm" type="password" autoComplete="off" placeholder="your key" value={key} onChange={(e) => setKey(e.target.value)} />
+        <button className="rounded-md border px-3 py-2 text-sm" type="submit">Log in</button>
+      </form>
     </main>
   );
 }

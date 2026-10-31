@@ -15,6 +15,7 @@ const USAGE = `axos — hub admin
   axos human add <name> [--ntfy <topic>]         add a human; prints their UI key
   axos human key <name>                          new UI key
   axos human ntfy <name> <topic|->               set or clear the ntfy topic
+  axos human devices <name> [--clear]            the devices the page registered for pushes; --clear forgets them all
   axos project add <owner>/<name> [--brief <file|->]
                                                  add a project (- reads the brief from stdin); prints its id
   axos project list                              every project with its id, people and links
@@ -162,6 +163,19 @@ The join link works once and expires in 24 hours; axos invite --human ${name} ma
       need(2);
       hub.setNtfyTopic(rest[0]!, rest[1] === "-" ? null : rest[1]!);
       out("ok");
+      return;
+    }
+    case "human devices": {
+      const clear = rest.includes("--clear");
+      need(1);
+      const devices = hub.pushDevices(rest[0]!);
+      if (clear) {
+        for (const d of devices) hub.pushUnsubscribe(rest[0]!, d.endpoint);
+        out(`${devices.length} device(s) forgotten; ${rest[0]} turns pushes on again on the page.`);
+        return;
+      }
+      if (!devices.length) { out(`${rest[0]} has no device registered: on the page, "Notifications" turns them on (iPhone: add the page to the home screen first).`); return; }
+      out(devices.map((d) => `${d.label || "a device"}: registered ${ago(d.created_at, hub.now())}, last push ${d.last_ok ? ago(d.last_ok, hub.now()) : "none yet"}`).join("\n"));
       return;
     }
     case "project add": {

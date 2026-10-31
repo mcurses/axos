@@ -216,6 +216,17 @@ CREATE TABLE IF NOT EXISTS landing_commits (   -- every commit a landing put on 
   PRIMARY KEY (landing, sha)
 );
 CREATE INDEX IF NOT EXISTS landing_commits_sha ON landing_commits(sha);
+-- A human's devices for the page's own pushes (Web Push subscriptions); the keys are the device's, the endpoint the
+-- push service's. A device that answers 404/410 is dropped.
+CREATE TABLE IF NOT EXISTS push_devices (
+  endpoint      TEXT PRIMARY KEY,
+  human         TEXT NOT NULL REFERENCES humans(name),
+  p256dh        TEXT NOT NULL,
+  auth          TEXT NOT NULL,
+  label         TEXT NOT NULL DEFAULT '',
+  created_at    INTEGER NOT NULL,
+  last_ok       INTEGER
+);
 CREATE TABLE IF NOT EXISTS kv (
   k             TEXT PRIMARY KEY,
   v             TEXT NOT NULL

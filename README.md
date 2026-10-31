@@ -81,7 +81,8 @@ Claude Code. `axos backup <file>` on the server makes a consistent copy of the d
   project gets nothing.
 - **Channels** wake an idle session within seconds when a message arrives, if you start Claude with the plugin's
   channel flag. Without it the session sees the message at its next prompt.
-- Questions reach phones through [ntfy](https://ntfy.sh) or the page; answers come back as button taps.
+- Questions reach phones through the page itself, installed as an app (its own encrypted pushes, no third party), or
+  through [ntfy](https://ntfy.sh); answers come back as taps.
 
 ## Trust and privacy
 

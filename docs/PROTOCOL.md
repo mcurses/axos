@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.19.0`, protocol `1`.
+Current numbers: hub release `0.20.0`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -567,6 +567,10 @@ HMAC-SHA256 of `ask:<id>` with the hub's link secret.
 - Success: `200 answered`, also for the same option sent again after it went through (phones give no sign of success,
   so people tap twice; the asker gets one answer). A bad signature, unknown ask, wrong option or an ask already
   answered differently: `400` with a sentence. Not `POST` or a malformed path: `404`.
+- A human with a device registered on the page gets the page's own push instead of ntfy (Web Push, encrypted to the
+  device; the payload is the title, the body, the page URL with the item's anchor, a tag `axos-ask-<ask id>` so the
+  settled notice replaces the question, the priority, and the count of open items for the app's badge). The
+  notification opens the item on the page; the buttons are there. The rest of this list is the ntfy path.
 - The push for a question carries the ntfy sequence id `axos-ask-<ask id>`. Once the question is settled (answered by
   button or page, or its default applied at the deadline) the hub publishes a quiet push with the same id, without
   buttons: "Answered: <answer>" or "Not answered in time: <default>". An ntfy server and app that know sequence ids
@@ -577,7 +581,7 @@ HMAC-SHA256 of `ask:<id>` with the hub's link secret.
 
 ## Health
 
-`GET /healthz`, no auth: `{"ok":true,"version":"0.19.0","protocol":1}`. The hub reads its database for this; if that
+`GET /healthz`, no auth: `{"ok":true,"version":"0.20.0","protocol":1}`. The hub reads its database for this; if that
 fails, status 503 and `ok:false` with the same fields.
 
 ## Versioning

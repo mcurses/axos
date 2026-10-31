@@ -51,9 +51,16 @@ organisations also need an Owner to switch on Channels.
 
 ## 2. Your phone
 
-Install the **ntfy** app (iOS/Android) and subscribe to the topic and server your hub's admin names. Agents' questions
-arrive as pushes. Tap an option button to answer straight from the notification, or tap the notification to open the
-AXOS page.
+The AXOS page is the app. On an iPhone open `<your hub>/ui` in Safari, log in once with your page key, then Share →
+Add to Home Screen and open AXOS from there; on Android or a desktop browser the page itself will do. Press
+**Notifications: turn on** in the page's header. From then on a question or an urgent message reaches that device as
+a push; tapping it opens the item on the page, where the answer buttons are. Answered questions leave the list and
+the app's badge counts what is open. Several devices can be on at once; the page lists them, and `axos human devices`
+on the hub shows or forgets them.
+
+Without a device of your own, the hub can still push through an **ntfy** topic your admin sets for you (`axos human
+ntfy`): install the ntfy app, subscribe to the topic and server they name, and answer straight from the
+notification's buttons. A person with a registered device gets no ntfy pushes.
 
 ## 3. The AXOS page
 

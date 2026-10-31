@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, resolve, sep } from "node:path";
 import { AxosError, Hub, MESSAGE_TYPES } from "./hub.ts";
+import { parseDevice } from "./webpush.ts";
 
 // The humans' page: a React app (web/, built into web/dist) and the JSON it reads and posts under /ui/api.
 // Login: open /ui?key=<ui key> once; the key moves into a SameSite=Strict cookie scoped to /ui.
@@ -12,7 +13,7 @@ const dist = () => resolve(process.env.AXOS_WEB_DIST ?? resolve(import.meta.dir,
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".woff": "font/woff", ".json": "application/json",
-  ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8", ".map": "application/json",
+  ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8", ".map": "application/json", ".webmanifest": "application/manifest+json",
 };
 
 // Scripts and styles from the hub only; images from the hub and inline data (charts, icons). Peer text is rendered as
@@ -59,6 +60,14 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
     try {
       if (url.pathname === "/ui/api/answer") {
         return json(hub.answerAsk(human, Number(b.ask), str("answer")));
+      } else if (url.pathname === "/ui/api/push/subscribe") {
+        // This device's Web Push subscription, as the browser serialised it; the label is for the human's own list.
+        const device = parseDevice(b.subscription);
+        if (!device) return json({ error: "not a push subscription" }, 400);
+        return json(hub.pushSubscribe(human, device, str("label")));
+      } else if (url.pathname === "/ui/api/push/unsubscribe") {
+        hub.pushUnsubscribe(human, str("endpoint"));
+        return json({ ok: true });
       } else if (url.pathname === "/ui/api/ack") {
         hub.ack(`human:${human}`, [Number(b.id)]);
         return json({ ok: true });
@@ -137,6 +146,8 @@ function state(hub: Hub, human: string) {
     id: m.id, from: hub.senderTitle(m.sender), readers: m.readers, project: m.project, created_at: m.created_at, summary: m.summary, body: m.body,
     quotes_human: m.quotes_human, // "said in your words by <from>": the page shows every quote, whoever read it
   }));
+  // The page's own pushes: the key this browser subscribes with (null: this hub cannot push), and the devices registered.
+  const push = { key: hub.vapidPublicKey(), devices: hub.pushDevices(human).map((d) => ({ label: d.label, created_at: d.created_at, last_ok: d.last_ok })) };
   const projects = mine.map((p) => {
     const leases = hub.leases(p);
     return {
@@ -150,5 +161,5 @@ function state(hub: Hub, human: string) {
       leases: leases.live.map((l) => ({ resource: l.resource, holder: hub.label(l.holder), until: l.expires_at, note: l.note })),
     };
   });
-  return { human, now: hub.now(), types: MESSAGE_TYPES, asks, inbox, sent, projects };
+  return { human, push, now: hub.now(), types: MESSAGE_TYPES, asks, inbox, sent, projects };
 }

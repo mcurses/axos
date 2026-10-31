@@ -392,7 +392,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }));
 
   server.registerTool("ask_human", {
-    description: "Ask a human a question only they can decide. It is pushed to their phone with the options as buttons; the answer comes back as a message, verbatim. " +
+    description: "Ask a human a question only they can decide. It is pushed to their phone, with the options as buttons on the notification or the page; the answer comes back as a message, verbatim. " +
       "Give options and your recommended default; with a deadline the default applies if nobody answers. " +
       "Humans may take hours: do not block on the answer, carry on and read it from the inbox later.",
     inputSchema: strict({

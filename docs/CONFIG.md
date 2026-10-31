@@ -14,7 +14,7 @@ Read by `src/server.ts` (the hub). The admin command (`src/cli.ts`) reads `AXOS_
 | `AXOS_HOST` | `127.0.0.1` | Interface to bind. The Docker image sets `0.0.0.0`. | Reachable only from the same machine, so a reverse proxy on that machine is needed. |
 | `AXOS_PUBLIC_URL` | empty | The URL people and clients reach the hub at, e.g. `https://axos.example.com`. A trailing `/` is dropped. | See below. |
 | `AXOS_TZ` | the system's zone | IANA zone for the times in messages and tool results, e.g. `Europe/Berlin`. | Times show in the server's zone; in most containers that is UTC. |
-| `AXOS_NTFY_URL` | unset | Base URL of an ntfy server, e.g. `https://ntfy.sh`. The hub POSTs JSON to it for each push. | No phone pushes. |
+| `AXOS_NTFY_URL` | unset | Base URL of an ntfy server, e.g. `https://ntfy.sh`. The hub POSTs JSON to it for each push to a human who has an ntfy topic and no device registered on the page. | No ntfy pushes; the page's own pushes are unaffected. |
 | `AXOS_NTFY_TOKEN` | unset | Bearer token sent to ntfy. Ignored when `AXOS_NTFY_URL` is not set. | Pushes go out without authentication, which fails on a protected ntfy. |
 | `AXOS_LINK_SECRET` | unset or empty | Key that signs the answer links on push notifications. | A random secret is created on first start and kept in the database (`kv` table, key `link_secret`). Database backups then contain it. |
 | `AXOS_WEB_DIST` | `web/dist` next to `src/` | The built page (`cd web && bun install && bun run build`). | `/ui` answers `503` with the build command until it is built. The Docker image builds it. |
@@ -28,12 +28,26 @@ Read by `src/server.ts` (the hub). The admin command (`src/cli.ts`) reads `AXOS_
 - The admin command prints join links and page links as `<hub url>/…`. Replace the placeholder by hand.
 - `create_project` leaves `hub` out of the `.axos.json` it proposes.
 - Pushes carry no click-through URL and no answer buttons (the buttons are links to the hub).
+- The page cannot push to devices: Web Push needs the hub's `https:` URL as the VAPID subject.
 
 Set it whenever the hub is reached under a name.
 
-### What works without ntfy
+### The phone
 
-Everything except the phone. With no `AXOS_NTFY_URL`, or for a human without a topic:
+Two ways, and a person gets one of them:
+
+1. **The page's own pushes** (Web Push). A person turns them on in the page's header on each device (an iPhone needs
+   the page on the home screen first). The hub makes a VAPID key pair on first start and keeps it in the database
+   (`kv` table, key `vapid`; a new pair would orphan every registered device, so backups carry it) and sends each push
+   encrypted to the device's push service; the push service sees ciphertext. Needs `AXOS_PUBLIC_URL` with `https:`.
+   A device the push service no longer knows (404 or 410) is forgotten; at most ten devices per person; `axos human
+   devices <name> [--clear]` lists or forgets them.
+2. **ntfy**, for a person with a topic and no registered device: `AXOS_NTFY_URL` plus `axos human ntfy <name>
+   <topic>`. The buttons on the notification answer directly through signed links to the hub.
+
+### What works without a phone
+
+Everything except the phone. With no device registered, and no `AXOS_NTFY_URL` or no topic:
 
 - `ask_human` still stores the question and delivers it to the human's mailbox; its answer text says whether it was
   pushed.
@@ -44,7 +58,7 @@ Everything except the phone. With no `AXOS_NTFY_URL`, or for a human without a t
 - Deadlines and their defaults still apply; a deadline needs nobody to be reachable.
 
 The topic per human is set with `axos human ntfy <name> <topic>` (or `-` to clear it), or `axos human add <name> --ntfy
-<topic>`. Pushes are best effort: a failed push is logged as an event and nothing else happens.
+<topic>`. Pushes of either kind are best effort: a failed push is logged as an event and nothing else happens.
 
 ### Fixed values
 

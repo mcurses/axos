@@ -5,6 +5,7 @@ import { findSecret } from "./secrets.ts";
 import { nullNotifier, type Notifier, type PushAction } from "./notify.ts";
 import { ago } from "./render.ts";
 import { VERSION } from "./version.ts";
+import { generateVapidKeys, type PushDevice, type VapidKeys, type WebPush, type WebPushPayload } from "./webpush.ts";
 
 // The hub's domain logic. Transport-free: the MCP layer, the HTTP UI and the CLI all call into this.
 // Time is milliseconds since epoch, injectable for tests.
@@ -52,6 +53,16 @@ export interface AgentRow {
 
 export const ACK_OUTCOMES = ["done", "declined", "forwarded", "noted"] as const;
 export type AckOutcome = (typeof ACK_OUTCOMES)[number];
+
+export interface PushDeviceRow {
+  endpoint: string;
+  human: string;
+  p256dh: string;
+  auth: string;
+  label: string;
+  created_at: number;
+  last_ok: number | null;
+}
 
 export interface MessageRow {
   id: number;
@@ -151,7 +162,8 @@ export interface HubEvent {
 
 export interface HubOptions {
   now?: () => number;
-  notifier?: Notifier;
+  notifier?: Notifier; // ntfy, for a human with a topic and no device of their own
+  webPush?: (keys: VapidKeys) => WebPush; // the page's own pushes, to the devices a human registered there
   publicUrl?: string;
   linkSecret?: string; // signs answer links; kept out of the database (and its backups) when given
   sendsPerMinute?: number;
@@ -238,6 +250,8 @@ export class Hub {
   private readonly sweeps: boolean;
   private sendLog = new Map<string, number[]>();
   private linkSecret: string;
+  private webPush: WebPush | null;
+  readonly vapid: VapidKeys;
 
   constructor(readonly db: Database, opts: HubOptions = {}) {
     this.now = opts.now ?? Date.now;
@@ -249,6 +263,12 @@ export class Hub {
     const row = opts.linkSecret ? null : this.db.query("SELECT v FROM kv WHERE k = 'link_secret'").get() as { v: string } | null;
     this.linkSecret = opts.linkSecret ?? row?.v ?? randomBytes(32).toString("base64url");
     if (!opts.linkSecret && !row) this.db.query("INSERT INTO kv (k, v) VALUES ('link_secret', ?)").run(this.linkSecret);
+    // The hub's VAPID pair, made once and kept: a device's subscription is bound to the public key, so a new pair
+    // would orphan every registered phone.
+    const vapid = this.db.query("SELECT v FROM kv WHERE k = 'vapid'").get() as { v: string } | null;
+    this.vapid = vapid ? JSON.parse(vapid.v) as VapidKeys : generateVapidKeys();
+    if (!vapid) this.db.query("INSERT INTO kv (k, v) VALUES ('vapid', ?)").run(JSON.stringify(this.vapid));
+    this.webPush = opts.webPush ? opts.webPush(this.vapid) : null;
   }
 
   // A link that answers one ask without a login: the phone's answer buttons POST to it.
@@ -346,6 +366,47 @@ export class Hub {
   setNtfyTopic(name: string, topic: string | null): void {
     const r = this.db.query("UPDATE humans SET ntfy_topic = ? WHERE name = ?").run(topic, name);
     if (r.changes === 0) throw new AxosError(`no human '${name}'`);
+  }
+
+  // ---------------------------------------------------------------- the human's devices (the page's own pushes)
+
+  // The key a browser subscribes with; null when this hub cannot push (no public URL, so no VAPID subject).
+  vapidPublicKey(): string | null {
+    return this.webPush ? this.vapid.publicKey : null;
+  }
+
+  // The page registers the device it runs on. Registering the same endpoint again refreshes it; a human has at most
+  // ten devices, the oldest unused goes when an eleventh comes.
+  pushSubscribe(human: string, device: PushDevice, label = ""): { added: boolean } {
+    if (!this.webPush) throw new AxosError("this hub has no public URL, so it cannot push to devices");
+    const t = this.now();
+    const have = this.db.query("SELECT endpoint FROM push_devices WHERE endpoint = ?").get(device.endpoint) as { endpoint: string } | null;
+    this.db.query(`INSERT INTO push_devices (endpoint, human, p256dh, auth, label, created_at, last_ok)
+      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET human = excluded.human, p256dh = excluded.p256dh, auth = excluded.auth, label = excluded.label`)
+      .run(device.endpoint, human, device.p256dh, device.auth, oneLine(label, 120), t, t);
+    for (const old of this.db.query(`SELECT endpoint FROM push_devices WHERE human = ? ORDER BY COALESCE(last_ok, created_at) DESC LIMIT -1 OFFSET 10`)
+      .all(human) as { endpoint: string }[]) this.db.query("DELETE FROM push_devices WHERE endpoint = ?").run(old.endpoint);
+    if (!have) this.event(`human:${human}`, "push.device_added", null, { label });
+    return { added: !have };
+  }
+
+  pushUnsubscribe(human: string, endpoint: string): void {
+    const r = this.db.query("DELETE FROM push_devices WHERE endpoint = ? AND human = ?").run(endpoint, human);
+    if (r.changes) this.event(`human:${human}`, "push.device_removed", null, {});
+  }
+
+  pushDevices(human: string): PushDeviceRow[] {
+    return this.db.query("SELECT * FROM push_devices WHERE human = ? ORDER BY created_at").all(human) as PushDeviceRow[];
+  }
+
+  // Can a question reach this person away from the page: a registered device, or an ntfy topic.
+  hasPhone(human: string): boolean {
+    return (!!this.webPush && this.pushDevices(human).length > 0) || (!!this.ntfyTopic(human) && this.notifier !== nullNotifier);
+  }
+
+  // What the app badge shows: open questions and unread messages on the page.
+  openForHuman(human: string): number {
+    return (this.db.query(`SELECT COUNT(*) AS n FROM deliveries WHERE recipient = ? AND acked_at IS NULL`).get(`human:${human}`) as { n: number }).n;
   }
 
   // name: '<owner>/<slug>', or a bare slug when the hub has exactly one human. Returns the new project's id.
@@ -1251,7 +1312,8 @@ export class Hub {
     for (const recipient of recipients.keys()) {
       this.emit(recipient, ev);
       if (recipient.startsWith("human:") && !input.no_push && (input.priority === "high" || input.type === "ask")) {
-        void this.pushToHuman(recipient.slice(6), `${this.senderTitle(sender)} (${this.projectName(input.project)})`, summary, `#m${id}`);
+        void this.pushToHuman(recipient.slice(6), `${this.senderTitle(sender)} (${this.projectName(input.project)})`, summary, `#m${id}`, [],
+          { priority: input.priority === "high" ? "high" : "default" });
       }
     }
     const vacant = (r: string) => (r.startsWith("role:") && !this.roleHolder(r)) || r.startsWith("next:");
@@ -1816,9 +1878,8 @@ export class Hub {
     ).run(input.project, asker, input.human, input.question, JSON.stringify(options), input.default_answer ?? null, deadline, remind, sent.id);
     const askId = Number(res.lastInsertRowid);
     for (const i of images) this.db.query("UPDATE attachments SET ask_id = ? WHERE id = ?").run(askId, i.id);
-    const topic = this.ntfyTopic(input.human);
     this.pushAsk(askId, false);
-    return { ask_id: askId, message_id: sent.id, pushed: !!topic };
+    return { ask_id: askId, message_id: sent.id, pushed: this.hasPhone(input.human) };
   }
 
   // The question on the phone, with up to three options as buttons; a reminder is the same push again, replacing it.
@@ -1924,13 +1985,42 @@ export class Hub {
     return (this.db.query("SELECT ntfy_topic FROM humans WHERE name = ?").get(human) as { ntfy_topic: string | null } | null)?.ntfy_topic ?? null;
   }
 
+  // A human's registered devices get the page's own push (the notification opens the item; the page answers); a human
+  // without devices gets ntfy with the answer buttons, if they have a topic. Never both.
+  // priority: a question is the normal push ("default"); "high" marks an urgent message, "low" a notice that replaces a
+  // settled question. On ntfy these are its priorities 3, 4 and 2; a device gets "high" urgency for anything but low.
   private async pushToHuman(human: string, title: string, body: string, anchor: string, actions?: PushAction[],
-    opts: { sequence?: string; priority?: "low" | "high" } = {}): Promise<boolean> {
+    opts: { sequence?: string; priority?: "low" | "default" | "high" } = {}): Promise<boolean> {
+    const priority = opts.priority ?? "default";
+    const devices = this.webPush ? this.pushDevices(human) : [];
+    if (devices.length) {
+      const payload: WebPushPayload = {
+        title, body, url: `${this.publicUrl}/ui${anchor}`, tag: opts.sequence ?? anchor.replace(/^#/, ""), priority: priority === "low" ? "low" : "high",
+        open: this.openForHuman(human),
+      };
+      let ok = 0;
+      for (const d of devices) {
+        try {
+          const r = await this.webPush!.send(d, payload, { ttl: 86_400, urgency: payload.priority, topic: opts.sequence?.slice(0, 32) });
+          if (r === "gone") {
+            this.db.query("DELETE FROM push_devices WHERE endpoint = ?").run(d.endpoint);
+            this.event(`human:${human}`, "push.device_gone", null, { label: d.label });
+          } else if (r === "ok") {
+            ok++;
+            this.db.query("UPDATE push_devices SET last_ok = ? WHERE endpoint = ?").run(this.now(), d.endpoint);
+          }
+        } catch (e) {
+          this.event("axos", "push.failed", null, { human, device: d.label, error: String(e) });
+        }
+      }
+      if (ok) this.event("axos", "push.sent", null, { human, devices: ok });
+      return ok > 0;
+    }
     const topic = this.ntfyTopic(human);
     if (!topic) return false;
     try {
       await this.notifier.push(topic, {
-        title, body, clickUrl: this.publicUrl ? `${this.publicUrl}/ui${anchor}` : undefined, priority: opts.priority ?? "high", actions, sequence: opts.sequence,
+        title, body, clickUrl: this.publicUrl ? `${this.publicUrl}/ui${anchor}` : undefined, priority, actions, sequence: opts.sequence,
       });
       this.event("axos", "push.sent", null, { human });
       return true;
@@ -2018,7 +2108,7 @@ export class Hub {
     for (const a of this.db.query("SELECT id, human FROM asks WHERE answered_at < ? AND phone_cleared_at IS NULL").all(t - ANSWERED_ON_PHONE_MS) as { id: number; human: string }[]) {
       this.db.query("UPDATE asks SET phone_cleared_at = ? WHERE id = ?").run(t, a.id);
       const topic = this.ntfyTopic(a.human);
-      if (topic) {
+      if (topic && !this.pushDevices(a.human).length) {
         this.notifier.remove(topic, askSequence(a.id)).catch((e) => this.event("axos", "push.remove_failed", null, { human: a.human, error: String(e) }));
       }
     }

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { openDb } from "../src/db.ts";
 import { AxosError, Hub } from "../src/hub.ts";
 import { ntfyNotifier, type Notifier } from "../src/notify.ts";
+import type { PushDevice, WebPush, WebPushPayload } from "../src/webpush.ts";
 import { renderDigest, renderMessage } from "../src/render.ts";
 
 let t: number;
@@ -743,7 +744,11 @@ describe("answer buttons", () => {
   test("a settled question replaces its notification; tapping the same answer again is no error", async () => {
     const r = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Got the parcel?", options: ["received", "no push"] });
     await Bun.sleep(0);
-    expect(pushes.at(-1)).toMatchObject({ sequence: `axos-ask-${r.ask_id}`, priority: "high", actions: 2 });
+    expect(pushes.at(-1)).toMatchObject({ sequence: `axos-ask-${r.ask_id}`, priority: "default", actions: 2 });
+    // Only an urgent message is marked high on the phone; a question is the normal push.
+    hub.send(A, { project: SHOP, to: ["human:alice"], type: "note", summary: "box1 is on fire", priority: "high" });
+    await Bun.sleep(0);
+    expect(pushes.at(-1)).toMatchObject({ body: "box1 is on fire", priority: "high" });
     const first = hub.answerByLink(r.ask_id, hub.askSignature(r.ask_id), "received");
     await Bun.sleep(0);
     expect(pushes.at(-1)).toMatchObject({ sequence: `axos-ask-${r.ask_id}`, priority: "low", actions: 0, title: "Answered: received",
@@ -1632,5 +1637,105 @@ describe("a session quoting its human", () => {
   test("there is no human seat", () => {
     expect(refusal(() => hub.send({ ...A, session: desk, as: "human", human_words: true }, note(["role:coordinator"], "x")))).toMatch(/no "human" seat/);
     expect(refusal(() => hub.mailboxes({ id: DEV1, session: desk }, SHOP, "human"))).toMatch(/no "human" seat/);
+  });
+});
+
+describe("the page's own pushes", () => {
+  const device = (n: number): PushDevice => ({ endpoint: `https://push.example/d${n}`, p256dh: "B".repeat(87), auth: "a".repeat(22) });
+  let sent: { endpoint: string; payload: WebPushPayload; topic?: string; urgency: string }[];
+  let gone: Set<string>;
+  let failing: Set<string>;
+  let wp: Hub;
+  beforeEach(() => {
+    sent = []; gone = new Set(); failing = new Set();
+    const webPush = (): WebPush => ({
+      async send(d, payload, opts) {
+        if (failing.has(d.endpoint)) throw new Error("push service 500");
+        if (gone.has(d.endpoint)) return "gone";
+        sent.push({ endpoint: d.endpoint, payload, topic: opts.topic, urgency: opts.urgency });
+        return "ok";
+      },
+    });
+    const notifier: Notifier = {
+      async push(topic, m) { pushes.push({ topic, title: m.title, body: m.body, sequence: m.sequence, priority: m.priority, actions: m.actions?.length }); },
+      async remove(topic, sequence) { removed.push(`${topic} ${sequence}`); },
+    };
+    wp = new Hub(openDb(":memory:"), { now: () => t, notifier, webPush, publicUrl: "https://axos.example" });
+    wp.addHuman("alice", "alice-topic");
+    wp.addHuman("bob");
+    SHOP = wp.addProject("alice/shop");
+    wp.addHumanToProject("alice", SHOP);
+    wp.addHumanToProject("bob", SHOP);
+    DEV1 = wp.addAgent("alice", "dev1", [SHOP]).id;
+  });
+
+  test("the VAPID pair is made once and kept in the database", () => {
+    const db = openDb(":memory:");
+    const first = new Hub(db, { webPush: () => ({ async send() { return "ok"; } }), publicUrl: "https://axos.example" });
+    const again = new Hub(db, { webPush: () => ({ async send() { return "ok"; } }), publicUrl: "https://axos.example" });
+    expect(first.vapidPublicKey()).toBe(again.vapidPublicKey()!);
+    expect(first.vapidPublicKey()!.length).toBeGreaterThan(80);
+    // Without a sender (no https public URL) the page gets no key and cannot register a device.
+    expect(hub.vapidPublicKey()).toBeNull();
+    expect(refusal(() => hub.pushSubscribe("alice", device(1)))).toContain("no public URL");
+  });
+
+  test("a registered device gets the question and the answered notice with the same tag; ntfy is not used for that human", async () => {
+    expect(wp.pushSubscribe("alice", device(1), "iPhone, home screen")).toEqual({ added: true });
+    expect(wp.pushSubscribe("alice", device(1), "iPhone, home screen")).toEqual({ added: false });
+    expect(wp.pushDevices("alice").map((d) => d.label)).toEqual(["iPhone, home screen"]);
+    const r = wp.askHuman(DEV1, { project: SHOP, human: "alice", question: "Deploy now?", options: ["yes", "no"] });
+    expect(r.pushed).toBe(true);
+    await Bun.sleep(0);
+    expect(pushes).toEqual([]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ endpoint: "https://push.example/d1", urgency: "high", topic: `axos-ask-${r.ask_id}` });
+    expect(sent[0]!.payload).toMatchObject({ title: "alice/dev1 (alice/shop)", body: "Deploy now?", url: `https://axos.example/ui#m${r.message_id}`, tag: `axos-ask-${r.ask_id}`, priority: "high", open: 1 });
+    wp.answerAsk("alice", r.ask_id, "yes");
+    await Bun.sleep(0);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.payload).toMatchObject({ title: "Answered: yes", tag: `axos-ask-${r.ask_id}`, priority: "low", open: 0 });
+    // The day-later clearing is ntfy's; a human with devices gets no ntfy delete.
+    t += 2 * 86_400_000;
+    wp.sweep();
+    expect(removed).toEqual([]);
+  });
+
+  test("a human without a device still gets ntfy; a high message pushes to devices with the item's anchor", async () => {
+    wp.askHuman(DEV1, { project: SHOP, human: "alice", question: "Deploy now?" });
+    await Bun.sleep(0);
+    expect(pushes).toHaveLength(1);
+    expect(sent).toEqual([]);
+    wp.pushSubscribe("bob", device(2));
+    const id = wp.send({ kind: "agent", id: DEV1, human: "alice" }, { project: SHOP, to: ["human:bob"], type: "note", summary: "box1 is down", priority: "high" }).id;
+    await Bun.sleep(0);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.payload).toMatchObject({ body: "box1 is down", url: `https://axos.example/ui#m${id}`, tag: `m${id}`, open: 1 });
+    expect(wp.hasPhone("bob")).toBe(true);
+  });
+
+  test("a device the push service no longer knows is forgotten; a failing one is kept and logged", async () => {
+    wp.pushSubscribe("alice", device(1), "old phone");
+    wp.pushSubscribe("alice", device(2), "new phone");
+    wp.pushSubscribe("alice", device(3), "laptop");
+    gone.add("https://push.example/d1");
+    failing.add("https://push.example/d3");
+    wp.askHuman(DEV1, { project: SHOP, human: "alice", question: "Deploy now?" });
+    await Bun.sleep(0);
+    expect(sent.map((s) => s.endpoint)).toEqual(["https://push.example/d2"]);
+    expect(wp.pushDevices("alice").map((d) => d.label)).toEqual(["new phone", "laptop"]);
+    const events = wp.events(0, 100).map((e) => e.kind);
+    expect(events).toContain("push.device_gone");
+    expect(events).toContain("push.failed");
+  });
+
+  test("a human has at most ten devices; unregistering is per human", () => {
+    for (let i = 1; i <= 11; i++) { t += 1000; wp.pushSubscribe("alice", device(i), `d${i}`); }
+    expect(wp.pushDevices("alice")).toHaveLength(10);
+    expect(wp.pushDevices("alice").map((d) => d.label)).not.toContain("d1");
+    wp.pushUnsubscribe("bob", "https://push.example/d2");
+    expect(wp.pushDevices("alice")).toHaveLength(10);
+    wp.pushUnsubscribe("alice", "https://push.example/d2");
+    expect(wp.pushDevices("alice")).toHaveLength(9);
   });
 });
