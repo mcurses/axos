@@ -1,3 +1,6 @@
+import axosIcon from "../../assets/axos-icon-256.png";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Toaster } from "@/components/ui/sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -41,16 +44,16 @@ export default function App() {
 
   const unread = state.asks.length + state.inbox.length + state.pending.length;
   return (
-    <main className="mx-auto flex max-w-5xl flex-col gap-4 p-4 sm:p-6">
-      <header className="flex items-center justify-between gap-2">
-        <h1 className="font-semibold text-xl">AXOS <span className="font-normal text-muted-foreground">· {state.human}</span></h1>
+    <main className="mx-auto flex max-w-5xl flex-col gap-5 p-4 sm:p-8">
+      <header className="axos-header flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3"><img src={axosIcon} alt="" className="axos-mark size-11 shrink-0" /><div className="min-w-0"><h1 className="font-semibold text-lg tracking-[0.16em]">AXOS</h1><p className="truncate text-xs text-muted-foreground">{state.human}</p></div></div>
         <span className="flex items-center gap-2">
           {error && <Badge variant="destructive">offline: {error.message}</Badge>}
           <Notifications hubKey={state.push.key} devices={state.push.devices.length} />
         </span>
       </header>
       <Tabs defaultValue={location.hash.startsWith("#m") || unread ? "inbox" : "map"}>
-        <TabsList className="w-full sm:w-auto">
+        <TabsList className="axos-navigation w-full sm:w-auto">
           <TabsTrigger value="inbox">Inbox{unread > 0 && <Badge className="ml-1 h-5 px-1.5">{unread}</Badge>}</TabsTrigger>
           <TabsTrigger value="map">Map</TabsTrigger>
           <TabsTrigger value="projects">Projects</TabsTrigger>
@@ -109,21 +112,27 @@ function Login() {
   };
   const submit = (e: React.FormEvent) => { e.preventDefault(); void send("/ui/login", { name, password }); };
   return (
-    <main className="mx-auto max-w-xl p-6">
-      <h1 className="mb-2 font-semibold text-xl">AXOS</h1>
+    <main className="mx-auto max-w-md px-4 py-12 sm:py-20">
+      <header className="mb-8 flex flex-col items-center gap-3 text-center"><img src={axosIcon} alt="" className="axos-mark size-20" /><h1 className="font-semibold text-2xl tracking-[0.18em]">AXOS</h1><p className="text-sm text-muted-foreground">Your people, projects and agents.</p></header>
+      <div className="axos-login rounded-2xl border bg-card p-5 sm:p-6">
+      <h2 className="mb-4 text-lg font-medium">Welcome back</h2>
       <form className="flex flex-col gap-2" onSubmit={submit}>
-        <input className="rounded-md border bg-background px-3 py-2 text-sm" name="username" autoComplete="username" placeholder="your name" value={name} onChange={(e) => setName(e.target.value)} />
-        <input className="rounded-md border bg-background px-3 py-2 text-sm" type="password" name="password" autoComplete="current-password" placeholder="your password" value={password} onChange={(e) => setPassword(e.target.value)} />
-        <button className="rounded-md border px-3 py-2 text-sm" type="submit">Log in</button>
+        <label htmlFor="username" className="text-sm font-medium">Name</label>
+        <Input id="username" name="username" autoComplete="username" placeholder="your name" value={name} onChange={(e) => setName(e.target.value)} />
+        <label htmlFor="password" className="mt-2 text-sm font-medium">Password</label>
+        <Input id="password" type="password" name="password" autoComplete="current-password" placeholder="your password" value={password} onChange={(e) => setPassword(e.target.value)} />
+        <Button className="mt-3" type="submit">Log in</Button>
         {error && <p className="text-destructive text-sm">{error}</p>}
       </form>
-      <form className="mt-6 flex flex-col gap-2" onSubmit={(e) => { e.preventDefault(); void send("/ui/login/code", { code }); }}>
+      <form className="mt-6 flex flex-col gap-3 border-t pt-5" onSubmit={(e) => { e.preventDefault(); void send("/ui/login/code", { code }); }}>
         <p className="text-muted-foreground text-sm">Or the short code from a device where you are logged in (People → "Log in another device"):</p>
-        <div className="flex gap-2">
-          <input className="flex-1 rounded-md border bg-background px-3 py-2 text-sm uppercase tracking-widest" autoComplete="one-time-code" placeholder="ABCD-EFGH" value={code} onChange={(e) => setCode(e.target.value)} />
-          <button className="rounded-md border px-3 py-2 text-sm" type="submit">Log in with the code</button>
+        <label htmlFor="login-code" className="text-sm font-medium">Login code</label>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Input id="login-code" className="min-w-0 flex-1 uppercase tracking-widest" autoComplete="one-time-code" placeholder="ABCD-EFGH" value={code} onChange={(e) => setCode(e.target.value)} />
+          <Button variant="outline" type="submit">Use code</Button>
         </div>
       </form>
+      </div>
     </main>
   );
 }

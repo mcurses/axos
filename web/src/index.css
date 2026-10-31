@@ -51,73 +51,80 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* The icon’s blue facets inform surfaces; its warm core stays a quiet accent. */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    --background: #f5f6fc;
+    --foreground: #202947;
+    --card: #ffffff;
+    --card-foreground: #202947;
+    --popover: #ffffff;
+    --popover-foreground: #202947;
+    --primary: #4057b5;
+    --primary-foreground: #ffffff;
+    --secondary: #e9edf9;
+    --secondary-foreground: #344577;
+    --muted: #eef0f8;
+    --muted-foreground: #606b86;
+    --accent: #e7ecfc;
+    --accent-foreground: #304394;
+    --destructive: #b93842;
+    --border: #dce1f0;
+    --input: #c9d1e6;
+    --ring: #6176ce;
+    --chart-1: #4057b5;
+    --chart-2: #7c79b9;
+    --chart-3: #b27c48;
+    --chart-4: #4d8491;
+    --chart-5: #66749d;
+    --radius: 0.75rem;
+    --sidebar: #eef1fa;
+    --sidebar-foreground: #202947;
+    --sidebar-primary: #4057b5;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #e7ecfc;
+    --sidebar-accent-foreground: #304394;
+    --sidebar-border: #dce1f0;
+    --sidebar-ring: #6176ce;
+    --brand-glow: #6b8aff18;
+    --brand-warm: #f1bd751c;
+    --surface-shadow: 0 3px 16px #24396c08, 0 1px 3px #24396c05;
 }
 
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --background: #101626;
+    --foreground: #e6eafa;
+    --card: #192238;
+    --card-foreground: #e6eafa;
+    --popover: #1c2640;
+    --popover-foreground: #e6eafa;
+    --primary: #a3b5ff;
+    --primary-foreground: #152044;
+    --secondary: #24314e;
+    --secondary-foreground: #d9e2ff;
+    --muted: #202b43;
+    --muted-foreground: #a1aecb;
+    --accent: #2a3759;
+    --accent-foreground: #e1e7ff;
+    --destructive: #ff939b;
+    --border: #313e5b;
+    --input: #415070;
+    --ring: #9aaeff;
+    --chart-1: #a3b5ff;
+    --chart-2: #b4a8ed;
+    --chart-3: #edc48c;
+    --chart-4: #85c4cb;
+    --chart-5: #859ac9;
+    --sidebar: #141d30;
+    --sidebar-foreground: #e6eafa;
+    --sidebar-primary: #a3b5ff;
+    --sidebar-primary-foreground: #152044;
+    --sidebar-accent: #2a3759;
+    --sidebar-accent-foreground: #e1e7ff;
+    --sidebar-border: #313e5b;
+    --sidebar-ring: #9aaeff;
+    --brand-glow: #5478ed18;
+    --brand-warm: #efb46c0b;
+    --surface-shadow: 0 4px 20px #060c1d24, inset 0 1px 0 #c4d2ff06;
 }
 
 @layer base {
@@ -138,3 +145,54 @@
 .hidden-handles .react-flow__handle {
     opacity: 0;
 }
+
+/* Product styling lives here; the vendored shadcn primitives keep their defaults. */
+@layer base {
+  html { min-height: 100%; color-scheme: light; }
+  html.dark { color-scheme: dark; }
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+    background-image: radial-gradient(ellipse at 12% 0%, var(--brand-glow), transparent 55%),
+      radial-gradient(ellipse at 90% 0%, var(--brand-warm), transparent 40%);
+    background-attachment: fixed;
+  }
+  ::selection { background: var(--accent); color: var(--accent-foreground); }
+}
+
+@layer components {
+  .axos-header { position: relative; padding-bottom: 1.25rem; margin-bottom: .25rem; }
+  .axos-header::after {
+    content: ""; position: absolute; inset: auto 0 0; height: 1px;
+    background: linear-gradient(90deg, var(--primary), #d9b58680 35%, var(--border) 70%);
+    opacity: .45;
+  }
+  .axos-mark { filter: drop-shadow(0 4px 10px #5478ed26); }
+  .axos-navigation { border: 1px solid var(--border); box-shadow: inset 0 1px 0 #ffffff08; }
+  [data-slot="card"] { box-shadow: var(--surface-shadow); }
+  [data-slot="button"][data-variant="default"] {
+    background-image: linear-gradient(150deg, #ffffff12, transparent 65%);
+    box-shadow: 0 2px 8px var(--brand-glow), inset 0 1px 0 #ffffff18;
+  }
+  .axos-login { box-shadow: var(--surface-shadow); }
+  .react-flow {
+    --xy-background-pattern-dots-color-default: var(--border);
+    --xy-controls-button-background-color-default: var(--card);
+    --xy-controls-button-background-color-hover-default: var(--accent);
+    --xy-controls-button-color-default: var(--foreground);
+    --xy-controls-button-border-color-default: var(--border);
+    --xy-edge-stroke-default: var(--primary);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0s !important; }
+  .react-flow__edge circle { display: none; }
+}
+
+/* Override the primitive’s utility-layer active styles consistently in both themes. */
+  [data-slot="tabs-trigger"][data-state="active"] {
+    color: var(--accent-foreground);
+    background-color: var(--card);
+    box-shadow: 0 1px 5px var(--brand-glow), inset 0 -2px 0 var(--primary);
+  }
