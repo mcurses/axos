@@ -539,6 +539,52 @@ export class Hub {
     this.event(`human:${human}`, "login.removed_all", null, {});
   }
 
+  // Removes a person entirely: their memberships (with everything removeHumanFromProject ends), their machines, logins,
+  // devices and open invites, and the record itself, so the name is free again. A pair project of theirs that never
+  // carried a message goes with them; one that did stays with the other person, since history is kept. Refused for
+  // the operator and for someone who owns a project that is not a pair.
+  removeHuman(name: string): { projects_removed: string[]; agents_removed: number } {
+    if (!this.db.query("SELECT 1 FROM humans WHERE name = ?").get(name)) throw new AxosError(`no human '${name}'`);
+    if (this.isOperator(name)) throw new AxosError(`${name} is the hub's operator; make someone else the operator first`);
+    const owned = (this.db.query("SELECT id FROM projects WHERE owner = ? AND pair = 0").all(name) as { id: string }[]).map((p) => p.id);
+    if (owned.length) throw new AxosError(`${name} owns ${owned.map((p) => this.projectName(p)).join(", ")}; a project is not removed with its owner`);
+    return this.db.transaction(() => {
+      const mine = this.projectsOfHuman(name);
+      for (const p of mine) this.removeHumanFromProject(name, p);
+      const agents = (this.db.query("SELECT id FROM agents WHERE human = ?").all(name) as { id: string }[]).map((a) => a.id);
+      for (const id of agents) {
+        this.revokeAgent(id);
+        this.db.query("DELETE FROM subscriptions WHERE subscriber = ? OR subscriber LIKE ?").run(`agent:${id}`, `session:${id}#%`);
+        this.db.query("DELETE FROM lease_waiters WHERE agent_id = ?").run(id);
+        this.db.query("DELETE FROM sessions WHERE agent_id = ?").run(id);
+        this.db.query("DELETE FROM memberships WHERE agent_id = ?").run(id);
+        this.db.query("DELETE FROM agents WHERE id = ?").run(id);
+      }
+      this.signOutAll(name);
+      this.db.query("DELETE FROM login_links WHERE human = ?").run(name);
+      this.db.query("UPDATE invites SET expires_at = created_at - 1 WHERE used_at IS NULL AND (human = ? OR invited_by = ?)").run(name, name);
+      const removed: string[] = [];
+      for (const p of mine) {
+        if (!this.isPair(p) || this.db.query("SELECT 1 FROM messages WHERE project = ? LIMIT 1").get(p)) continue;
+        removed.push(this.projectName(p) ?? p);
+        this.deleteProject(p);
+      }
+      this.db.query("DELETE FROM humans WHERE name = ?").run(name);
+      this.event("admin", "human.removed", null, { human: name, projects_removed: removed, agents: agents.length });
+      return { projects_removed: removed, agents_removed: agents.length };
+    })();
+  }
+
+  // Only for a project that carried no message (nothing of anyone's history is in it).
+  private deleteProject(p: string): void {
+    for (const t of ["roles", "leases", "lease_waiters", "subscriptions", "landings", "project_aliases", "memberships", "human_projects", "sessions"]) {
+      this.db.query(`DELETE FROM ${t} WHERE project = ?`).run(p);
+    }
+    this.db.query("DELETE FROM project_links WHERE a = ? OR b = ?").run(p, p);
+    this.db.query("UPDATE invites SET project = NULL WHERE project = ?").run(p);
+    this.db.query("DELETE FROM projects WHERE id = ?").run(p);
+  }
+
   rotateHumanKey(name: string): { uiKey: string } {
     const uiKey = newSecret("axosui");
     const r = this.db.query("UPDATE humans SET ui_key_hash = ? WHERE name = ?").run(hashSecret(uiKey), name);

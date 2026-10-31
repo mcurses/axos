@@ -1842,6 +1842,34 @@ describe("the second person's path (0.21.0)", () => {
     expect(refusal(() => hub.createProject(DEV1, "tools2", "", "x".repeat(301)))).toContain("at most 300");
   });
 
+  test("a person is removed entirely: machines, logins, memberships, open invites; an empty pair goes, one with messages stays; the name is free", () => {
+    hub.setOperator("alice", true);
+    const r = hub.redeemInvite(hub.createInvite("gil", GAME, undefined, "alice").code, "gils-laptop");
+    const pair = hub.projectsOfHuman("gil").find((p) => hub.isPair(p))!;
+    const pairName = hub.projectName(pair)!;
+    hub.createInvite("gil", null, undefined, "gil"); // a second machine's link, open
+    expect(refusal(() => hub.removeHuman("alice"))).toContain("operator");
+    expect(refusal(() => hub.removeHuman("nobody"))).toContain("no human");
+    const out = hub.removeHuman("gil");
+    expect(out).toEqual({ projects_removed: [pairName], agents_removed: 1 });
+    expect(hub.projectHumans(GAME)).not.toContain("gil");
+    expect(hub.projectName(pair)).toBeNull();
+    expect(hub.people("alice")).not.toContain("gil");
+    expect(hub.authenticateAgent(r.token)).toBeNull();
+    expect(hub.db.query("SELECT COUNT(*) AS n FROM invites WHERE human = 'gil' AND used_at IS NULL AND expires_at > created_at").get()).toEqual({ n: 0 });
+    // The name is free: a new gil is a new person, in nothing.
+    hub.redeemInvite(hub.createInvite("gil", null, undefined, "alice").code, "gils-laptop");
+    expect(hub.projectsOfHuman("gil")).toHaveLength(1);
+    // A pair that carried a message stays with the other person; the owner of a project is not removed.
+    const pair2 = hub.projectsOfHuman("gil")[0]!;
+    hub.send({ kind: "human", name: "alice" }, { project: pair2, to: ["human:gil"], type: "note", summary: "hi gil" });
+    expect(hub.removeHuman("gil").projects_removed).toEqual([]);
+    expect(hub.projectName(pair2)).not.toBeNull();
+    expect(hub.projectHumans(pair2)).toEqual(["alice"]);
+    hub.addProject("bob/own");
+    expect(refusal(() => hub.removeHuman("bob"))).toContain("owns bob/own");
+  });
+
   test("an invite is withdrawn by its maker only; a withdrawn link is expired", () => {
     hub.setOperator("alice", true);
     const inv = hub.createInvite("ben", null, undefined, "alice");

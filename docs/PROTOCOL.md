@@ -623,6 +623,12 @@ into `./<name>` and connects the clone, and if the clone fails (no access yet) p
 A new invite for a person who already exists adds them to the named project at creation time; one made on a page
 pairs the two people when it is redeemed, if they were not paired already.
 
+**Removing a person** (admin, `axos human remove <name>`): their memberships end as with a removal from each project,
+their machines are revoked and their logins, devices and open invites go, and the record itself, so the name is free
+again. A pair project of theirs that never carried a message goes with them; one that did stays with the other
+person. History (messages, events) is kept. Refused for the operator and for the owner of a project that is not a
+pair.
+
 ## Answer links
 
 A push to a phone carries up to three buttons, each a `POST` to `/a/<ask id>/<signature>` with the chosen option as

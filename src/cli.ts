@@ -17,6 +17,7 @@ const USAGE = `axos — hub admin
   axos human ntfy <name> <topic|->               set or clear the ntfy topic
   axos human devices <name> [--clear]            the devices the page registered for pushes; --clear forgets them all
   axos human operator <name> [--off]             let <name> invite new people from their page (the first person is one)
+  axos human remove <name>                       remove a person: machines, logins, devices, invites, memberships; not the operator, not an owner
   axos human password <name>                     set <name>'s page password from stdin (when no device of theirs is logged in)
   axos project add <owner>/<name> [--brief <file|->]
                                                  add a project (- reads the brief from stdin); prints its id
@@ -175,6 +176,12 @@ The join link works once and expires in 7 days; axos invite --human ${name} make
       const pw = process.stdin.isTTY ? await secretTwice() : (await readText("/dev/stdin")).replace(/\r?\n$/, "");
       hub.setPassword(rest[0]!, pw, { admin: true });
       out(`password set for ${rest[0]}; they log in with their name and it on any device.`);
+      return;
+    }
+    case "human remove": {
+      need(1);
+      const r = hub.removeHuman(rest[0]!);
+      out(`${rest[0]} removed: ${r.agents_removed} machine(s) revoked, every login and device gone, open invites expired${r.projects_removed.length ? `, ${r.projects_removed.join(", ")} removed (it carried no message)` : ""}. Their name is free again; history stays.`);
       return;
     }
     case "human operator": {
