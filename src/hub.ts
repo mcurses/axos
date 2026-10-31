@@ -802,12 +802,14 @@ export class Hub {
   }
 
   // What an open code is for, without using it (the invite page says who invited whom).
-  inviteOf(code: string): { human: string; invited_by: string | null; expires_at: number; project: { name: string; brief: string; repo: string } | null } | null {
+  inviteOf(code: string): { human: string; invited_by: string | null; greet: string | null; expires_at: number; project: { name: string; brief: string; repo: string } | null } | null {
     const r = this.db.query("SELECT human, invited_by, expires_at, project FROM invites WHERE code_hash = ?").get(hashSecret(code)) as
       { human: string; invited_by: string | null; expires_at: number; project: string | null } | null;
     if (!r) return null;
     const name = r.project ? this.projectName(r.project) : null;
-    return { human: r.human, invited_by: r.invited_by, expires_at: r.expires_at, project: r.project && name ? { name, brief: this.brief(r.project), repo: this.repo(r.project) } : null };
+    const owner = r.project ? this.projectOwner(r.project) : null;
+    const greet = r.invited_by && r.invited_by !== r.human ? r.invited_by : owner && owner !== r.human ? owner : null;
+    return { human: r.human, invited_by: r.invited_by, greet, expires_at: r.expires_at, project: r.project && name ? { name, brief: this.brief(r.project), repo: this.repo(r.project) } : null };
   }
 
   // Whether a code is good, without using it (for the page a browser opens).
@@ -821,7 +823,7 @@ export class Hub {
   // Sets up the machine: its agent (named after the machine, made unique), its token, and the person if new.
   // Also: a new person's page key is made and never shown (a one-time login link stands in for it); an invite made on
   // someone's page pairs the two people in a project of their own.
-  redeemInvite(code: string, machine: string): { human: string; agent: string; token: string; login: string; invited_by: string | null; projects: string[]; project: { name: string; repo: string } | null } {
+  redeemInvite(code: string, machine: string): { human: string; agent: string; token: string; login: string; invited_by: string | null; greet: string | null; projects: string[]; project: { name: string; repo: string } | null } {
     const status = this.inviteStatus(code);
     if (status !== "open") throw new AxosError(status === "unknown" ? "this invite link is not valid" : `this invite link was already ${status === "used" ? "used" : "expired"}; ask for a new one`);
     const inv = this.db.query("SELECT * FROM invites WHERE code_hash = ?").get(hashSecret(code)) as { id: number; human: string; project: string | null; invited_by: string | null; new_human: number | null };
@@ -855,7 +857,10 @@ export class Hub {
       this.db.query("UPDATE invites SET used_at = ?, agent_id = ? WHERE id = ?").run(this.now(), id, inv.id);
       this.event(`agent:${id}`, "invite.redeemed", project, { human: inv.human, invited_by: inv.invited_by, ...(inv.project && !project ? { dropped: inv.project } : {}) });
       const carried = project ? { name: this.projectName(project)!, repo: this.repo(project) } : null;
-      return { human: inv.human, agent: id, token, login: this.createLoginLink(inv.human).token, invited_by: inv.invited_by, projects: this.projectsOf(id), project: carried };
+      // Whom to say hello to: the inviter, else the owner of the project an admin's invite put them into.
+      const owner = project ? this.projectOwner(project) : null;
+      const greet = inv.invited_by && inv.invited_by !== inv.human ? inv.invited_by : owner && owner !== inv.human ? owner : null;
+      return { human: inv.human, agent: id, token, login: this.createLoginLink(inv.human).token, invited_by: inv.invited_by, greet, projects: this.projectsOf(id), project: carried };
     })();
     // The inviter hears that their link was used (quietly): a forwarded or stolen link does not go unnoticed.
     if (out.invited_by && out.invited_by !== out.human) {

@@ -19,7 +19,7 @@ const USAGE = `axos — hub admin
   axos human operator <name> [--off]             let <name> invite new people from their page (the first person is one)
   axos human remove <name>                       remove a person: machines, logins, devices, invites, memberships; not the operator, not an owner
   axos human password <name>                     set <name>'s page password from stdin (when no device of theirs is logged in)
-  axos project add <owner>/<name> [--brief <file|->]
+  axos project add <owner>/<name> [--brief <file|->] [--repo <git address>]
                                                  add a project (- reads the brief from stdin); prints its id
   axos project list                              every project with its id, people and links
   axos project brief <project> <file|->          set the brief agents get on join
@@ -86,13 +86,14 @@ async function main(argv: string[]): Promise<void> {
     const { code } = hub.createInvite(name, null);
     console.log(`Welcome, ${name}. Two links, each shown once:
 
-  Your page (open once on each device; it remembers you):
+  Your page (open it in your browser once; it logs that browser in; other devices log in from it under Humans → Add device):
     ${base}/ui?key=${uiKey}
 
   Your first machine (open it in a browser for the steps, or run there):
     axos join ${joinLink(code)}
 
-The join link works once and expires in 7 days; axos invite --human ${name} makes another. You invite other people from your page.`);
+The join link works once and expires in 7 days; axos invite --human ${name} makes another. You invite other people from your page.
+Next: a project for a repo: axos project add ${name}/<name> --repo <git address>, or in Claude Code in that repo: connect this folder to AXOS.`);
     return;
   }
   if (noun === "invite") {
@@ -205,8 +206,9 @@ The join link works once and expires in 7 days; axos invite --human ${name} make
     }
     case "project add": {
       const briefFile = flag(rest, "--brief");
+      const repo = flag(rest, "--repo") ?? ""; // where the code is, so an invited person's clone connects by itself
       need(1);
-      const id = hub.addProject(rest[0]!, briefFile ? await readText(briefFile) : "");
+      const id = hub.addProject(rest[0]!, briefFile ? await readText(briefFile) : "", repo);
       console.log(`project ${hub.projectName(id)} added (id ${id})`);
       return;
     }

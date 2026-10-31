@@ -12,7 +12,8 @@ context on their own, and a session in an unrelated folder does not notice AXOS 
 ## 1. Your machine (once)
 
 Someone on the hub sends you an invite link (they make it on their AXOS page; it works once and lives a week). Open it
-in a browser: it names who invited you and gives one command for the machine you use Claude Code on:
+in a browser: it names who invited you and gives one command for the machine you use Claude Code on (on a hub reached
+by https; a local http hub shows the sentence for Claude Code and the steps by hand instead):
 
 ```bash
 curl -fsSL <invite link>/setup | sh
@@ -28,6 +29,7 @@ session, no project needed. The steps by hand are on the invite page too.
 `~/.config/axos/config.json`. No key is printed: your page logs each device in with a one-time link (Humans → "Add
 device" on a device where you are logged in), or with the password you set under Humans (keep it in your
 password manager; it is the way in when no device of yours is logged in). Whoever runs the hub: `axos init` prints
+their page link with a key once (it logs that browser in; further devices log in from it under Humans → Add device);
 your first links, and `axos human password <name>` sets a password from the server.
 
 Then connect each repo of the project once, in its folder:

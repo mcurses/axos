@@ -720,7 +720,7 @@ async function joinHub(args: string[]): Promise<void> {
   if (existsSync(tokenFile) && !force) throw new Error(`this machine already has an AXOS token in ${tokenFile}; axos join --force replaces it`);
   const machine = name ?? hostname().split(".")[0]!;
   const res = await fetch(`${hubUrl}/api/join`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, machine }) });
-  const r = (await res.json().catch(() => ({ error: `the hub answered ${res.status}` }))) as { error?: string; hub?: string; agent?: string; token?: string; invited_by?: string | null; page?: string | null; projects?: string[]; project?: { name: string; repo: string } | null };
+  const r = (await res.json().catch(() => ({ error: `the hub answered ${res.status}` }))) as { error?: string; hub?: string; agent?: string; token?: string; invited_by?: string | null; greet?: string | null; page?: string | null; projects?: string[]; project?: { name: string; repo: string } | null };
   if (r.error || !r.token) throw new Error(r.error ?? "the hub sent no token");
   mkdirSync(dirname(CONFIG_PATH), { recursive: true });
   writeFileSync(CONFIG_PATH, `${JSON.stringify({ ...(existing ?? {}), url: r.hub ?? hubUrl }, null, 2)}\n`, { mode: 0o600 });
@@ -729,10 +729,11 @@ async function joinHub(args: string[]): Promise<void> {
   console.log(`This machine is ${r.agent} on ${r.hub ?? hubUrl}${r.projects?.length ? `, in ${r.projects.join(", ")}` : ""}.`);
   // The page: a one-time login link (ten minutes), opened in the browser here; the page key itself is never shown.
   if (r.page) {
-    console.log(`Your page (this link logs this machine's browser in; it works once, within ten minutes):\n  ${r.page}`);
+    console.log(`Your page (this link logs this machine's browser in; it works once, within ten minutes; if no browser opened, paste it):\n  ${r.page}`);
     try { Bun.spawn([process.platform === "darwin" ? "open" : "xdg-open", r.page], { stdout: "ignore", stderr: "ignore" }); } catch { /* no browser here: the link is printed */ }
   }
-  console.log(`Restart Claude Code (every open window), then say in any of them: tell ${r.invited_by ?? "<a person here>"} hello.`);
+  const greet = r.greet ?? r.invited_by;
+  console.log(`Restart Claude Code (every open window)${greet ? `, then say in any of them: tell ${greet} hello` : ""}.`);
   if (r.project) {
     // The invite carried the work: the person is in that project already; its folder is connected once it is here.
     console.log(`You are in ${r.project.name}${r.invited_by ? ` with ${r.invited_by}` : ""}.${r.project.repo ? ` The code: ${r.project.repo}` : ""}`);
@@ -1082,6 +1083,12 @@ async function link(args: string[]): Promise<void> {
   if (!here && git?.remotes.length && !pick) throw new Error(remoteName ? `no remote '${remoteName}' here` : `say which remote: --remote ${git.remotes.map((r) => r.name).join(" or --remote ")}`);
   if (isNew) {
     if (ref) throw new Error("--new makes a project; do not also name one");
+    // --new makes a project of this person's own; someone invited into another's project usually wants that one.
+    const w = await fetch(`${c.url.replace(/\/$/, "")}/api/whoami`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(10_000) })
+      .then((r) => r.json() as Promise<{ human?: string; projects?: { id: string; name: string; pair?: boolean; owner?: string | null }[] }>).catch(() => null);
+    const linkedHere = new Set((c.folders ?? []).map((f) => f.project));
+    const theirs = (w?.projects ?? []).filter((p) => p.pair === false && typeof p.owner === "string" && p.owner !== w?.human && !linkedHere.has(p.id));
+    if (theirs.length) console.log(`Note: this makes a NEW project of yours. To work in ${theirs.map((p) => p.name).join(" or ")} instead, run: axos link ${theirs[0]!.name}`);
     const slug = (newName ?? basename(cwd)).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "");
     // Where the code is goes with the project (the remote's address, never a user name or token in it), so that a
     // person invited into it knows what to clone.
@@ -1110,7 +1117,10 @@ async function link(args: string[]): Promise<void> {
     } else if (!pick) {
       throw new Error(`this folder is no checkout with a remote, so say which project: axos link <owner>/<name>${theirs.length ? ` (you are in ${theirs.map((p) => p.name).join(", ")})` : ", or axos link --new to make one for this folder"}`);
     } else if (theirs.length) {
-      throw new Error(`this checkout (${pick.key}) is not the code of ${theirs.map((p) => `${p.name}${p.repo ? ` (${p.repo})` : ""}`).join(" or ")}; to connect it anyway: axos link <owner>/<name>`);
+      const unknown = theirs.filter((p) => !p.repo);
+      throw new Error(unknown.length
+        ? `${unknown.map((p) => p.name).join(" and ")} ${unknown.length === 1 ? "has" : "have"} no code address yet, so this checkout cannot be matched to it; to connect it: axos link ${unknown[0]!.name} (the owner sets the address on the project's card)`
+        : `this checkout (${pick.key}) is not the code of ${theirs.map((p) => `${p.name} (${p.repo})`).join(" or ")}; to connect it anyway: axos link <owner>/<name>`);
     } else {
       throw new Error("say which project: axos link <owner>/<name>, or axos link --new to make one for this folder");
     }
@@ -1165,8 +1175,9 @@ async function whoami(): Promise<void> {
   const c = config();
   if (!c || !token(c)) return console.log(`not configured (${c ? "token missing" : `no ${CONFIG_PATH}`})`);
   // Project ids by name, from the hub; a rule written by an older plugin carries no name.
-  const names = await fetch(`${c.url.replace(/\/$/, "")}/api/whoami`, { headers: { Authorization: `Bearer ${token(c)}` }, signal: AbortSignal.timeout(TIMEOUT_MS) })
-    .then((r) => r.json() as Promise<{ projects?: { id: string; name: string }[] }>).then((w) => new Map((w.projects ?? []).map((p) => [p.id, p.name]))).catch(() => new Map<string, string>());
+  const who = await fetch(`${c.url.replace(/\/$/, "")}/api/whoami`, { headers: { Authorization: `Bearer ${token(c)}` }, signal: AbortSignal.timeout(TIMEOUT_MS) })
+    .then((r) => r.json() as Promise<{ agent?: string; human?: string; projects?: { id: string; name: string }[] }>).catch(() => ({} as { agent?: string; human?: string; projects?: { id: string; name: string }[] }));
+  const names = new Map((who.projects ?? []).map((p) => [p.id, p.name]));
   const sid = process.env.CLAUDE_CODE_SESSION_ID;
   const here = identity(sid ?? "terminal", process.cwd());
   const repo = here ? repoFile(c, here.cwd) : null;
@@ -1177,7 +1188,7 @@ async function whoami(): Promise<void> {
   const real = (d: string) => { try { return realpathSync(d); } catch { return resolve(d); } };
   const differs = !!sess && (sess.project !== here?.project || real(sess.cwd) !== real(process.cwd()));
   console.log(JSON.stringify({
-    hub: c.url, folder: process.cwd(), project: here?.project ?? null, project_name: here?.project ? names.get(here.project) ?? (here.rule?.project === here.project ? here.rule?.name : undefined) : undefined, via,
+    hub: c.url, human: who.human ?? null, agent: who.agent ?? null, folder: process.cwd(), project: here?.project ?? null, project_name: here?.project ? names.get(here.project) ?? (here.rule?.project === here.project ? here.rule?.name : undefined) : undefined, via,
     untrusted: here?.untrusted && !here.project ? `${here.untrusted.dir}/.axos.json (run axos trust there, or axos link)` : undefined,
     profile: profile(), session: sid ?? null, name: here?.name ?? null, quiet: here?.quiet, roles: here?.roles,
     session_folder: differs ? sess!.cwd : undefined,

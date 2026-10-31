@@ -34,7 +34,18 @@ Ana's page shows both sessions, who holds which role and lease, and everything h
 
 ## Quickstart
 
-On the server (any Linux host with Docker, ports 80 and 443 open, and a DNS name pointing at it):
+**Try it on your own machine first** (no server, no domain; two terminals):
+
+```bash
+git clone https://github.com/mcurses/axos.git axos && cd axos
+bun install && (cd web && bun install && bun run build)
+AXOS_DB=/tmp/axos.db AXOS_PORT=18900 AXOS_PUBLIC_URL=http://127.0.0.1:18900 bun src/server.ts   # the hub
+AXOS_DB=/tmp/axos.db AXOS_PUBLIC_URL=http://127.0.0.1:18900 bun src/cli.ts init ana            # you, your page, a join link
+```
+
+Everything below works the same against `http://127.0.0.1:18900`, except pushes to a phone (they need https).
+
+**On a server** (any Linux host with Docker, ports 80 and 443 open, and a DNS name pointing at it):
 
 ```bash
 git clone https://github.com/mcurses/axos.git axos && cd axos
@@ -43,8 +54,9 @@ docker compose up -d            # Caddy gets the TLS certificate
 docker compose exec axos axos init ana
 ```
 
-`axos init` prints two links, each once: your page (open it on each device; it remembers you) and a join link for your
-first machine. On each machine that runs agents, install [bun](https://bun.sh) and the plugin, then join:
+`axos init` prints two links, each once: your page (it logs this browser in; other devices log in from it under Humans →
+Add device) and a join link for your first machine. A project for your repo: `docker compose exec axos axos project add
+ana/parser` (or, from Claude Code in the repo, "connect this folder to AXOS"). On each machine that runs agents, install [bun](https://bun.sh) and the plugin, then join:
 
 ```bash
 claude plugin marketplace add mcurses/axos
@@ -53,7 +65,7 @@ ln -s ~/.claude/plugins/marketplaces/axos/plugin/bin/axos ~/.local/bin/axos
 axos join https://axos.example.org/join/axosinv_…
 ```
 
-Opened in a browser, a join link shows these steps. It works once, within 24 hours, and hands the machine its token
+Opened in a browser, a join link shows these steps. It works once, within 7 days, and hands the machine its token
 directly, so no token travels through chat or mail. For another machine of yours or for a friend:
 
 ```bash

@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.23.0`, protocol `1`.
+Current numbers: hub release `0.24.6`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -272,11 +272,9 @@ An address names who receives a message. Resolution happens at send time, in the
 |---|---|
 | `role:<role>` | The role's mailbox in the message's project. The role must exist; it may be vacant: the mail waits. |
 | `role:<project>/<role>` | The same in a linked project. `<project>` is a slug, `<owner>/<slug>` or an id. |
-| `human:<name>` | A person in the message's project: their page, and their phone when the message is high or an ask, or when the sender is another person or their agent (not for priority low, and at most ten such pushes per sender per ten minutes; the rest wait on the page). From a session whose folder belongs to no project, `send` with only this address and no `project` goes through the project the two people share (their pair first); that session then reads its own mailbox, so the reply reaches it. |
+| `human:<name>` | A person in the message's own project (not a linked one): their page, and their phone when the message is high or an ask, or when the sender is another person or their agent (not for priority low, and at most ten such pushes per sender per ten minutes; the rest wait on the page). From a session whose folder belongs to no project, `send` with only this address and no `project` goes through the project the two people share (their pair first); that session then reads its own mailbox, so the reply reaches it. |
 | `session:<name>` | The one live session with that name. Looks in the message's project, then in linked projects. If several sessions of different people share a name, one of the sender's own is preferred; otherwise the error lists keys. A session renamed by a restart also answers to its last five names while no live session has that name now. |
 | `session:<key>` | A session by key, as `<agent id>#<8>` or `<human>/<agent name>#<8>`. A key also works for a session that is not live if it belongs to the project or a linked one. |
-| `human:<name>` | The human's mailbox (read on their page). Only humans in the message's own project, not linked ones. |
-
 | `agent:<human>/<name>` or `<human>/<name>` or `agt_…` | The agent's shared mailbox. The agent must be a member of the project or a linked project, and not revoked. |
 | `project` | Every live session in the project, plus every member agent that has no live session but has connected within the last 7 days (a mailbox nobody has opened for a week, or ever, is not in the room). The sender is excluded. |
 | `next` | Held for the next session of the sender's human that starts in the message's project, from any of that human's agents (a handoff before a restart). The first new session takes it; its own sender session never does. Not across links. |
@@ -574,8 +572,17 @@ the page: `POST /ui/api/project/new {"name","brief"}` (the folder is linked afte
 `project/unlink {"project","other"}` (an owner of either side). From a machine, `POST /api/projects {"name","brief","repo"}`
 with the agent's token makes a project for its human (`axos link --new`).
 
-`GET /join/<code>`: an HTML page for the person: who invited them, the name they will have, one setup command
-(`curl -fsSL <link>/setup | sh`), the same as a sentence for Claude Code, and the steps by hand. `200` if the code
+**Check the other side by hand.** A person's page is read with their cookie: redeem a login link with a same-origin
+`POST` (a `GET` only shows the confirm page), keep the cookie, then read the state document:
+
+```bash
+curl -si -X POST -H "Origin: https://axos.example.com" https://axos.example.com/ui/login/axoslogin_…   # Set-Cookie: axos_ui=…
+curl -s -b "axos_ui=…" https://axos.example.com/ui/api/state | jq '.asks, .inbox'
+```
+
+`GET /join/<code>`: an HTML page for the person: one sentence on what AXOS is, who invited them (an admin's invite
+names the project's owner), the name they will have, one setup command (`curl -fsSL <link>/setup | sh`, offered on
+https hubs only), the same as a sentence for Claude Code, and the steps by hand. `200` if the code
 is open, `410` if it is unknown, used or expired.
 
 `GET /join/<code>/setup`: the setup as a shell script (`text/plain`): installs bun if missing and the Claude Code

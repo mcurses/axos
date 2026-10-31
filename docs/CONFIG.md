@@ -76,7 +76,7 @@ These are constants in the code, not settings:
 | Event stream heartbeat 25 s; housekeeping every 15 s | server |
 | Hook body at most 65536 characters | server |
 | No idle timeout on connections (`idleTimeout: 0`) | server |
-| Invite code valid 24 hours | CLI default |
+| Invite code valid 7 days | CLI default |
 
 ## Deployment files
 
