@@ -447,8 +447,14 @@ claude plugin install axos@axos --scope user</pre></li>
 </ol>
 <p>Other MCP clients (Codex and others) use the token <code>axos join</code> writes to <code>~/.config/axos/token</code> against <code>${esc(base)}/mcp</code>.</p>
 </details>`;
+  // The chat's link preview (Messages, Slack and the like read the title and the Open Graph tags): the project's name
+  // and who invited, no brief and no code address (the preview is cached by the chat, the page is not).
+  const title = status !== "open" ? "This AXOS invite is no longer open" : inv!.project ? `Join ${inv!.project.name.split("/").pop()} on AXOS` : "Join AXOS";
+  const blurb = status !== "open" ? "Ask for a new link." : `${invited ? `${invited} invited you` : "You are invited"}${inv!.project ? ` to work on ${inv!.project.name}` : ""}. One command sets up your machine and connects you.`;
+  const meta = `<meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(blurb)}"><meta name="description" content="${esc(blurb)}">
+<meta property="og:type" content="website"><meta property="og:site_name" content="AXOS"><meta property="og:image" content="${esc(base)}/ui/icon-512.png"><meta name="twitter:card" content="summary">`;
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Join AXOS</title><style>body{font:15px/1.5 -apple-system,system-ui,sans-serif;max-width:720px;margin:2em auto;padding:0 16px}
+<title>${esc(title)}</title>${meta}<style>body{font:15px/1.5 -apple-system,system-ui,sans-serif;max-width:720px;margin:2em auto;padding:0 16px}
 pre{background:#f5f5f7;padding:8px;border-radius:6px;white-space:pre-wrap}@media(prefers-color-scheme:dark){body{background:#000;color:#f5f5f7}pre{background:#1c1c1e}}</style>
 </head><body><h1>Join AXOS</h1>${body}</body></html>`;
   return new Response(html, { status: status === "open" ? 200 : 410, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });

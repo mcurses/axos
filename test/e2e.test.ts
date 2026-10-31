@@ -1291,6 +1291,11 @@ test("an invite that carries the work: the page and the script say the project a
   expect(page).toContain("The shared tools.");
   expect(page).toContain("The code: <code>https://github.com/alice/workshop.git</code>");
   expect(page).toContain("Then open the clone in Claude Code: your sessions there work with alice's in alice/workshop");
+  // The chat's preview: the project's name in the title, who invited in the description, no brief and no code address.
+  expect(page).toContain("<title>Join workshop on AXOS</title>");
+  expect(page).toContain('<meta property="og:description" content="alice invited you to work on alice/workshop. One command sets up your machine and connects you.">');
+  expect(page.slice(0, page.indexOf("<body>"))).not.toContain("github.com");
+  expect(page).toContain('<meta property="og:image" content="');
   const sh = await (await fetch(`${inv.link}/setup`)).text();
   expect(sh).toContain("You are in alice/workshop with alice. The code: https://github.com/alice/workshop.git");
   const tmp = join(tmpdir(), `axos-setup-${Date.now()}.sh`);
@@ -1403,6 +1408,7 @@ test("the second person's path: invite from the page, the setup script, the one-
   // The invite page names the inviter and the one command; the script is served and names them too.
   const page = await (await fetch(inv.link)).text();
   expect(page).toContain("<b>alice</b> invited you");
+  expect(page).toContain("<title>Join AXOS</title>");
   expect(page).toContain("You will be <b>ben</b>");
   expect(page).not.toContain("curl -fsSL"); // the one-line setup is offered on https hubs only; this test hub is http
   expect(page).toContain(`Set up AXOS from ${inv.link}`);
