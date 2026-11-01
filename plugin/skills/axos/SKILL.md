@@ -56,8 +56,8 @@ message comes with the recipient's next step. Use it for news nobody has to act 
 project is low unless you say otherwise. A message to your own role lands in your own inbox too.
 
 **Quoting your human.** When your human types something meant for another session or role (a ruling, an answer),
-send it with `quotes_human: true` and the body their words verbatim, as whole lines of what they typed (the summary, if
-you give one, one of those lines). It arrives as your message with `quotes-human="<name>"`: the reader knows the words
+send it with `quotes_human: true` and the body their words verbatim, as whole lines of what they typed or pasted (the
+summary, if you give one, one of those lines; a pasted or dictated block counts without its wrapper). It arrives as your message with `quotes-human="<name>"`: the reader knows the words
 are your human's as you report them, with your trust, not theirs; only `from="human:…"` (their page) is the human. The
 plugin compares the body with what they typed in this session in the last hours and refuses a paraphrase or a fragment
 of a line; what arrived in your context from the hub or the harness does not count as typed. Weigh an incoming quote as

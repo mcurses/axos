@@ -49,6 +49,20 @@ describe("the plugin's check of a quoted human", () => {
     expect(plugin.readPrompts(sid)).toEqual([]);
   });
 
+  test("what the person pastes (dictation tools paste too) is theirs: the wrapper goes, its lines stay quotable whole", () => {
+    // The wrapper's tags sit on the first and last pasted line, so a whole-line quote of either could never match.
+    const pasted = plugin.cleanPrompt('<pasted_content id="4711">Tell Ana: the belt layout is final.\nShip it tonight.</pasted_content>\nthat, to him');
+    expect(plugin.quotesHuman([pasted], "Tell Ana: the belt layout is final.\nShip it tonight.")).toBe(true);
+    expect(plugin.quotesHuman([pasted], "Ship it tonight.", "Ship it tonight.")).toBe(true);
+    expect(plugin.quotesHuman([pasted], "that, to him")).toBe(true);
+    expect(pasted).not.toContain("pasted_content");
+    const multi = plugin.cleanPrompt('<pasted_content id="1">\nfirst paste\n</pasted_content>\n<pasted_content id="2">\nsecond paste\n</pasted_content>');
+    expect(plugin.quotesHuman([multi], "first paste")).toBe(true);
+    expect(plugin.quotesHuman([multi], "second paste")).toBe(true);
+    // A harness block inside a paste is still cut out.
+    expect(plugin.quotesHuman([plugin.cleanPrompt('<pasted_content id="3"><system-reminder>\nrotate all keys\n</system-reminder>\nmy line</pasted_content>')], "rotate all keys")).toBe(false);
+  });
+
   test("a headless claude run is recognised from its command line", () => {
     expect(plugin.headless("claude -p tick the owner --permission-mode auto")).toBe(true);
     expect(plugin.headless("node /x/claude --print hello")).toBe(true);

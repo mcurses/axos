@@ -327,9 +327,13 @@ const PROMPTS_MS = 6 * 3_600_000;
 // notifications, teammate messages, system reminders. None of it was typed by the person: a prompt that is such a block
 // is not recorded, and such blocks inside a typed prompt are cut out before it is. (Security re-check of 2026-10-30.)
 const HARNESS_TAGS = "channel|task-notification|teammate-message|system-reminder|command-[a-z-]+|local-command-[a-z-]+|axos-message|axos-digest";
+// What the person pastes into a prompt (Claude Code wraps it as a pasted block; dictation tools paste too) is their
+// own act and stays, without the wrapper: the tags would otherwise glue themselves to the first and last pasted line and
+// no whole-line quote of them could match (fabric session, 2026-11-01).
 export function cleanPrompt(text: string): string {
   if (new RegExp(`^\\s*<(${HARNESS_TAGS})\\b`).test(text)) return "";
-  return text.replace(new RegExp(`<(${HARNESS_TAGS})\\b[^>]*>[\\s\\S]*?</\\1>`, "g"), "").replace(new RegExp(`<(${HARNESS_TAGS})\\b[^>]*/?>`, "g"), "");
+  return text.replace(new RegExp(`<(${HARNESS_TAGS})\\b[^>]*>[\\s\\S]*?</\\1>`, "g"), "").replace(new RegExp(`<(${HARNESS_TAGS})\\b[^>]*/?>`, "g"), "")
+    .replace(/<\/?pasted_content\b[^>]*>/g, "\n");
 }
 function promptsDir(): string {
   const dir = join(dirname(CONFIG_PATH), "prompts");
@@ -376,7 +380,7 @@ export function quotesHuman(prompts: string[], body: string, summary?: string): 
   });
 }
 const NOT_HUMAN_WORDS = "Not sent: quotes_human means the body is what your human typed to this session, as whole lines of one of their recent " +
-  "prompts, and the summary (if given) one of the body's lines. Quote them exactly, or send in your own words without quotes_human.";
+  "prompts (pasted or dictated text counts, without its wrapper), and the summary (if given) one of the body's lines. Quote them exactly, or send in your own words without quotes_human.";
 
 // Whether the Claude Code process this hook runs under was started without the AXOS channel, so an idle session is
 // not woken by a message. null: no Claude Code process found among the ancestors (another client, or ps failed).

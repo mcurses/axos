@@ -86,7 +86,8 @@ The prompt hook also keeps the session's last prompts (6 hours, at most 20) in `
 readable by the user only and never sent to the hub: a session that passes on what its human typed (`send` with
 `quotes_human: true`) is compared against them. The check is against paraphrase, not proof; the message stays the
 session's. Not recorded: headless runs (`claude -p`, detected from the process, or `AXOS_NO_PROMPT_LOG=1`) and what the
-harness injects as prompts (channel wake-ups, task notifications, teammate messages, system reminders).
+harness injects as prompts (channel wake-ups, task notifications, teammate messages, system reminders). What the person
+pastes (dictation tools paste too) is recorded without its wrapper, so its lines quote whole.
 To wake a session that sits idle, start it with the plugin's channel; the wake-up then carries the messages themselves,
 so reading them costs one turn, not a notice and then the message:
 

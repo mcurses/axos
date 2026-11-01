@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.8`, protocol `1`.
+Current numbers: hub release `0.24.9`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -285,7 +285,7 @@ to it is refused alike, whether it exists or not.
 
 Only a human's page (and their answer links) sends as `human:<name>`. A session may pass on what its human typed:
 `send` with `quotes_human: true` and `body` the typed words, verbatim, as whole lines of one prompt (`summary`, if
-given, one of the body's lines). The message stays the session's: `from` is the session or its role, `sender-human` is
+given, one of the body's lines; what the human pasted or dictated into the prompt counts, without its wrapper). The message stays the session's: `from` is the session or its role, `sender-human` is
 set, the caps and walls for peer text apply, and the frame carries `quotes-human="<name>"` so a reader knows whose
 words the sender says the body holds. The comparison happens in the plugin on the human's machine against the
 session's prompts of the last 6 hours, kept locally and never sent to the hub; a headless run (`claude -p`) and what
