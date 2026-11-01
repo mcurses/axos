@@ -395,11 +395,8 @@ mkdir -p "$HOME/.local/bin" && ln -sf "$AXOS" "$HOME/.local/bin/axos"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) say "Note: ~/.local/bin is not on your PATH, so 'axos' works inside Claude Code but not in this shell until you add it." ;; esac
 "$AXOS" join "$LINK"
 say ""
-say "Done. Restart Claude Code (every open window)${greet ? `, then say in any of them: tell ${greet} hello` : ""}"
-say ""
 ${work
-    ? `say ${q(`You are in ${work.name} with ${inviter ?? "them"}.${work.repo ? ` The code: ${work.repo}` : ""}`)}
-${work.repo ? `# The code: this folder if it is a clone of it already, else a fresh clone next to where this runs; connected either way.
+    ? `${work.repo ? `# join said where the code is; this gets it here: this folder if it is a clone of it already, else a fresh clone next to where this runs; connected either way.
 REPO=${q(work.repo)}
 DIR=$(basename "$REPO" .git)
 if "$AXOS" link >/dev/null 2>&1; then
@@ -411,7 +408,7 @@ elif command -v git >/dev/null 2>&1 && git clone -q "$REPO" "$DIR" 2>/dev/null &
 else
   rm -rf "$DIR" 2>/dev/null
   say "Could not clone $REPO here (no access to it yet, or no git). Once you have it: git clone $REPO && cd $DIR && axos link"
-fi` : `say ${q(`Get the code onto this machine, open its folder in Claude Code and say: connect this folder to AXOS (it picks ${work.name}).`)}`}`
+fi` : ""}`
     : `say "After that, when you like: in a repo you work in, say to Claude Code: connect this folder to AXOS."`}
 say "Your page is the app on a phone too: Humans, Add device, Create login code, open the link on the phone, Add to Home Screen, Notifications on."
 `;

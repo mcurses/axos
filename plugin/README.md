@@ -18,6 +18,8 @@ For other profiles, prefix the first two lines with `CLAUDE_CONFIG_DIR=~/.claude
 
 Ask the hub's admin for an invite link (`axos invite`), then `axos join <link>`. It writes `~/.config/axos/token`
 (mode 600) and the hub's URL into `~/.config/axos/config.json`, and never replaces an existing token without `--force`.
+It prints a one-time login link for your page and opens it in a browser when run in a terminal (never when its
+output is piped or an agent runs it).
 `axos whoami` shows what a folder looks like to AXOS. Optionally, folders can be tied to projects in the config:
 
 ```json

@@ -2097,7 +2097,7 @@ describe("passwords", () => {
     for (let i = 0; i < 50; i++) refusal(() => hub.loginWithPassword(`guess${i}`, "x", "", "203.0.113.9"));
     expect(refusal(() => hub.loginWithPassword("alice", "correct horse battery staple", "", "203.0.113.9"))).toContain("too many tries");
     expect(hub.loginWithPassword("alice", "correct horse battery staple", "", "198.51.100.2").human).toBe("alice"); // another address is not locked
-  });
+  }, 120_000); // fifty-odd argon2id checks: seconds on a quiet machine, far longer on a loaded one
 });
 
 describe("share and link from the page (0.22.0)", () => {

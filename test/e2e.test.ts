@@ -1300,7 +1300,10 @@ test("an invite that carries the work: the page and the script say the project a
   expect(page.slice(0, page.indexOf("<body>"))).not.toContain("github.com");
   expect(page).toContain('<meta property="og:image" content="');
   const sh = await (await fetch(`${inv.link}/setup`)).text();
-  expect(sh).toContain("You are in alice/workshop with alice. The code: https://github.com/alice/workshop.git");
+  // join itself says the project and where the code is; the script only clones and connects, and repeats nothing.
+  expect(sh).not.toContain("You are in alice/workshop");
+  expect(sh).not.toContain("Done. Restart");
+  expect(sh).toContain("REPO='https://github.com/alice/workshop.git'");
   const tmp = join(tmpdir(), `axos-setup-${Date.now()}.sh`);
   writeFileSync(tmp, sh);
   expect(Bun.spawnSync(["sh", "-n", tmp]).exitCode).toBe(0);
@@ -1438,7 +1441,7 @@ test("the second person's path: invite from the page, the setup script, the one-
   expect(sh).toContain("#!/bin/sh");
   expect(sh).toContain(`LINK="${inv.link}"`);
   expect(sh).toContain('"$AXOS" join "$LINK"');
-  expect(sh).toContain("tell alice hello");
+  expect(sh).not.toContain("tell alice hello"); // join prints that line itself; the script does not repeat it
   // The script parses as POSIX sh.
   const tmp = join(tmpdir(), `axos-setup-${Date.now()}.sh`);
   writeFileSync(tmp, sh);

@@ -730,7 +730,8 @@ async function joinHub(args: string[]): Promise<void> {
   // The page: a one-time login link (ten minutes), opened in the browser here; the page key itself is never shown.
   if (r.page) {
     console.log(`Your page (this link logs this machine's browser in; it works once, within ten minutes; if no browser opened, paste it):\n  ${r.page}`);
-    try { Bun.spawn([process.platform === "darwin" ? "open" : "xdg-open", r.page], { stdout: "ignore", stderr: "ignore" }); } catch { /* no browser here: the link is printed */ }
+    // Only a person at a terminal gets a browser window; a script, a test or an agent running this gets the link alone.
+    if (process.stdout.isTTY) try { Bun.spawn([process.platform === "darwin" ? "open" : "xdg-open", r.page], { stdout: "ignore", stderr: "ignore" }); } catch { /* no browser here: the link is printed */ }
   }
   const greet = r.greet ?? r.invited_by;
   console.log(`Restart Claude Code (every open window)${greet ? `, then say in any of them: tell ${greet} hello` : ""}.`);

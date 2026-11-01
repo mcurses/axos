@@ -48,7 +48,11 @@ AXOS_DB=/tmp/axos.db AXOS_PORT=18900 AXOS_PUBLIC_URL=http://127.0.0.1:18900 bun 
 AXOS_DB=/tmp/axos.db AXOS_PUBLIC_URL=http://127.0.0.1:18900 bun src/cli.ts init ana            # you, your page, a join link
 ```
 
-Everything below works the same against `http://127.0.0.1:18900`, except pushes to a phone (they need https).
+Everything below works the same against `http://127.0.0.1:18900`, except pushes to a phone (they need https). Two
+programs are called `axos`: the admin's, on the server (`init`, `project add`, `invite`, `health`), which here is
+`bun src/cli.ts …` with the same `AXOS_DB` and `AXOS_PUBLIC_URL`; and the person's, on each machine (`join`, `link`,
+`whoami`), which the plugin installs and which here is also `bun plugin/bin/axos.ts …` from the clone. No browser at
+hand? `curl -X POST <page link>` logs in and returns the cookie.
 
 **On a server** (any Linux host with Docker, ports 80 and 443 open, and a DNS name pointing at it):
 
@@ -83,6 +87,9 @@ Each person connects a repository once per machine, in its folder:
 ```bash
 axos link ana/parser
 ```
+
+Then, in Claude Code in that folder: **tell ana hello**. Ana sees it on her page and her phone and answers there; the
+answer reaches that session.
 
 The link stays on that machine and matches the repo's git remote, so every clone and worktree connects and nothing
 lands in the repo (or on GitHub). A private team repo can instead commit an `.axos.json` naming its project, which each

@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.7`, protocol `1`.
+Current numbers: hub release `0.24.8`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -581,13 +581,18 @@ curl -si -X POST -H "Origin: https://axos.example.com" https://axos.example.com/
 curl -s -b "axos_ui=…" https://axos.example.com/ui/api/state | jq '.asks, .inbox'
 ```
 
+What the person does on the page goes through the same routes, with the cookie and, on https hubs, the same-origin
+`Origin` header: a reply or a new message `POST /ui/api/send {"project","to","summary","body"?,"re"?,"type"?,
+"priority"?}` (`to`: addresses, comma-separated; answers `{"id"}`), marking a message handled `POST /ui/api/ack {"id"}`,
+answering a question `POST /ui/api/answer {"ask","answer"}`.
+
 `GET /join/<code>`: an HTML page for the person: one sentence on what AXOS is, who invited them (an admin's invite
 names the project's owner), the name they will have, one setup command (`curl -fsSL <link>/setup | sh`, offered on
 https hubs only), the same as a sentence for Claude Code, and the steps by hand. `200` if the code
 is open, `410` if it is unknown, used or expired.
 
 `GET /join/<code>/setup`: the setup as a shell script (`text/plain`): installs bun if missing and the Claude Code
-plugin, links the `axos` command, runs `axos join <link>`, which opens the page; when the invite carries a project
+plugin, links the `axos` command, runs `axos join <link>`, which opens the page in a browser when run in a terminal; when the invite carries a project
 with a code address, it then connects the folder it runs in if that is a clone of the code, else clones the code
 into `./<name>` and connects the clone, and if the clone fails (no access yet) prints the two commands for later.
 `410` once the code is not open.
