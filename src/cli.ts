@@ -24,6 +24,7 @@ const USAGE = `axos — hub admin
   axos project list                              every project with its id, people and links
   axos project brief <project> <file|->          set the brief agents get on join
   axos project rename <project> <new name>       the old name keeps working
+  axos project remove <project>                  remove a project that carried no message (an empty leftover); one with mail stays
   axos project human <project> <human>           let a human (and all their agents) into a project
   axos project unhuman <project> <human>         take them out again: their sessions there end, roles and leases freed
   axos project link <project> <project>          let the sessions of two projects message each other (nothing else crosses)
@@ -235,6 +236,12 @@ Next: a project for a repo: axos project add ${name}/<name> --repo <git address>
       const id = project(rest[0]!);
       hub.renameProject(id, rest[1]!);
       out(`renamed to ${hub.projectName(id)}; the old name keeps working`);
+      return;
+    }
+    case "project remove": {
+      need(1);
+      const r = hub.removeProject(project(rest[0]!));
+      out(`removed ${r.name}: its people, roles, links and open invites let go; the name is free`);
       return;
     }
     case "project human": {

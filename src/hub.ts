@@ -576,6 +576,20 @@ export class Hub {
     })();
   }
 
+  // The admin removes a project that carried no message: an empty leftover (a rename done by hand, a trial). One with
+  // mail stays: nobody's history is deleted (the owner's charter). Its people, roles, links and open invites let go.
+  removeProject(project: string): { name: string } {
+    const name = this.projectName(project);
+    if (!name) throw new AxosError(`no project '${project}'`);
+    const mail = this.db.query("SELECT COUNT(*) AS n FROM messages WHERE project = ?").get(project) as { n: number };
+    if (mail.n) throw new AxosError(`${name} carries ${mail.n} message${mail.n === 1 ? "" : "s"}; a project with mail is not removed (rename it, or take people out of it)`);
+    this.db.transaction(() => {
+      this.deleteProject(project);
+      this.event("admin", "project.removed", null, { project, name });
+    })();
+    return { name };
+  }
+
   // Only for a project that carried no message (nothing of anyone's history is in it).
   private deleteProject(p: string): void {
     for (const t of ["roles", "leases", "lease_waiters", "subscriptions", "landings", "project_aliases", "memberships", "human_projects", "sessions"]) {

@@ -1842,6 +1842,25 @@ describe("the second person's path (0.21.0)", () => {
     expect(refusal(() => hub.createProject(DEV1, "tools2", "", "x".repeat(301)))).toContain("at most 300");
   });
 
+  test("the admin removes an empty project (people, roles and links let go, the name is free); one with mail stays", () => {
+    const old = hub.createProject(DEV1, "mux-old", "", "");
+    hub.defineRole(old, "keeper", "");
+    hub.linkProjects(old, GAME);
+    expect(hub.projectsOf(DEV1)).toContain(old);
+    expect(hub.removeProject(old)).toEqual({ name: "alice/mux-old" });
+    expect(hub.projectName(old)).toBeNull();
+    expect(hub.projectsOf(DEV1)).not.toContain(old);
+    expect(hub.findProjects("alice/mux-old")).toEqual([]);
+    expect(hub.linkedProjects(GAME)).not.toContain(old);
+    expect(hub.createProject(DEV1, "mux-old", "", "")).not.toBe(old); // the name is free
+    const busy = hub.createProject(DEV1, "mux-busy", "", "");
+    hub.defineRole(busy, "keeper", "");
+    hub.send(A, note(["role:keeper"], "one note is history enough", busy)); // waits for the role's holder: mail all the same
+    expect(refusal(() => hub.removeProject(busy))).toContain("a project with mail is not removed");
+    expect(hub.projectName(busy)).toBe("alice/mux-busy");
+    expect(refusal(() => hub.removeProject("prj_nope000000"))).toContain("no project");
+  });
+
   test("a person is removed entirely: machines, logins, memberships, open invites; an empty pair goes, one with messages stays; the name is free", () => {
     hub.setOperator("alice", true);
     const r = hub.redeemInvite(hub.createInvite("gil", GAME, undefined, "alice").code, "gils-laptop");
