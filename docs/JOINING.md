@@ -35,12 +35,14 @@ your first links, and `axos human password <name>` sets a password from the serv
 Then connect each repo of the project once, in its folder:
 
 ```bash
-axos link <owner>/<project>      # for example: axos link ana/parser
+axos use <owner>/<project>       # for example: axos use ana/parser
 ```
 
-The link lives on your machine (`~/.config/axos/config.json`), nothing is written into the repo. It names the repo's git
-remote, so every clone and worktree of it connects; a folder without a remote is linked as a folder. `axos unlink`
-undoes it.
+This lives on your machine (`~/.config/axos/config.json`), nothing is written into the repo. It names the repo's git
+remote, so every clone and worktree of it connects; a folder without a remote is connected as a folder. `axos use`
+alone says where a folder is connected; `axos use --none` disconnects it. A folder that already belongs to a project
+moves to another only after you say yes (or with `--move`). `axos link` does nothing: in AXOS a link is two projects
+whose sessions may reach each other, made by a project's owner on the page; it says so and where.
 
 Some private team repos instead commit an `.axos.json` that names their project. The first time you open such a repo,
 accept the file once in that folder with `axos trust` (on macOS a system dialog asks; elsewhere the terminal does).
@@ -77,7 +79,7 @@ invite link that carries the project, so the person is in it the moment they joi
 the project is and where its code is, and the one command clones the code and connects it; you hear on your phone when the link is used) and "Link with a project of…". When a project gets linked, its
 other members are told with which; when someone joins a linked project, the other side's owner is told. A person you already know gets it on their page
 and phone like a question and joins, picks which of their projects to link, or says not now. A project's card shows
-where its code is (set when a folder is connected with `axos link --new`, or by hand); members see it, nobody else. Nobody sees anybody's project list; a link tells each side the one project it is
+where its code is (set when a folder is connected with `axos use --new`, or by hand); members see it, nobody else. Nobody sees anybody's project list; a link tells each side the one project it is
 linked with. Leaving, removing a person and unlinking are on the same card. Only the owner shares or links.
 
 ## 4. The AXOS page

@@ -5,10 +5,12 @@
 //   axos.ts hook <event> Claude Code hooks: start (SessionStart), prompt (UserPromptSubmit), tool (PostToolUse),
 //                        stop (Stop), end (SessionEnd). Prints nothing when nothing is waiting, so a session pays nothing.
 //   axos join <link>     for a person: set this machine up with an invite link (writes the config and the token)
-//   axos link [<project>] connect this repo to a project on this machine only (matched by its git remote, so every clone
-//   axos link --new [<name>]   make a project for this folder (named after it by default) and connect the folder to it
-//                        and worktree of it); nothing is written into the repo
-//   axos unlink          undo that
+//   axos use [<project>] [--move]  the project this folder belongs to, on this machine only (matched by its git remote,
+//                        so every clone and worktree of it); nothing is written into the repo. Bare: says where it is.
+//                        A folder that already belongs to another project moves only with a yes (or --move).
+//   axos use --new [<name>]   make a project for this folder (named after it by default) and connect the folder to it
+//   axos use --none      disconnect this folder
+//   axos link, unlink    do nothing: "link" also means two projects that reach each other; they say which is which
 //   axos trust           for a person at a terminal: accept the .axos.json of this folder, once per machine
 //   axos whoami          what this folder and this machine look like to AXOS
 //   axos landed <remote>/<branch> [<commit>] [--since <old head>]
@@ -24,7 +26,7 @@
 //                        keep running beside an interactive Codex: when an AXOS message arrives, `codex queue` wakes it
 //
 // Configuration: ~/.config/axos/config.json (see plugin README). A folder belongs to a project through a "folders" entry
-// in the config (a folder path, or a git remote that `axos link` wrote), or through a committed .axos.json ({"hub": "<url>", "project": "<owner>/<name>", "id": "prj_…"}) at or
+// in the config (a folder path, or a git remote that `axos use` wrote), or through a committed .axos.json ({"hub": "<url>", "project": "<owner>/<name>", "id": "prj_…"}) at or
 // above it, once the person on this machine has trusted that file: a cloned repo must not steer sessions into a project.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -742,9 +744,9 @@ async function joinHub(args: string[]): Promise<void> {
   if (r.project) {
     // The invite carried the work: the person is in that project already; its folder is connected once it is here.
     console.log(`You are in ${r.project.name}${r.invited_by ? ` with ${r.invited_by}` : ""}.${r.project.repo ? ` The code: ${r.project.repo}` : ""}`);
-    console.log("Get the code onto this machine, then in its folder run: axos link (it picks that project), or say to Claude Code there: connect this folder to AXOS.");
+    console.log("Get the code onto this machine, then in its folder run: axos use (it picks that project), or say to Claude Code there: connect this folder to AXOS.");
   } else {
-    console.log("To work with others in a repo, connect it once, in its folder: axos link <owner>/<project> (or axos trust, if it commits an .axos.json).");
+    console.log("To work with others in a repo, connect it once, in its folder: axos use <owner>/<project> (or axos trust, if it commits an .axos.json).");
   }
 }
 
@@ -953,7 +955,7 @@ async function codexLaunch(args: string[]): Promise<number> {
   if (!c || !t) throw new Error(`AXOS is not configured: ${CONFIG_PATH} or the token is missing`);
   const cwd = realpathSync(process.cwd());
   const project = projectOf(c, cwd).project;
-  if (!project) throw new Error("this folder belongs to no AXOS project (axos link <project> connects it)");
+  if (!project) throw new Error("this folder belongs to no AXOS project (axos use <project> connects it)");
   const codexHome = process.env.CODEX_HOME ?? join(HOME, ".codex");
   if (/^\s*\[mcp_servers\.axos\]/m.test(readText(join(codexHome, "config.toml")))) {
     throw new Error(`${join(codexHome, "config.toml")} has its own [mcp_servers.axos]; remove it: axos codex sets that server up per launch`);
@@ -1057,9 +1059,35 @@ function writeConfig(c: Config): void {
   writeFileSync(CONFIG_PATH, `${JSON.stringify(c, null, 2)}\n`, { mode: 0o600 });
 }
 
+// `axos link` used to be the folder command; "link" is also two projects that may reach each other, and a person who
+// meant the second moved a folder into the other project (Max, 2026-11-02, three times in a day). It does nothing now.
+function linkSaysWhich(cmd: string): never {
+  console.error(`axos ${cmd} does nothing: "link" means two different things in AXOS.
+- The project this folder belongs to: axos use <owner>/<name> (axos use alone says where it is now; axos use --none disconnects it).
+- Two projects whose sessions may reach each other: with another person's project, on your page (the project's card,
+  Project settings, "Link with a project of…"; they accept); two of your own, on the server: axos project link <a> <b>.`);
+  process.exit(2);
+}
+
+// A folder that belongs to a project moves to another only with a person's yes at a terminal, or --move.
+async function moveAllowed(from: string, to: string, move: boolean, retry: string): Promise<boolean> {
+  if (move) return true;
+  const what = `This folder belongs to ${from}`;
+  if (process.stdin.isTTY) {
+    process.stdout.write(`${what}. Move it to ${to}? Sessions started here then work in ${to}. [y/N] `);
+    for await (const line of console) return /^y(es)?$/i.test(line.trim());
+    return false;
+  }
+  throw new Error(`${what}; it was not moved. To move it to ${to}: ${retry} --move. If you meant to let the two projects reach each other: axos link says how.`);
+}
+
 // Connects a checkout on this machine only. In a git checkout with a remote the rule names the remote (origin, or
 // --remote <name>), so every clone and worktree of that repository connects; --here, or no remote, names the folder.
-async function link(args: string[]): Promise<void> {
+async function use(args: string[]): Promise<void> {
+  if (args.includes("--none")) {
+    if (args.length > 1) throw new Error("usage: axos use --none");
+    return unlink();
+  }
   const c = config();
   const t = c && token(c);
   if (!c || !t) throw new Error(`AXOS is not set up on this machine: axos join <invite link> first`);
@@ -1071,13 +1099,14 @@ async function link(args: string[]): Promise<void> {
     return v;
   };
   const here = args.includes("--here");
+  const move = args.includes("--move");
   const remoteName = opt("--remote");
   // --new [<name>]: make the project on the hub first (named after the folder by default), then link this folder to it.
   const ni = args.indexOf("--new");
   const isNew = ni >= 0;
   const newName = isNew && args[ni + 1] && !args[ni + 1]!.startsWith("--") ? args.splice(ni, 2)[1] : (isNew ? (args.splice(ni, 1), undefined) : undefined);
-  const rest = args.filter((a) => a !== "--here");
-  if (rest.length > 1 || rest.some((a) => a.startsWith("--"))) throw new Error("usage: axos link [<project>] [--new [<name>]] [--remote <name>] [--here]");
+  const rest = args.filter((a) => a !== "--here" && a !== "--move");
+  if (rest.length > 1 || rest.some((a) => a.startsWith("--"))) throw new Error("usage: axos use [<project>] [--new [<name>]] [--remote <name>] [--here] [--move] | axos use --none");
   const cwd = process.cwd();
   const file = repoFile(c, cwd);
   let ref = rest[0] ?? file?.ref;
@@ -1086,26 +1115,30 @@ async function link(args: string[]): Promise<void> {
     ? (remoteName ? git.remotes.find((r) => r.name === remoteName) : git.remotes.find((r) => r.name === "origin") ?? (git.remotes.length === 1 ? git.remotes[0] : undefined))
     : undefined;
   if (!here && git?.remotes.length && !pick) throw new Error(remoteName ? `no remote '${remoteName}' here` : `say which remote: --remote ${git.remotes.map((r) => r.name).join(" or --remote ")}`);
-  // A bare `axos link` in a connected folder says where it is connected, instead of asking for a name: a folder that
-  // sat in the wrong project for a day was found only by `axos unlink` (the meum session, 2026-11-02). An untrusted
+  // A bare `axos use` in a connected folder says where it is connected, instead of asking for a name: a folder that
+  // sat in the wrong project for a day was found only by disconnecting it (the meum session, 2026-11-02). An untrusted
   // .axos.json still goes through the confirmation below.
   if (!rest[0] && !isNew && !(file?.ref && !trusted(file.dir, file.ref))) {
     const cur = projectOf(c, cwd);
     if (cur.project) {
       const r = cur.rule && cur.rule.project === cur.project ? cur.rule : null;
       const how = r ? (r.remote ? `every checkout of ${r.remote}` : `${r.path} and everything below it`) : "a trusted .axos.json in this repo";
-      console.log(`This folder is connected to ${r?.name ?? cur.project} (${how}). To connect it elsewhere: axos link <owner>/<name>; to disconnect: axos unlink.`);
+      console.log(`This folder is connected to ${r?.name ?? cur.project} (${how}). To move it to another project: axos use <owner>/<name>; to disconnect it: axos use --none.`);
       return;
     }
   }
+  // What this folder belongs to now, from a rule of this machine (a trusted .axos.json is not moved by a rule).
+  const cur = projectOf(c, cwd);
+  const curRule = cur.rule && cur.rule.project === cur.project ? cur.rule : null;
   if (isNew) {
     if (ref) throw new Error("--new makes a project; do not also name one");
+    if (curRule && !(await moveAllowed(curRule.name ?? curRule.project, "a new project", move, `axos use --new${newName ? ` ${newName}` : ""}`))) return console.log("Not moved; no project made.");
     // --new makes a project of this person's own; someone invited into another's project usually wants that one.
     const w = await fetch(`${c.url.replace(/\/$/, "")}/api/whoami`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(10_000) })
       .then((r) => r.json() as Promise<{ human?: string; projects?: { id: string; name: string; pair?: boolean; owner?: string | null }[] }>).catch(() => null);
     const linkedHere = new Set((c.folders ?? []).map((f) => f.project));
     const theirs = (w?.projects ?? []).filter((p) => p.pair === false && typeof p.owner === "string" && p.owner !== w?.human && !linkedHere.has(p.id));
-    if (theirs.length) console.log(`Note: this makes a NEW project of yours. To work in ${theirs.map((p) => p.name).join(" or ")} instead, run: axos link ${theirs[0]!.name}`);
+    if (theirs.length) console.log(`Note: this makes a NEW project of yours. To work in ${theirs.map((p) => p.name).join(" or ")} instead, run: axos use ${theirs[0]!.name}`);
     const slug = (newName ?? basename(cwd)).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "");
     // Where the code is goes with the project (the remote's address, never a user name or token in it), so that a
     // person invited into it knows what to clone.
@@ -1132,14 +1165,14 @@ async function link(args: string[]): Promise<void> {
       ref = here[0]!.name;
       console.log(`Connecting to ${ref}: this checkout is its code, and you were invited into it.`);
     } else if (!pick) {
-      throw new Error(`this folder is no checkout with a remote, so say which project: axos link <owner>/<name>${theirs.length ? ` (you are in ${theirs.map((p) => p.name).join(", ")})` : ", or axos link --new to make one for this folder"}`);
+      throw new Error(`this folder is no checkout with a remote, so say which project: axos use <owner>/<name>${theirs.length ? ` (you are in ${theirs.map((p) => p.name).join(", ")})` : ", or axos use --new to make one for this folder"}`);
     } else if (theirs.length) {
       const unknown = theirs.filter((p) => !p.repo);
       throw new Error(unknown.length
-        ? `${unknown.map((p) => p.name).join(" and ")} ${unknown.length === 1 ? "has" : "have"} no code address yet, so this checkout cannot be matched to it; to connect it: axos link ${unknown[0]!.name} (the owner sets the address on the project's card)`
-        : `this checkout (${pick.key}) is not the code of ${theirs.map((p) => `${p.name} (${p.repo})`).join(" or ")}; to connect it anyway: axos link <owner>/<name>`);
+        ? `${unknown.map((p) => p.name).join(" and ")} ${unknown.length === 1 ? "has" : "have"} no code address yet, so this checkout cannot be matched to it; to connect it: axos use ${unknown[0]!.name} (the owner sets the address on the project's card)`
+        : `this checkout (${pick.key}) is not the code of ${theirs.map((p) => `${p.name} (${p.repo})`).join(" or ")}; to connect it anyway: axos use <owner>/<name>`);
     } else {
-      throw new Error("say which project: axos link <owner>/<name>, or axos link --new to make one for this folder");
+      throw new Error("say which project: axos use <owner>/<name>, or axos use --new to make one for this folder");
     }
   }
   const project = await resolveProject(c, t, ref);
@@ -1147,8 +1180,10 @@ async function link(args: string[]): Promise<void> {
   if (!rest[0] && file?.ref) {
     const question = `Connect Claude Code sessions in this repo to the AXOS project ${project.name ?? project.id}, as its .axos.json asks, ` +
       `on ${hostOf(c.url)}? Their messages, roles and leases are then shared with that project's members.`;
-    if (!(await confirm(question))) return console.log("Not linked.");
+    if (!(await confirm(question))) return console.log("Not connected.");
   }
+  if (!isNew && curRule && curRule.project !== project.id && curRule.project !== project.name &&
+    !(await moveAllowed(curRule.name ?? curRule.project, project.name ?? project.id, move, `axos use ${rest[0] ?? project.name ?? project.id}`))) return console.log("Not moved.");
 
   let rule: FolderRule;
   if (pick) {
@@ -1167,10 +1202,10 @@ async function link(args: string[]): Promise<void> {
 
   const label = project.name ?? project.id;
   // A re-pointed folder says what it left: a second link in the wrong folder is otherwise silent (vinea, 2026-11-02).
-  if (before) console.log(`This ${rule.remote ? "repository" : "folder"} pointed at ${before} before; it does not any more.`);
+  if (before) console.log(`Moved: this ${rule.remote ? "repository" : "folder"} belonged to ${before}; it does not any more.`);
   console.log(rule.remote
-    ? `Linked on this machine: every checkout of ${rule.remote} -> ${label}.`
-    : `Linked on this machine: ${rule.path} and everything below it -> ${label}.`);
+    ? `Connected on this machine: every checkout of ${rule.remote} -> ${label}.`
+    : `Connected on this machine: ${rule.path} and everything below it -> ${label}.`);
   const now = projectOf({ ...c, folders }, cwd).project;
   if (now !== project.id) console.log(`Note: here ${now} still wins (a folder rule or a trusted .axos.json); axos whoami shows which.`);
   else console.log("Nothing was written into the repo. New sessions here connect; running ones at their next prompt.");
@@ -1184,9 +1219,9 @@ function unlink(): void {
   const keys = new Set(git?.remotes.map((r) => r.key));
   const root = git?.root ?? cwd;
   const gone = (c.folders ?? []).filter((r) => (r.remote && keys.has(r.remote)) || (r.path && resolve(expand(r.path)) === root));
-  if (!gone.length) return console.log("No link for this checkout.");
+  if (!gone.length) return console.log("This checkout is not connected by a rule of this machine.");
   writeConfig({ ...c, folders: (c.folders ?? []).filter((r) => !gone.includes(r)) });
-  for (const r of gone) console.log(`Unlinked ${r.remote ?? r.path} (was ${r.name ?? r.project}).`);
+  for (const r of gone) console.log(`Disconnected ${r.remote ?? r.path} (was ${r.name ?? r.project}).`);
 }
 
 // The current folder's project, which is what a person or agent checking a link wants. Inside a session (its Bash
@@ -1209,12 +1244,12 @@ async function whoami(): Promise<void> {
   const differs = !!sess && (sess.project !== here?.project || real(sess.cwd) !== real(process.cwd()));
   console.log(JSON.stringify({
     hub: c.url, human: who.human ?? null, agent: who.agent ?? null, folder: process.cwd(), project: here?.project ?? null, project_name: here?.project ? names.get(here.project) ?? (here.rule?.project === here.project ? here.rule?.name : undefined) : undefined, via,
-    untrusted: here?.untrusted && !here.project ? `${here.untrusted.dir}/.axos.json (run axos trust there, or axos link)` : undefined,
+    untrusted: here?.untrusted && !here.project ? `${here.untrusted.dir}/.axos.json (run axos trust there, or axos use)` : undefined,
     profile: profile(), session: sid ?? null, name: here?.name ?? null, quiet: here?.quiet, roles: here?.roles,
     session_folder: differs ? sess!.cwd : undefined,
     session_project: differs ? (sess!.project && names.get(sess!.project)) || sess!.project : undefined,
     note: differs && sess!.project !== here?.project
-      ? "This session works in session_project (from the folder it started in), not in this folder's project. A link or unlink reaches running sessions at their next prompt."
+      ? "This session works in session_project (from the folder it started in), not in this folder's project. axos use reaches running sessions at their next prompt."
       : undefined,
   }, null, 2));
 }
@@ -1251,8 +1286,9 @@ else if (cmd === "landed") {
     process.exit(1);
   });
 }
-else if (cmd === "link" || cmd === "unlink") {
-  await (cmd === "link" ? link(process.argv.slice(3)) : Promise.resolve(unlink())).catch((e: Error) => {
+else if (cmd === "link" || cmd === "unlink") linkSaysWhich(cmd);
+else if (cmd === "use") {
+  await use(process.argv.slice(3)).catch((e: Error) => {
     console.error(e.message);
     process.exit(1);
   });
@@ -1269,7 +1305,7 @@ else if (cmd === "trust") {
     process.exit(1);
   });
 } else {
-  console.error("usage: axos join <invite link> | link [<project>] | unlink | trust | whoami | landed <remote>/<branch> | send --name <script> … | inbox --name <script> … | codex [<codex args>] | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
+  console.error("usage: axos join <invite link> | use [<project>] | use --none | trust | whoami | landed <remote>/<branch> | send --name <script> … | inbox --name <script> … | codex [<codex args>] | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
   process.exit(2);
 }
 }

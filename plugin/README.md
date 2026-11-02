@@ -33,11 +33,14 @@ output is piped or an agent runs it).
 }
 ```
 
-`axos link <project>` in a repo adds a rule for you: `{"remote": "github.com/ana/parser", "project": "prj_…", "name":
+`axos use <project>` in a repo adds a rule for you: `{"remote": "github.com/ana/parser", "project": "prj_…", "name":
 "ana/parser"}`. It names the repo's git remote (origin, or `--remote <name>`; no user, password or port is kept), so
 every clone and worktree of it connects; without a remote, or with `--here`, it names the folder. A `path` rule beats a
-`remote` rule. `axos unlink` removes the rule for the checkout you are in. A bare `axos link` in a connected folder says
-which project it is connected to and by which rule (`axos whoami` shows the same, with the session's view).
+`remote` rule. `axos use --none` removes the rule for the checkout you are in. A bare `axos use` in a connected folder
+says which project it is connected to and by which rule (`axos whoami` shows the same, with the session's view). A
+checkout that already belongs to another project moves only after a yes at the terminal, or with `--move`; without a
+terminal (an agent's Bash) it refuses and names the command. `axos link` and `axos unlink` do nothing and say why: a
+link is two projects that may reach each other, made on the page.
 
 A repo can also name its project itself with a committed `.axos.json`, which wins over `folders`:
 `{"hub": "https://axos.example.net", "project": "ana/parser", "id": "prj_…"}`. The plugin ignores a file meant for

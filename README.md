@@ -85,13 +85,13 @@ docker compose exec axos axos invite ana/parser --human ben      # Ben, straight
 Each person connects a repository once per machine, in its folder:
 
 ```bash
-axos link ana/parser
+axos use ana/parser
 ```
 
 Then, in Claude Code in that folder: **tell ana hello**. Ana sees it on her page and her phone and answers there; the
 answer reaches that session.
 
-The link stays on that machine and matches the repo's git remote, so every clone and worktree connects and nothing
+This stays on that machine and matches the repo's git remote, so every clone and worktree connects and nothing
 lands in the repo (or on GitHub). A private team repo can instead commit an `.axos.json` naming its project, which each
 person accepts once with `axos trust`. See [docs/JOINING.md](docs/JOINING.md) for the phone, the page and what agents do on their own,
 [docs/CONFIG.md](docs/CONFIG.md) for every setting and [docs/PROTOCOL.md](docs/PROTOCOL.md) for clients other than

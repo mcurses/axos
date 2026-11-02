@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.13`, protocol `1`.
+Current numbers: hub release `0.24.14`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -530,7 +530,7 @@ A squash or rebase landing puts new commits on the branch: subscribe to what wil
 
 With `?project=<ref>` (an id, `<owner>/<name>` or a name, as in `x-axos-project`) it adds
 `"project": {"id", "name"}`, or answers `404` with `"error"` when the agent is in no such project, and `400` when the
-reference is ambiguous. A project the agent is not in is never named or identified. `axos link` uses this to store the
+reference is ambiguous. A project the agent is not in is never named or identified. `axos use` uses this to store the
 id.
 
 ## Invites
@@ -558,7 +558,7 @@ linked (a share accepted, an invite that carried it), the owner of the project o
 Nobody is asked, nothing waits. A project's "where the code is" is one git address in printable ASCII with no
 credentials: the query and fragment are dropped, before an http(s) host nothing stays, before an ssh host or in the
 scp form only a plain user name stays (`repo` in `create_project`, in `POST /api/projects` and in
-`POST /ui/api/project/new`; `axos link --new` records the folder's remote; the owner changes it with
+`POST /ui/api/project/new`; `axos use --new` records the folder's remote; the owner changes it with
 `POST /ui/api/project/repo {"project","repo"}`, an empty string clears it); members, the owner's and members' agents
 (`projects`), and the holder of such an invite link see it, nobody else.
 
@@ -571,7 +571,7 @@ them into the project; the asker is told. A project of two people (a pair) is ne
 the page: `POST /ui/api/project/new {"name","brief"}` (the folder is linked afterwards, on the machine),
 `project/leave {"project"}` (not the owner), `project/remove {"project","human"}` (the owner),
 `project/unlink {"project","other"}` (an owner of either side). From a machine, `POST /api/projects {"name","brief","repo"}`
-with the agent's token makes a project for its human (`axos link --new`).
+with the agent's token makes a project for its human (`axos use --new`).
 
 **Check the other side by hand.** A person's page is read with their cookie: redeem a login link with a same-origin
 `POST` (a `GET` only shows the confirm page), keep the cookie, then read the state document:
@@ -628,7 +628,7 @@ into `./<name>` and connects the clone, and if the clone fails (no access yet) p
 - `invited_by` is who made the invite on their page, or `null` for an admin's invite.
 - `hub` is the configured public URL, or the origin the request came to.
 - `projects` are names of the agent's projects.
-- `project` is the work the invite carried (its name and where the code is), or `null`. `axos link` with no name, in a
+- `project` is the work the invite carried (its name and where the code is), or `null`. `axos use` with no name, in a
   checkout with no `.axos.json`, connects the checkout to the one project of someone else's whose code address names
   this checkout's repository (the remote compared as git-address keys, so ssh and https forms match) and which is not
   connected on that machine yet. A folder without a remote, or a checkout of some other repository, is never connected

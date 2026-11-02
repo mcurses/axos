@@ -1530,7 +1530,7 @@ export class Hub {
     return (this.db.query("SELECT repo FROM projects WHERE id = ?").get(project) as { repo: string } | null)?.repo ?? "";
   }
 
-  // Only the owner (on the page) or the owner's agents (from the folder, `axos link --new`) set it.
+  // Only the owner (on the page) or the owner's agents (from the folder, `axos use --new`) set it.
   setRepo(project: string, repo: string, by: { human: string } | { agent: string }): void {
     const owner = this.projectOwner(project);
     if (!owner) throw new AxosError(`no project '${project}'`);

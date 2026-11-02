@@ -73,7 +73,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const mine = hub.projectsOf(agent.id);
     const pr = p ? ref(p) : conn.project || (mine.length === 1 ? mine[0] : undefined);
     if (!pr) throw new AxosError(`say which project: this session is not tied to one; your projects: ${mine.join(", ") || "none"}. ` +
-      "To tie this folder to a project, your human runs `axos link <owner>/<project>` in it; the next session started there belongs to it.");
+      "To tie this folder to a project, your human runs `axos use <owner>/<project>` in it; the next session started there belongs to it.");
     if (conn.session) hub.requireScope(agent.id, pr, conn.session);
     return pr;
   };
@@ -133,7 +133,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const mine = hub.projectsOf(agent.id);
     const links = (p: string) => hub.linkedProjects(p);
     return `${mine.length ? mine.map((p) => `- ${p}${p === conn.project ? " (this session)" : ""}${hub.isPair(p) ? ` (direct messages with ${hub.projectHumans(p).filter((h) => h !== agent.human).join(", ")}; no folder)` : ""}${hub.repo(p) ? ` (code: \`${hub.repo(p)}\`)` : ""}${links(p).length ? `, linked with ${links(p).join(", ")}` : ""}`).join("\n") : "No projects yet; create_project opens one."}` +
-      (conn.project ? "" : "\nThis session is not tied to a project: its folder is not linked (axos link) and has no trusted .axos.json. See the axos skill, 'connect'.");
+      (conn.project ? "" : "\nThis session is not tied to a project: its folder is not connected (axos use) and has no trusted .axos.json. See the axos skill, 'connect'.");
   }));
 
   server.registerTool("create_project", {
@@ -146,7 +146,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }, tool(({ name, brief, repo }) => {
     const id = hub.createProject(agent.id, name, brief ?? "", repo ?? "");
     const file = JSON.stringify({ hub: hub.publicUrl || undefined, project: hub.projectName(id), id });
-    return [`Project ${id} created; ${agent.human} is in it. To connect the repo, run \`axos link ${hub.projectName(id)}\` in it ` +
+    return [`Project ${id} created; ${agent.human} is in it. To connect the repo, run \`axos use ${hub.projectName(id)}\` in it ` +
       "(nothing is written into the repo; each person links once per machine). For a private team repo whose every clone " +
       "should connect, you may instead commit this as .axos.json at the repo root; each person then runs `axos trust` once " +
       "in their own terminal there. Do not commit it to a public repo:\n", file];
@@ -208,12 +208,12 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const invitedInto = hub.projectsOf(agent.id).filter((p) => !hub.isPair(p) && hub.projectOwner(p) !== agent.human);
     if (hub.messagesFrom(agent.human) === 1 && hub.projectsOf(agent.id).every((p) => hub.isPair(p) || hub.projectOwner(p) !== agent.human)) {
       parts.push(`\nThat was the first message from ${agent.human}'s side.` +
-        (invitedInto.length ? ` They were invited into ${invitedInto.map((p) => `${p}${hub.repo(p) ? ` (code: \`${hub.repo(p)}\`)` : ""}`).join(", ")}: in the folder of that code, \`axos link\` connects it (it picks that project), and sessions there work with the other members'. ` : " ") +
+        (invitedInto.length ? ` They were invited into ${invitedInto.map((p) => `${p}${hub.repo(p) ? ` (code: \`${hub.repo(p)}\`)` : ""}`).join(", ")}: in the folder of that code, \`axos use\` connects it (it picks that project), and sessions there work with the other members'. ` : " ") +
         "What AXOS is for, so you can tell them: (1) their own sessions " +
         "on any machine find each other per project, hand work over before a restart (send to next) and take turns on shared things (lease); " +
         `(2) a question only ${agent.human} can decide reaches their phone (ask_human) and the answer comes back here; ` +
         "(3) another person joins a project when it is shared with them, and their sessions then reach it too. " +
-        "To start with a repo of theirs: in that folder, say \"connect this folder to AXOS\" (create_project, then they run axos link once). " +
+        "To start with a repo of theirs: in that folder, say \"connect this folder to AXOS\" (create_project, then they run axos use once). " +
         `Their page${hub.publicUrl ? ` (${hub.publicUrl}/ui)` : ""} shows people, projects and questions; added to a phone's home screen it is the app.`);
     }
     parts.push(...r.unattended);

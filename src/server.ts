@@ -400,15 +400,15 @@ ${work
     ? `${work.repo ? `# join said where the code is; this gets it here: this folder if it is a clone of it already, else a fresh clone next to where this runs; connected either way.
 REPO=${q(work.repo)}
 DIR=$(basename "$REPO" .git)
-if "$AXOS" link >/dev/null 2>&1; then
+if "$AXOS" use >/dev/null 2>&1; then
   say "This folder is a clone of that code: connected. Open it in Claude Code."
 elif [ -e "$DIR" ]; then
-  say "There is a '$DIR' here already; if it is a clone of the code, run inside it: axos link"
-elif command -v git >/dev/null 2>&1 && git clone -q "$REPO" "$DIR" 2>/dev/null && (cd "$DIR" && "$AXOS" link >/dev/null 2>&1); then
+  say "There is a '$DIR' here already; if it is a clone of the code, run inside it: axos use"
+elif command -v git >/dev/null 2>&1 && git clone -q "$REPO" "$DIR" 2>/dev/null && (cd "$DIR" && "$AXOS" use >/dev/null 2>&1); then
   say "The code is in $PWD/$DIR and connected: open that folder in Claude Code."
 else
   rm -rf "$DIR" 2>/dev/null
-  say "Could not clone $REPO here (no access to it yet, or no git). Once you have it: git clone $REPO && cd $DIR && axos link"
+  say "Could not clone $REPO here (no access to it yet, or no git). Once you have it: git clone $REPO && cd $DIR && axos use"
 fi` : ""}`
     : `say "After that, when you like: in a repo you work in, say to Claude Code: connect this folder to AXOS."`}
 say "Your page is the app on a phone too: Humans, Add device, Create login code, open the link on the phone, Add to Home Screen, Notifications on."
@@ -533,7 +533,7 @@ export function makeFetch(hub: Hub) {
       if (path === "/api/hook") return handleHook(hub, req, agent, conn);
       if (path === "/api/landed") return handleLanded(hub, req, agent, conn);
       if (path === "/api/whoami") return handleWhoami(hub, req, url, agent);
-      // `axos link --new`: a project for this agent's human, made from the machine, then linked there.
+      // `axos use --new`: a project for this agent's human, made from the machine, then linked there.
       if (path === "/api/projects") {
         if (req.method !== "POST") return new Response("method not allowed\n", { status: 405 });
         const b = (await req.json().catch(() => ({}))) as { name?: unknown; brief?: unknown; repo?: unknown };

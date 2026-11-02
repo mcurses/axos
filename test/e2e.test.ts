@@ -1130,7 +1130,7 @@ test("/api/whoami names the caller's projects and resolves a reference only amon
   expect(JSON.parse(text).error).toBe("you are not a member of a project 'alice/shop'");
 });
 
-test("axos link connects every checkout of a remote on this machine, writes nothing into the repo, and unlinks", async () => {
+test("axos use connects every checkout of a remote on this machine, writes nothing into the repo, and disconnects", async () => {
   const dir = mkdtempSync(join(tmpdir(), "axos-link-"));
   const sh = (cwd: string, ...a: string[]) => {
     const r = Bun.spawnSync(a, { cwd, env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
@@ -1158,7 +1158,7 @@ test("axos link connects every checkout of a remote on this machine, writes noth
     sh(work, "git", "commit", "-q", "--allow-empty", "-m", "base");
     mkdirSync(join(work, "src"));
 
-    const linked = await axos(join(work, "src"), "link", "alice/shop");
+    const linked = await axos(join(work, "src"), "use", "alice/shop");
     expect(linked.err).toBe("");
     expect(linked.code).toBe(0);
     expect(linked.out).toContain("every checkout of github.com/alice/shop -> alice/shop");
@@ -1185,39 +1185,63 @@ test("axos link connects every checkout of a remote on this machine, writes noth
     expect(split.note).toContain("This session works in session_project");
     expect(JSON.parse((await inSession(clone, clone, "whoami")).out).session_project).toBeUndefined();
 
-    const outsider = await axos(work, "link", "alice/secret-nope");
+    const outsider = await axos(work, "use", "alice/secret-nope");
     expect(outsider.code).toBe(1);
     expect(outsider.err).toContain("you are not a member of a project 'alice/secret-nope'; yours: ");
 
-    expect((await axos(clone, "unlink")).out).toBe("Unlinked github.com/alice/shop (was alice/shop).\n");
+    expect((await axos(clone, "use", "--none")).out).toBe("Disconnected github.com/alice/shop (was alice/shop).\n");
     expect(config().folders).toEqual([]);
     expect(JSON.parse((await axos(work, "whoami")).out).project).toBeNull();
 
-    // No remote: the link names the folder.
+    // No remote: the rule names the folder.
     const plain = join(dir, "plain");
     mkdirSync(plain);
     const bare = realpathSync(plain);
-    expect((await axos(bare, "link", "shop")).out).toContain(`${bare} and everything below it -> alice/shop`);
+    expect((await axos(bare, "use", "shop")).out).toContain(`${bare} and everything below it -> alice/shop`);
     expect(JSON.parse((await axos(bare, "whoami")).out).via).toBe(`folder rule ${bare}`);
-    // Linking the same folder to another project says what it left (a second link run in the wrong folder was silent).
+    // A folder that belongs to a project does not move without a yes: no terminal here (an agent's Bash), so it refuses
+    // and names --move (Max, 2026-11-02: `axos link tamago` in meum moved the folder; he meant to link two projects).
     const PLAIN2 = hub.addProject("alice/plain-two");
-    const moved = await axos(bare, "link", "alice/plain-two");
+    const refused = await axos(bare, "use", "alice/plain-two");
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain("This folder belongs to alice/shop; it was not moved. To move it to alice/plain-two: axos use alice/plain-two --move.");
+    expect(JSON.parse((await axos(bare, "whoami")).out).project_name).toBe("alice/shop");
+    // --new in a connected folder: refused before any project is made.
+    const before = hub.projectId("alice/plain")
+    const noNew = await axos(bare, "use", "--new");
+    expect(noNew.code).toBe(1);
+    expect(noNew.err).toContain("axos use --new --move");
+    expect(hub.projectId("alice/plain")).toBe(before);
+    // With --move it moves and says what it left.
+    const moved = await axos(bare, "use", "alice/plain-two", "--move");
     expect(moved.out).toContain(`${bare} and everything below it -> alice/plain-two`);
-    expect(moved.out).toContain("This folder pointed at alice/shop before; it does not any more.");
-    expect((await axos(bare, "link", "alice/plain-two")).out).not.toContain("pointed at");
+    expect(moved.out).toContain("Moved: this folder belonged to alice/shop; it does not any more.");
+    // The same project again is no move.
+    const again = await axos(bare, "use", "alice/plain-two");
+    expect(again.code).toBe(0);
+    expect(again.out).not.toContain("Moved");
+    expect((config().folders ?? []).filter((f: { path?: string }) => f.path === bare)).toEqual([{ path: bare, project: PLAIN2, name: "alice/plain-two" }]);
+    // `axos link` and `axos unlink` do nothing and say which of the two meanings is which.
+    for (const cmd of ["link", "unlink"]) {
+      const said = await axos(bare, cmd, "alice/shop");
+      expect(said.code).toBe(2);
+      expect(said.err).toContain(`axos ${cmd} does nothing: "link" means two different things in AXOS.`);
+      expect(said.err).toContain("axos use <owner>/<name>");
+      expect(said.err).toContain("Link with a project of");
+    }
     expect((config().folders ?? []).filter((f: { path?: string }) => f.path === bare)).toEqual([{ path: bare, project: PLAIN2, name: "alice/plain-two" }]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test.skipIf(process.platform === "darwin")("axos link without a project takes the repo's .axos.json only with a person's yes", async () => {
+test.skipIf(process.platform === "darwin")("axos use without a project takes the repo's .axos.json only with a person's yes", async () => {
   const dir = mkdtempSync(join(tmpdir(), "axos-link-file-"));
   try {
     writeFileSync(join(dir, "token"), `${tokens.dev1}\n`);
     writeFileSync(join(dir, "config.json"), JSON.stringify({ url: base, token_file: join(dir, "token") }));
     writeFileSync(join(dir, ".axos.json"), JSON.stringify({ project: "alice/shop" }));
-    const p = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), "link"],
+    const p = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), "use"],
       { cwd: dir, env: { ...process.env, AXOS_CONFIG: join(dir, "config.json") }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     expect(await new Response(p.stderr).text()).toContain("asks a person to confirm");
     expect(await p.exited).toBe(1);
@@ -1315,7 +1339,7 @@ test("an invite that carries the work: the page and the script say the project a
   const tmp = join(tmpdir(), `axos-setup-${Date.now()}.sh`);
   writeFileSync(tmp, sh);
   expect(Bun.spawnSync(["sh", "-n", tmp]).exitCode).toBe(0);
-  // Run it with stubs: `git clone` makes the folder; the stub axos connects (`link`) only inside a folder of that name.
+  // Run it with stubs: `git clone` makes the folder; the stub axos connects (`use`) only inside a folder of that name.
   // In an empty folder the script clones and connects; in the clone itself it connects without cloning; when git fails
   // it says what to do by hand.
   const home0 = mkdtempSync(join(tmpdir(), "axos-home-"));
@@ -1324,7 +1348,7 @@ test("an invite that carries the work: the page and the script say the project a
   writeFileSync(join(stubs, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   writeFileSync(join(stubs, "git"), "#!/bin/sh\n[ \"$1\" = clone ] || exit 1\n[ -n \"$GIT_FAILS\" ] && exit 128\nmkdir -p \"$4\"\n", { mode: 0o755 });
   mkdirSync(join(home0, "checkout", "plugin", "bin"), { recursive: true });
-  writeFileSync(join(home0, "checkout", "plugin", "bin", "axos"), "#!/bin/sh\ncase \"$1\" in link) [ \"$(basename \"$PWD\")\" = workshop ] || exit 1;; esac\necho \"stub axos $*\"\n", { mode: 0o755 });
+  writeFileSync(join(home0, "checkout", "plugin", "bin", "axos"), "#!/bin/sh\ncase \"$1\" in use) [ \"$(basename \"$PWD\")\" = workshop ] || exit 1;; esac\necho \"stub axos $*\"\n", { mode: 0o755 });
   mkdirSync(join(home0, ".claude", "plugins"), { recursive: true });
   writeFileSync(join(home0, ".claude", "plugins", "known_marketplaces.json"), JSON.stringify({ axos: { installLocation: join(home0, "checkout") } }));
   const setup = (cwd: string, extra: Record<string, string> = {}) => {
@@ -1339,7 +1363,7 @@ test("an invite that carries the work: the page and the script say the project a
   expect(setup(code0)).toContain("There is a 'workshop' here already");
   const code1 = join(home0, "code1");
   mkdirSync(code1);
-  expect(setup(code1, { GIT_FAILS: "1" })).toContain("Could not clone https://github.com/alice/workshop.git here (no access to it yet, or no git). Once you have it: git clone https://github.com/alice/workshop.git && cd workshop && axos link");
+  expect(setup(code1, { GIT_FAILS: "1" })).toContain("Could not clone https://github.com/alice/workshop.git here (no access to it yet, or no git). Once you have it: git clone https://github.com/alice/workshop.git && cd workshop && axos use");
   expect(existsSync(join(code1, "workshop"))).toBe(false);
   rmSync(home0, { recursive: true, force: true });
   rmSync(tmp, { force: true });
@@ -1360,11 +1384,11 @@ test("an invite that carries the work: the page and the script say the project a
   const hello = await call(cara, "send", { to: "human:alice", summary: "hello from cara" });
   expect(hello.isError).toBe(false);
   expect(hello.text).toContain("invited into alice/workshop (code: `https://github.com/alice/workshop.git`)");
-  expect(hello.text).toContain("`axos link` connects it");
+  expect(hello.text).toContain("`axos use` connects it");
   expect((await call(cara, "projects", {})).text).toContain("alice/workshop (code: `https://github.com/alice/workshop.git`)");
   await cara.close();
-  // The plugin on her machine: `axos link` with no name, in a folder with no .axos.json, picks the project she was
-  // invited into; `axos link --new` in a repo of hers makes a project with the remote's address, credentials dropped.
+  // The plugin on her machine: `axos use` with no name, in a folder with no .axos.json, picks the project she was
+  // invited into; `axos use --new` in a repo of hers makes a project with the remote's address, credentials dropped.
   const home = mkdtempSync(join(tmpdir(), "axos-cara-"));
   writeFileSync(join(home, "config.json"), JSON.stringify({ url: base }));
   writeFileSync(join(home, "token"), `${r.token}\n`, { mode: 0o600 });
@@ -1379,24 +1403,24 @@ test("an invite that carries the work: the page and the script say the project a
   // A folder that is no checkout, and a checkout of some other repository: never connected without a name.
   const bare = join(home, "bare");
   mkdirSync(bare);
-  expect((await plugin(bare, "link")).out).toContain("no checkout with a remote, so say which project: axos link <owner>/<name> (you are in alice/workshop)");
+  expect((await plugin(bare, "use")).out).toContain("no checkout with a remote, so say which project: axos use <owner>/<name> (you are in alice/workshop)");
   const other = join(home, "other");
   checkout(other, "git@corp.example:secret/payroll.git");
-  expect((await plugin(other, "link")).out).toContain("this checkout (corp.example/secret/payroll) is not the code of alice/workshop (https://github.com/alice/workshop.git)");
+  expect((await plugin(other, "use")).out).toContain("this checkout (corp.example/secret/payroll) is not the code of alice/workshop (https://github.com/alice/workshop.git)");
   expect(readFileSync(join(home, "config.json"), "utf8")).not.toContain("folders");
   // Her clone of the project's code, by ssh while the project says https: the same repository, connected.
   const work = join(home, "work");
   checkout(work, "git@github.com:alice/workshop.git");
-  const linked = await plugin(work, "link");
+  const linked = await plugin(work, "use");
   expect(linked.out).toContain("Connecting to alice/workshop: this checkout is its code, and you were invited into it.");
   expect(linked.out).toContain("every checkout of github.com/alice/workshop -> alice/workshop");
   expect(linked.code).toBe(0);
   expect((JSON.parse(readFileSync(join(home, "config.json"), "utf8")) as { folders: { remote?: string; name?: string }[] }).folders[0]).toMatchObject({ remote: "github.com/alice/workshop", name: "alice/workshop" });
-  // Connected already: a bare link says where, instead of asking for a name.
-  expect((await plugin(work, "link")).out).toContain("This folder is connected to alice/workshop (every checkout of github.com/alice/workshop). To connect it elsewhere: axos link <owner>/<name>; to disconnect: axos unlink.");
+  // Connected already: a bare `axos use` says where, instead of asking for a name.
+  expect((await plugin(work, "use")).out).toContain("This folder is connected to alice/workshop (every checkout of github.com/alice/workshop). To move it to another project: axos use <owner>/<name>; to disconnect it: axos use --none.");
   const own = join(home, "thing");
   checkout(own, "https://cara:pw@github.com/cara/thing.git?token=abc");
-  const made2 = await plugin(own, "link", "--new");
+  const made2 = await plugin(own, "use", "--new");
   expect(made2.out).toContain("Project cara/thing made (code: https://github.com/cara/thing.git)");
   expect(hub.repo(hub.projectId("cara/thing")!)).toBe("https://github.com/cara/thing.git");
   rmSync(home, { recursive: true, force: true });

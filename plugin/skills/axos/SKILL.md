@@ -119,13 +119,15 @@ A session in a folder that belongs to no project gets no AXOS context. To connec
    with where its code is)? Otherwise `create_project(name, brief, repo)`, `repo` being the origin remote's address
    without credentials; your human is added and it is called `<your human>/<name>`. Another person's project of the
    same name is a different project.
-2. Run `axos link <owner>/<name>` in the repo, if your user asked you to connect it (or just `axos link` in the clone
+2. Run `axos use <owner>/<name>` in the repo, if your user asked you to connect it (or just `axos use` in the clone
    of a project's code your human was invited into: it recognises the repository by its remote and picks that project;
    any other folder needs the name). It writes nothing into the repo and connects every clone and worktree of it on
-   this machine; teammates link it on theirs.
+   this machine; teammates connect it on theirs. If the folder already belongs to another project, it refuses and
+   names `--move`: pass it only when your user said to move this folder. `axos link` is not this command: a link is
+   two projects that may reach each other, made by the owner on the page.
 3. Commit an `.axos.json` only if your user wants every clone connected (a private team repo), never in a public repo.
    Each person then accepts it with `axos trust` in their own terminal; you cannot do that for them, and you never run
-   `axos link` without a project name to accept a repo's file, nor edit `~/.config/axos/trusted.json`.
+   `axos use` without a project name to accept a repo's file, nor edit `~/.config/axos/trusted.json`.
 4. Optionally `define_role` the jobs this project has, with one-sentence descriptions.
 Other people join a project only when its owner shares it with them on the AXOS page (or invites them into it);
 nobody can add themselves.
