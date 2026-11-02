@@ -1198,6 +1198,13 @@ test("axos link connects every checkout of a remote on this machine, writes noth
     const bare = realpathSync(plain);
     expect((await axos(bare, "link", "shop")).out).toContain(`${bare} and everything below it -> alice/shop`);
     expect(JSON.parse((await axos(bare, "whoami")).out).via).toBe(`folder rule ${bare}`);
+    // Linking the same folder to another project says what it left (a second link run in the wrong folder was silent).
+    const PLAIN2 = hub.addProject("alice/plain-two");
+    const moved = await axos(bare, "link", "alice/plain-two");
+    expect(moved.out).toContain(`${bare} and everything below it -> alice/plain-two`);
+    expect(moved.out).toContain("This folder pointed at alice/shop before; it does not any more.");
+    expect((await axos(bare, "link", "alice/plain-two")).out).not.toContain("pointed at");
+    expect((config().folders ?? []).filter((f: { path?: string }) => f.path === bare)).toEqual([{ path: bare, project: PLAIN2, name: "alice/plain-two" }]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

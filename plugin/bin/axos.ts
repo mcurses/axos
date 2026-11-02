@@ -1148,11 +1148,14 @@ async function link(args: string[]): Promise<void> {
   const same = (r: FolderRule) => rule.remote ? r.remote === rule.remote : !!r.path && resolve(expand(r.path)) === rule.path;
   const folders = c.folders ?? [];
   const old = folders.find(same);
+  const before = old && old.project !== rule.project ? (old.name ?? old.project) : undefined;
   if (old) Object.assign(old, { project: rule.project, name: rule.name }); // keeps roles_dir and the like
   else folders.push(rule);
   writeConfig({ ...c, folders });
 
   const label = project.name ?? project.id;
+  // A re-pointed folder says what it left: a second link in the wrong folder is otherwise silent (vinea, 2026-11-02).
+  if (before) console.log(`This ${rule.remote ? "repository" : "folder"} pointed at ${before} before; it does not any more.`);
   console.log(rule.remote
     ? `Linked on this machine: every checkout of ${rule.remote} -> ${label}.`
     : `Linked on this machine: ${rule.path} and everything below it -> ${label}.`);
