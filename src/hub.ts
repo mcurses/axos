@@ -1989,13 +1989,20 @@ export class Hub {
       const seen = this.lastSeen(r.slice(6));
       return `${this.label(r)} has not connected ${seen === null ? "yet" : `since ${when(seen)}`}: the message waits in its mailbox and expires unread after 7 days.`;
     });
+    // A script's mailbox (a command line's `axos send --name`): only `axos inbox --name` reads it, and the run that sent
+    // is usually over; a reply to it is otherwise "delivered" to nobody (vlow and meum, 2026-11-02, messages 2187 and 2249).
+    const scripts = [...recipients.keys()].filter((r) => r.startsWith("session:") && this.session(r.slice(8))?.kind === "script").map((r) => {
+      const s = this.session(r.slice(8))!;
+      return `${this.label(r)} is a script's mailbox (a command line sent with axos send --name ${s.name}): nobody reads it until ` +
+        `\`axos inbox --name ${s.name}\` runs on that machine (last ran ${when(s.last_seen)}). If you meant a session, address it or its role instead.`;
+    });
     return {
       id,
       duplicate: false,
       delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => r.startsWith("role:") ? `${r} (held by ${holderText(r)})` : r),
       waiting_for_role: [...recipients.keys()].filter(vacant),
       not_sent: notSent,
-      unattended: [...unattended, ...stale],
+      unattended: [...unattended, ...stale, ...scripts],
     };
   }
 

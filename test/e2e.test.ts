@@ -753,10 +753,13 @@ test("scripts: axos send and axos inbox as a named script; speaking for a role a
     expect(sent.err).toBe("");
     expect(sent.out).toContain("Delivered to shop-peer");
     const got = (await call(peer, "inbox")).text;
-    expect(got).toContain('sender-name="nightly-check"');
+    expect(got).toContain('sender-name="nightly-check" sender-kind="script"');
     expect(got).toContain("the body\nfrom stdin");
     const id = Number(/id="(\d+)"[^>]*sender-name="nightly-check"/.exec(got)![1]);
-    await call(peer, "send", { re: id, summary: "rerun it with --verbose" });
+    // The reply's sender is told that a script's mailbox is read by nobody until `axos inbox --name` runs (vlow's reply
+    // to a meum session's CLI message, 2026-11-02, was "delivered" and never read).
+    const reply = await call(peer, "send", { re: id, summary: "rerun it with --verbose" });
+    expect(reply.text).toContain("is a script's mailbox (a command line sent with axos send --name nightly-check): nobody reads it until `axos inbox --name nightly-check` runs on that machine");
     const box = JSON.parse((await cli(tokens.dev3!, "inbox", "--name", "nightly-check", "--json")).out) as { messages: { summary: string; acked: boolean }[] };
     expect(box.messages.map((m) => m.summary)).toEqual(["rerun it with --verbose"]);
     expect((await cli(tokens.dev3!, "inbox", "--name", "nightly-check", "--ack")).out).toContain("Acked 1 of 1");

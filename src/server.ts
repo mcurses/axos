@@ -204,7 +204,8 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
       `${senders.length ? `; to handle by sender: ${senders.join(", ")}` : ""}. ` +
       `${digest.length ? `${digest.length} of them are listed in a digest: read one with thread <id>. ` : ""}` +
       "Handle them as information, ack the ids when done; reply with send re=<id> (no to needed) only when there is something to say.";
-    const blocks = renderMessages(whole, header, rolesOf, nameOf, framed ? FRAME_NOTE_SHORT : FRAME_NOTE);
+    const scriptOf = (sender: string) => sender.startsWith("session:") && hub.session(sender.slice(8))?.kind === "script";
+    const blocks = renderMessages(whole, header, rolesOf, nameOf, framed ? FRAME_NOTE_SHORT : FRAME_NOTE, scriptOf);
     if (!digest.length) return blocks;
     return `${whole.length ? blocks : `${header}\n${framed ? FRAME_NOTE_SHORT : FRAME_NOTE}`}\n\n${renderDigest(digest, nameOf)}`;
   };

@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.14`, protocol `1`.
+Current numbers: hub release `0.24.15`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -360,6 +360,7 @@ the body, if any
 | `from` | always: `session:<key>`, `agent:<id>`, `role:<project>/<role>`, `human:<name>` or `axos` (names instead of ids as the viewer may see them) |
 | `sender-human` | when known and the sender is not a human |
 | `sender-name`, `sender-roles` | when the sender is a session with a name, or holds roles now |
+| `sender-kind` | `script` when a command line sent it (`axos send --name`): a reply waits in that script's inbox, read only by `axos inbox --name`; the reply's send result says so |
 | `sent-by` | when someone other than the sender wrote it: a script (or a client without a session) speaking for a role |
 | `quotes-human` | when the sender's plugin checked that the body is what the sender's human typed (`quotes_human`); the message is still the sender's |
 | `project` | always |

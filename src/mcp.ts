@@ -78,7 +78,8 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     return pr;
   };
   const boxes = (p?: string, as?: string) => hub.mailboxes(actor, as ? project(p) : p && ref(p), as);
-  const render = (items: Parameters<typeof renderMessages>[0], header: string) => renderMessages(items, header, rolesOf, nameOf);
+  const scriptOf = (sender: string) => sender.startsWith("session:") && hub.session(sender.slice(8))?.kind === "script";
+  const render = (items: Parameters<typeof renderMessages>[0], header: string) => renderMessages(items, header, rolesOf, nameOf, undefined, scriptOf);
   // A session named in a reply or a receipt: its label, unless it is another person's session in a linked project,
   // which is "a session of <human>" (its name, machine and profile stay on their side of the link).
   const peer = (address: string, messageProject: string): string => {
