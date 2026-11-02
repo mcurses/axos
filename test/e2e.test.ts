@@ -767,6 +767,10 @@ test("scripts: axos send and axos inbox as a named script; speaking for a role a
     // Not a live session: not in presence, not reached by a project-wide message, no roles.
     expect(hub.presence(SHOP).some((x) => x.name === "nightly-check")).toBe(false);
     const all = hub.send({ kind: "agent", id: ids.dev1!, human: "alice" }, { project: SHOP, to: ["project:shop"], type: "request", summary: "everyone: pause deploys" });
+    // A request to the whole project: the sender is told that every receiver got it as its own (meum-05, 2026-11-02).
+    expect(all.delivered_to.length).toBeGreaterThan(1);
+    expect(all.unattended.join("\n")).toContain(`Through the project address, ${all.delivered_to.length} receivers each got this request as their own`);
+    expect(hub.send({ kind: "agent", id: ids.dev1!, human: "alice" }, { project: SHOP, to: ["project:shop"], type: "note", summary: "fyi" }).unattended.join("\n")).not.toContain("Through the project address");
     expect(all.delivered_to.some((r) => r.includes(hub.openScript(ids.dev3!, SHOP, "nightly-check")))).toBe(false);
     expect(() => hub.claimRole(ids.dev3!, SHOP, "supervisor", "x", hub.openScript(ids.dev3!, SHOP, "nightly-check"))).toThrow("a script holds no roles");
 

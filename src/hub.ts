@@ -1996,13 +1996,19 @@ export class Hub {
       return `${this.label(r)} is a script's mailbox (a command line sent with axos send --name ${s.name}): nobody reads it until ` +
         `\`axos inbox --name ${s.name}\` runs on that machine (last ran ${when(s.last_seen)}). If you meant a session, address it or its role instead.`;
     });
+    // A request to a whole project reaches every receiver as its own, and nothing tells them who took it: two live
+    // sessions both started on one (meum-05's report, 2026-11-02, messages 2250 and 2260). The sender is told.
+    const fanned = [...recipients.values()].filter((v) => v.startsWith("project:")).length;
+    const many = fanned > 1 && ["ask", "request", "handoff", "review"].includes(input.type)
+      ? [`Through the project address, ${fanned} receivers each got this ${input.type} as their own; none of them sees who else got it or who takes it. For one taker, address a role (define_role, then role:<role>) or one session.`]
+      : [];
     return {
       id,
       duplicate: false,
       delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => r.startsWith("role:") ? `${r} (held by ${holderText(r)})` : r),
       waiting_for_role: [...recipients.keys()].filter(vacant),
       not_sent: notSent,
-      unattended: [...unattended, ...stale, ...scripts],
+      unattended: [...unattended, ...stale, ...scripts, ...many],
     };
   }
 
