@@ -1391,7 +1391,8 @@ test("an invite that carries the work: the page and the script say the project a
   expect(linked.out).toContain("every checkout of github.com/alice/workshop -> alice/workshop");
   expect(linked.code).toBe(0);
   expect((JSON.parse(readFileSync(join(home, "config.json"), "utf8")) as { folders: { remote?: string; name?: string }[] }).folders[0]).toMatchObject({ remote: "github.com/alice/workshop", name: "alice/workshop" });
-  expect((await plugin(work, "link")).out).toContain("say which project"); // connected already: nothing left to pick
+  // Connected already: a bare link says where, instead of asking for a name.
+  expect((await plugin(work, "link")).out).toContain("This folder is connected to alice/workshop (every checkout of github.com/alice/workshop). To connect it elsewhere: axos link <owner>/<name>; to disconnect: axos unlink.");
   const own = join(home, "thing");
   checkout(own, "https://cara:pw@github.com/cara/thing.git?token=abc");
   const made2 = await plugin(own, "link", "--new");

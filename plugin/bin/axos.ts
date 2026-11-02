@@ -1086,6 +1086,18 @@ async function link(args: string[]): Promise<void> {
     ? (remoteName ? git.remotes.find((r) => r.name === remoteName) : git.remotes.find((r) => r.name === "origin") ?? (git.remotes.length === 1 ? git.remotes[0] : undefined))
     : undefined;
   if (!here && git?.remotes.length && !pick) throw new Error(remoteName ? `no remote '${remoteName}' here` : `say which remote: --remote ${git.remotes.map((r) => r.name).join(" or --remote ")}`);
+  // A bare `axos link` in a connected folder says where it is connected, instead of asking for a name: a folder that
+  // sat in the wrong project for a day was found only by `axos unlink` (the meum session, 2026-11-02). An untrusted
+  // .axos.json still goes through the confirmation below.
+  if (!rest[0] && !isNew && !(file?.ref && !trusted(file.dir, file.ref))) {
+    const cur = projectOf(c, cwd);
+    if (cur.project) {
+      const r = cur.rule && cur.rule.project === cur.project ? cur.rule : null;
+      const how = r ? (r.remote ? `every checkout of ${r.remote}` : `${r.path} and everything below it`) : "a trusted .axos.json in this repo";
+      console.log(`This folder is connected to ${r?.name ?? cur.project} (${how}). To connect it elsewhere: axos link <owner>/<name>; to disconnect: axos unlink.`);
+      return;
+    }
+  }
   if (isNew) {
     if (ref) throw new Error("--new makes a project; do not also name one");
     // --new makes a project of this person's own; someone invited into another's project usually wants that one.
