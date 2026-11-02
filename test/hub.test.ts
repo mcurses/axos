@@ -530,10 +530,12 @@ describe("sessions", () => {
     expect(hub.unreadCount(boxes)).toBe(1);
   });
 
-  test("a note to next waits for the next session of the sender's human in the project, from any of their agents", () => {
+  test("a note to next waits for the next session of the sender's human in the project, from any of their agents; one that started within 30 minutes gets it at once", () => {
+    // The coordinator's session has run for an hour: not the next session.
+    hub.db.query("UPDATE sessions SET started_at = started_at - 3600_000 WHERE key = ?").run(coord);
     const r = hub.send({ ...H() }, { project: SHOP, to: ["next"], type: "handoff", summary: "Resume from the toolbar branch" });
     expect(r.waiting_for_role).toEqual([`next:${SHOP}/alice`]);
-    // Sessions that already run do not get it; Bob's agent is not in the project.
+    // Sessions that have run for a while do not get it; Bob's agent is not in the project.
     expect(hub.inbox(hub.mailboxes({ id: DEV3, session: coord }))).toEqual([]);
     // A new session of another of Alice's agents does.
     const fresh = hub.openSession(DEV1, { client_session: "0e0e0e0e-aaaa-bbbb-cccc-dddddddddddd", project: SHOP, name: "shop-0e" });
@@ -545,6 +547,23 @@ describe("sessions", () => {
     hub.send({ kind: "agent", id: DEV1, human: "alice", session: fresh }, { project: SHOP, to: ["next"], type: "handoff", summary: "shop only" });
     const game = hub.openSession(DEV1, { client_session: "0d0d0d0d-aaaa-bbbb-cccc-dddddddddddd", project: GAME, name: "game-0d" });
     expect(hub.inbox(hub.mailboxes({ id: DEV1, session: game }))).toEqual([]);
+    // The human starts the new session while the old one still writes the handoff: a session of theirs that started
+    // seconds ago is the next session and gets the note at once (the youngest, never the sender).
+    hub.db.query("UPDATE sessions SET started_at = started_at - 3600_000 WHERE project = ?").run(SHOP);
+    const early = hub.openSession(DEV1, { client_session: "0a0a0a0a-aaaa-bbbb-cccc-dddddddddddd", project: SHOP, name: "shop-0a" });
+    const direct = hub.send({ kind: "agent", id: DEV1, human: "alice", session: fresh }, { project: SHOP, to: ["next"], type: "handoff", summary: "raced the restart" });
+    expect(direct.waiting_for_role).toEqual([]);
+    expect(direct.delivered_to).toEqual([`session:${early}`]);
+    expect(hub.inbox(hub.mailboxes({ id: DEV1, session: early })).map((m) => m.summary)).toEqual(["raced the restart"]);
+    // The same session an hour later is no longer the next one: held.
+    hub.db.query("UPDATE sessions SET started_at = started_at - 3600_000 WHERE key = ?").run(early);
+    const held = hub.send({ kind: "agent", id: DEV1, human: "alice", session: fresh }, { project: SHOP, to: ["next"], type: "handoff", summary: "held after all" });
+    expect(held.waiting_for_role).toEqual([`next:${SHOP}/alice`]);
+    // A note held from within the window after a session's start is claimed when the session reads (its hook), not only at its start.
+    hub.db.query("UPDATE sessions SET started_at = (SELECT created_at FROM messages WHERE id = ?) - 60_000 WHERE key = ?").run(held.id, early);
+    expect(hub.claimRecentNext(early)).toBe(1);
+    expect(hub.claimRecentNext(early)).toBe(0);
+    expect(hub.inbox(hub.mailboxes({ id: DEV1, session: early })).map((m) => m.summary)).toEqual(["raced the restart", "held after all"]);
   });
 
   test("at the end of a turn, a message in a thread the session answered since does not hold it back", () => {

@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.12`, protocol `1`.
+Current numbers: hub release `0.24.13`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -277,7 +277,7 @@ An address names who receives a message. Resolution happens at send time, in the
 | `session:<key>` | A session by key, as `<agent id>#<8>` or `<human>/<agent name>#<8>`. A key also works for a session that is not live if it belongs to the project or a linked one. |
 | `agent:<human>/<name>` or `<human>/<name>` or `agt_…` | The agent's shared mailbox. The agent must be a member of the project or a linked project, and not revoked. |
 | `project` | Every live session in the project, plus every member agent that has no live session but has connected within the last 7 days (a mailbox nobody has opened for a week, or ever, is not in the room). The sender is excluded. |
-| `next` | Held for the next session of the sender's human that starts in the message's project, from any of that human's agents (a handoff before a restart). The first new session takes it; its own sender session never does. Not across links. |
+| `next` | For the next session of the sender's human in the message's project, from any of that human's agents (a handoff before a restart). A session of theirs that started there within the last 30 minutes, other than the sender, gets it at once (people start the new session while the old one still writes the handoff); otherwise it is held and the first new session takes it; a session also claims, when it reads, notes sent within 30 minutes after its start. The sender session never gets its own. Not across links. |
 | `project:<project>` | The same for a linked project. |
 
 Anything else is an error that lists the accepted forms. Naming a project that is neither the message's own nor linked

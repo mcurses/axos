@@ -281,6 +281,9 @@ function checkName(kind: string, s: string): void {
   if (/^(prj|agt)_/.test(s)) throw new AxosError(`${kind} '${s}' looks like an id; pick a name that does not start with prj_ or agt_`);
 }
 
+// A session of the sender's human that started in the project this long before a note to `next` is the next session.
+const NEXT_WINDOW_MS = 30 * 60_000;
+
 export class Hub {
   readonly now: () => number;
   private notifier: Notifier;
@@ -1317,6 +1320,17 @@ export class Hub {
     ).run(`session:${key}`, `next:${s.project}/${this.humanOf(s.agent_id)}`, `session:${key}`).changes;
   }
 
+  // Notes to `next` sent within the window after this session started are its too, claimed whenever it reads (a hook):
+  // a send that raced its start, or one held before this rule existed.
+  claimRecentNext(key: string): number {
+    const s = this.session(key);
+    if (!s?.project) return 0;
+    return this.db.query(
+      `UPDATE deliveries SET recipient = ? WHERE recipient = ? AND acked_at IS NULL
+         AND message_id IN (SELECT id FROM messages WHERE sender <> ? AND created_at >= ? AND created_at <= ?)`,
+    ).run(`session:${key}`, `next:${s.project}/${this.humanOf(s.agent_id)}`, `session:${key}`, s.started_at, s.started_at + NEXT_WINDOW_MS).changes;
+  }
+
   session(key: string): SessionRow | null {
     return this.db.query("SELECT * FROM sessions WHERE key = ?").get(key) as SessionRow | null;
   }
@@ -1762,6 +1776,15 @@ export class Hub {
       // A note for whoever picks the work up: held for the next session of the sender's human that starts in this project.
       if (!senderHuman) throw new AxosError("only a session or agent of a person can leave a note for their next session");
       const box = `next:${project}/${senderHuman}`;
+      // The human often starts the new session while the old one still writes the handoff (meum-05 started five seconds
+      // before the first of three notes it never got, 2026-11-02): a session of theirs in this project that started
+      // within the window, and is not the sender, is the next session and gets it at once; the youngest if several.
+      const me = sender.replace(/^session:/, "");
+      const t = this.now();
+      const young = this.liveSessions(project)
+        .filter((x) => x.key !== me && this.humanOfHolder(x.key) === senderHuman && t - x.started_at <= NEXT_WINDOW_MS)
+        .sort((x, y) => y.started_at - x.started_at)[0];
+      if (young) return [{ recipient: `session:${young.key}`, via: box }];
       return [{ recipient: box, via: box }];
     }
     if (a.startsWith("human:")) {

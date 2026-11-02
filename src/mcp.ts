@@ -202,7 +202,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     if (r.delivered_to.length) parts.push(`Delivered to ${r.delivered_to.map((d) => peer(d, sentIn)).join(", ")}.`);
     const roles = r.waiting_for_role.filter((w) => w.startsWith("role:"));
     if (roles.length) parts.push(`Held for ${roles.join(", ")} until someone takes the role.`);
-    if (r.waiting_for_role.some((w) => w.startsWith("next:"))) parts.push(`Held for the next session of ${agent.human} that starts in this project.`);
+    if (r.waiting_for_role.some((w) => w.startsWith("next:"))) parts.push(`Held in ${hub.projectName(project(a.project))} for the next session of ${agent.human} that starts there (one of theirs started in the last 30 minutes would have got it now).`);
     for (const x of r.not_sent) parts.push(`Not sent to ${x.to}: ${x.reason}`);
     // The first message from a new person's side (no project of their own yet): what else there is, once, for the agent to pass on.
     const invitedInto = hub.projectsOf(agent.id).filter((p) => !hub.isPair(p) && hub.projectOwner(p) !== agent.human);

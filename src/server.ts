@@ -163,6 +163,7 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
   const rolesOf = (sender: string, p: string) => hub.rolesHeldBy(sender, p);
   const nameOf = (sender: string) => sender.startsWith("session:") ? hub.session(sender.slice(8))?.name ?? null : null;
   const pending = () => {
+    hub.claimRecentNext(session); // a handoff to `next` sent just after this session started is its
     let items = hub.inbox(hub.mailboxes(actor), { unshownOnly: true, limit: 20 });
     // At the end of a turn, a message in a conversation the session has answered since does not hold it back; it is
     // shown with the next prompt instead.

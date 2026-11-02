@@ -596,7 +596,8 @@ test("hooks fold repeats and let a turn end over an answered thread; thread show
   expect(late).toBeGreaterThan(ask);
   // inbox only=roles without a role, and next held for the human's next session.
   expect((await call(c, "inbox", { only: "roles" })).text).toBe("This session holds no role, so it has no role mail.");
-  expect((await call(c, "send", { to: "next", type: "handoff", summary: "Pick up the box booking" })).text).toContain("Held for the next session of alice that starts in this project.");
+  hub.db.query("UPDATE sessions SET started_at = started_at - 3600_000 WHERE project = ?").run(SHOP); // nobody started lately: held
+  expect((await call(c, "send", { to: "next", type: "handoff", summary: "Pick up the box booking" })).text).toContain("Held in alice/shop for the next session of alice that starts there");
   expect(hub.inbox(`next:${SHOP}/alice`).map((m) => m.summary)).toContain("Pick up the box booking");
   hub.claimNext(key); // its own note stays for the next one
   expect(hub.inbox(`next:${SHOP}/alice`).map((m) => m.summary)).toContain("Pick up the box booking");

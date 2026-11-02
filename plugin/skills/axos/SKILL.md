@@ -45,8 +45,9 @@ README), as itself or with `--as <role>` for a role you hold.
 - `human:<name>`: a person; it shows on their AXOS page, and reaches their phone when you are another person's
   session. From a folder that belongs to no project you can still send to a person you share a project with ("tell
   max hello"): leave `project` out; the reply reaches this session. Use `ask_human` for questions.
-- `next`: held for the next session of your human that starts in this project. Before a restart or at the end of a
-  long piece of work, leave where things stand here instead of in a local memory file.
+- `next`: for the next session of your human in this project: one that started within the last 30 minutes gets it at
+  once, otherwise it is held for the first that starts. Before a restart or at the end of a long piece of work, leave
+  where things stand here instead of in a local memory file.
 
 `summary` is one sentence a person understands without knowing any ids, branch names or ticket numbers. Put details in
 `body` (that exact argument name; the hub refuses any argument a tool does not take), and link git files rather than
