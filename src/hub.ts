@@ -996,7 +996,7 @@ export class Hub {
 
   // `axos rename <name>` in a connected folder: the project's owner renames it from a machine of theirs. Same rule as
   // the admin's: the id, mail, roles, leases and links stay, and the old name keeps resolving.
-  renameProjectByOwner(agentId: string, ref: string, slug: string): { from: string; to: string } {
+  renameProjectByOwner(agentId: string, ref: string, slug: string): { id: string; from: string; to: string } {
     const a = this.db.query("SELECT human FROM agents WHERE id = ?").get(agentId) as { human: string } | null;
     if (!a) throw new AxosError(`no agent '${agentId}'`);
     const id = this.projectId(ref, this.projectsOfHuman(a.human));
@@ -1007,7 +1007,7 @@ export class Hub {
     const own = slug.startsWith(`${owner}/`) ? slug.slice(owner.length + 1) : slug;
     if (own.includes("/")) throw new AxosError(`a project keeps its owner: ${owner}/<name>`);
     this.renameProject(id, own, `agent:${agentId}`);
-    return { from, to: this.projectName(id)! };
+    return { id, from, to: this.projectName(id)! };
   }
 
   setProjectBrief(project: string, brief: string): void {

@@ -1267,7 +1267,13 @@ test("axos use connects every checkout of a remote on this machine, writes nothi
     expect(hub.projectName(PLAIN2)).toBe("alice/plain-renamed");
     expect(hub.projectId("alice/plain-two")).toBe(PLAIN2);
     expect((config().folders ?? []).find((f: { project?: string }) => f.project === PLAIN2)).toMatchObject({ name: "alice/plain-renamed" });
-    expect((await axos(bare, "rename", "x")).err).toContain("This folder belongs to no project");
+    expect((await axos(bare, "rename", "x")).err).toContain("This folder belongs to no project. Name the one to rename: axos rename <owner>/<name> <new name>");
+    // Named, from a folder of no project (Max, 2026-11-03): the same rename, and the machine's rules follow.
+    const named = await axos(bare, "rename", "alice/plain-renamed", "plain-again");
+    expect(named.code).toBe(0);
+    expect(named.out).toContain("Renamed alice/plain-renamed to alice/plain-again.");
+    expect((config().folders ?? []).find((f: { project?: string }) => f.project === PLAIN2)).toMatchObject({ name: "alice/plain-again" });
+    expect((await axos(bare, "rename", "alice/secret-nope", "x")).err).toContain("you are not in a project 'alice/secret-nope'");
     hub.renameProject(PLAIN2, "plain-two");
     // An unknown command says so before the usage line.
     const unknown = await axos(renamed, "frobnicate");

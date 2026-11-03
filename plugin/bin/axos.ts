@@ -1243,25 +1243,29 @@ async function use(args: string[]): Promise<void> {
   else console.log("Nothing was written into the repo. New sessions here connect; running ones at their next prompt.");
 }
 
-// `axos rename <name>` in a connected folder: its project gets the new name (only its owner may). The id, mail, roles,
-// leases and links stay; the old name keeps resolving; this machine's rule shows the new name.
+// `axos rename <new name>` in a connected folder renames its project; `axos rename <project> <new name>` names the
+// project, from any folder (Max, 2026-11-03: in a folder that had lost its project he typed the project's name). Only
+// the owner may. The id, mail, roles, leases and links stay; the old name keeps resolving; this machine's rules for the
+// project show the new name.
 async function rename(args: string[]): Promise<void> {
-  if (args.length !== 1 || args[0]!.startsWith("--")) throw new Error("usage: axos rename <new name>   (in a folder connected to the project; axos use says which)");
+  const usage = "usage: axos rename <new name> (the project of this folder) | axos rename <owner>/<name> <new name>";
+  if (args.length < 1 || args.length > 2 || args.some((a) => a.startsWith("--"))) throw new Error(usage);
   const c = config();
   const t = c && token(c);
   if (!c || !t) throw new Error("AXOS is not set up on this machine: axos join <invite link> first");
-  const { project, rule } = projectOf(c, process.cwd());
-  if (!project) throw new Error("This folder belongs to no project, so there is nothing to rename. Connect it first: axos use <owner>/<name>.");
+  let project = args.length === 2 ? args[0]! : projectOf(c, process.cwd()).project;
+  if (!project) throw new Error("This folder belongs to no project. Name the one to rename: axos rename <owner>/<name> <new name> (or connect this folder first: axos use <owner>/<name>).");
   const res = await fetch(`${c.url.replace(/\/$/, "")}/api/projects`, {
     method: "POST", headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ rename: project, name: args[0] }), signal: AbortSignal.timeout(10_000),
+    body: JSON.stringify({ rename: project, name: args.at(-1) }), signal: AbortSignal.timeout(10_000),
   });
-  const r = (await res.json().catch(() => null)) as { from?: string; to?: string; error?: string } | null;
+  const r = (await res.json().catch(() => null)) as { id?: string; from?: string; to?: string; error?: string } | null;
   if (!r || r.error || !r.to) throw new Error(r?.error ?? `the hub answered ${res.status}`);
-  if (rule && (rule.project === project || rule.name === project)) {
-    for (const f of c.folders ?? []) if (f.project === rule.project) f.name = r.to;
-    writeConfig(c);
+  let touched = false;
+  for (const f of c.folders ?? []) {
+    if (f.project === r.id || f.project === r.from || f.name === r.from) { f.name = r.to; touched = true; }
   }
+  if (touched) writeConfig(c);
   console.log(`Renamed ${r.from} to ${r.to}. Its mail, roles and links stay; the old name keeps working for anyone who still uses it.`);
 }
 
@@ -1367,7 +1371,7 @@ else if (cmd === "trust") {
 } else {
   const unknown = !!cmd && cmd !== "help" && cmd !== "--help";
   if (unknown) console.error(`axos has no command '${cmd}'.`);
-  console.error("usage: axos join <invite link> | use [<project>] | use --none | rename <new name> | trust | whoami | landed <remote>/<branch> | send --name <script> … | inbox --name <script> … | codex [<codex args>] | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
+  console.error("usage: axos join <invite link> | use [<project>] | use --none | rename [<project>] <new name> | trust | whoami | landed <remote>/<branch> | send --name <script> … | inbox --name <script> … | codex [<codex args>] | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
   process.exit(unknown ? 2 : 0);
 }
 }

@@ -987,7 +987,7 @@ describe("ids and names", () => {
     expect(() => hub.renameProjectByOwner(SC, "alice/shop", "s2")).toThrow("you are not in a project 'alice/shop'");
     expect(() => hub.renameProjectByOwner(SC, SHOP, "s2")).toThrow("you are not in a project");
     expect(() => hub.renameProjectByOwner(DEV1, SHOP, "bob/shop")).toThrow("a project keeps its owner: alice/<name>");
-    expect(hub.renameProjectByOwner(DEV1, SHOP, "alice/shop3")).toEqual({ from: "alice/shop", to: "alice/shop3" });
+    expect(hub.renameProjectByOwner(DEV1, SHOP, "alice/shop3")).toEqual({ id: SHOP, from: "alice/shop", to: "alice/shop3" });
     expect(hub.projectId("alice/shop")).toBe(SHOP);
     expect(hub.events().filter((e) => e.kind === "project.renamed").at(-1)).toMatchObject({ actor: `agent:${DEV1}` });
   });
