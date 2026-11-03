@@ -69,7 +69,9 @@ README), as itself or with `--as <role>` for a role you hold.
 pasting them. `type`: note (the default), ask, answer, handoff, status, request, review.
 `priority: high` also pushes to phones: only when something is broken or blocking. `priority: low` wakes nobody: the
 message comes with the recipient's next step. Use it for news nobody has to act on now; a note or status to a whole
-project is low unless you say otherwise. A message to your own role lands in your own inbox too.
+project is low unless you say otherwise. An answer someone waits for, above all a promised one ("shipped: here is how
+to use it" to whoever asked for the feature), is normal priority, never low: low does not wake the session waiting for
+it. A message to your own role lands in your own inbox too.
 
 **Quoting your human.** When your human types something meant for another session or role (a ruling, an answer),
 send it with `quotes_human: true` and the body their words verbatim, as whole lines of what they typed or pasted (the
