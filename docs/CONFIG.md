@@ -153,6 +153,7 @@ The Claude Code plugin reads these; another client can ignore them or reuse the 
 | `profiles` | object | Profile name to token file, for several Claude accounts on one machine (see below). |
 | `folders` | array | Folder rules: which folders or repositories belong to which project. `axos use` writes them. |
 | `check_every_s` | number | Minimum seconds between hub checks in the after-tool-call hook. Default 30. Prompt, start and stop hooks always check. |
+| `admin_ssh` | string | The ssh host of the hub's server: `axos admin <command>` runs `axos <command>` there. `AXOS_ADMIN_SSH` overrides it. |
 
 `folders` entries:
 
@@ -275,8 +276,18 @@ id>"}` in `trusted.json`.
 | `axos join <link> [--name <machine>] [--force]` | a person | Redeems an invite. Writes `url` into the config and the token into the token file. Refuses without `--force` when the machine is set up for another hub, or already has a token file. `--name` replaces the host name as the machine name. |
 | `axos use [<project>] [--new [<name>]] [--remote <name>] [--here] [--move]` | a person, or an agent asked to | Connects the checkout here on this machine: a `remote` rule for its `origin` (or the named remote), a `path` rule for its top folder when it has no remote or with `--here`. The hub resolves the project (`/api/whoami`) and the rule stores its id. Without a project it says where the folder is connected, or takes the repo's `.axos.json` and asks a person to confirm, like `axos trust`. A checkout that already belongs to another project moves only after a yes at a terminal, or with `--move`. `--new` makes a project for it first. |
 | `axos use --none` | anyone | Removes the rules that connect the checkout here (its remotes, or its top folder). |
+| `axos` | anyone | Where you are, in words: the hub, you, this machine, this folder's project and by which rule, your projects (sessions now, people, links), your machines (last seen, unread), requests waiting for your answer. |
+| `axos project [list]`, `new <name>` | a person, or an agent asked to | Your projects; a new one (without a folder: `axos use` connects one). |
+| `axos project link <a> <b> [<c>…]` (short: `axos link`) | the owner | Links the first project with each of the others. Two of your own: at once. Another person's: a request to that person, who picks which of theirs on their page; the answer is the same whatever project you named. |
+| `axos project unlink <a> <b> [<c>…]` (short: `axos unlink`) | an owner of either side | Unlinks the first from each of the others. |
+| `axos project share <project> <person>` | the owner | Asks a person you already share a project with to join this one; they answer on their page. |
+| `axos project join <project>` | a person on the hub | Asks the project's owner to let you in; the answer is the same whether it exists or not. `axos trust` on a repo's `.axos.json` does this by itself when you are not in its project. |
+| `axos machine [list]`, `add`, `rename <name> <new>`, `revoke <name>` | the person | Your machines with last seen, sessions and unread mail; a one-time join link (7 days) for another machine of yours; renaming; the kill switch (not for the machine you are on). |
+| `axos person invite <name> [--project <project>]` | the hub's operator | A one-time join link for a new person, optionally into a project of yours. |
+| `axos login-link` | the person | A one-time login link and code (10 minutes) for a browser, a phone or a program such as vinea's bridge. |
+| `axos admin <command>` | whoever can ssh to the hub's server | Runs the hub's admin command there over ssh (`admin_ssh`). |
 | `axos rename [<project>] <new name>` | the project's owner | Renames the named project, or without one the project this folder is connected to. The id, mail, roles, leases and links stay; the old name keeps resolving; the rule's `name` follows. A member who is not the owner is refused. |
-| `axos link`, `axos unlink` | – | Do nothing and say why: a link is two projects whose sessions may reach each other, made by the owner on the page (or `axos project link` on the server). Before plugin 0.20 they were the folder commands. |
+| `axos link <project>` (one name), `axos unlink` alone | – | Do nothing and say why: a link is two projects whose sessions may reach each other (`axos link <a> <b>`). Before plugin 0.20 they were the folder commands. |
 | `axos trust` | a person at a terminal | Trusts the `.axos.json` at or above the current folder. |
 | `axos whoami` | anyone | Prints hub, the current folder's project (and `via`: the trusted file, linked remote or folder rule), profile, session, roles; says if an `.axos.json` is untrusted. Run inside a session (from its Bash) in another folder, it adds `session_folder` and `session_project`: the folder the session started in and the project it works in, which `axos use` changes only at its next prompt. |
 

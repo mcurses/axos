@@ -23,7 +23,7 @@ export interface Project {
 export interface Person { name: string; pair: string | null }
 export interface Invite { id: number; name: string; project: string | null; created_at: number; expires_at: number; used_at: number | null; gone: boolean }
 export interface Me { operator: boolean; password: boolean; logins: { id: number; label: string; created_at: number; last_seen: number | null }[] }
-export interface Pending { id: number; kind: "share" | "link"; from: string; project: string; created_at: number }
+export interface Pending { id: number; kind: "share" | "link" | "join"; from: string; project: string; created_at: number }
 export interface State { human: string; me: Me; people: Person[]; invites: Invite[]; pending: Pending[]; push: { key: string | null; devices: { label: string; created_at: number; last_ok: number | null }[] }; now: number; types: string[]; asks: Ask[]; inbox: InboxMessage[]; sent: SentMessage[]; projects: Project[] }
 
 export class NotLoggedIn extends Error {}

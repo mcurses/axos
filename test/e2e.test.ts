@@ -1670,3 +1670,57 @@ test("share and link from the page: the asked person joins or links on theirs, t
   expect((await A("project/leave", { project: "benny/parser" })).status).toBe(200);
   expect(hub.humanInProject("alice", hub.projectId("benny/parser", hub.projectsOfHuman("benny"))!)).toBe(false);
 });
+
+test("the machine's command: bare axos in words, project and machine commands, and a repo connected on one machine connects on another", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "axos-me-"));
+  const run = async (machine: string, cwd: string, args: string[], stdin?: string) => {
+    const env: Record<string, string | undefined> = { ...process.env, AXOS_CONFIG: join(dir, machine, "config.json") };
+    delete env.CLAUDE_CODE_SESSION_ID;
+    delete env.CLAUDE_PROJECT_DIR;
+    const p = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), ...args], { cwd, env, stdout: "pipe", stderr: "pipe", stdin: stdin === undefined ? "ignore" : new Blob([stdin]) });
+    const [out, err] = [await new Response(p.stdout).text(), await new Response(p.stderr).text()];
+    return { out, err, code: await p.exited };
+  };
+  const config = (machine: string) => JSON.parse(readFileSync(join(dir, machine, "config.json"), "utf8")) as { folders?: { remote?: string; project?: string; name?: string }[] };
+  try {
+    for (const m of ["dev1", "dev3"]) {
+      mkdirSync(join(dir, m));
+      writeFileSync(join(dir, m, "token"), `${tokens[m]}\n`);
+      writeFileSync(join(dir, m, "config.json"), JSON.stringify({ url: base, token_file: join(dir, m, "token") }));
+    }
+    const status = await run("dev1", dir, []);
+    expect(status.code).toBe(0);
+    expect(status.out).toContain(`AXOS at ${base}: you are alice, on machine dev1`);
+    expect(status.out).toContain("This folder belongs to no project");
+    expect(status.out).toMatch(/alice\/shop\s/);
+    expect(status.out).toMatch(/dev1\s+this one/);
+
+    expect((await run("dev1", dir, ["project", "new", "kit"])).out).toContain("Project alice/kit made.");
+    expect((await run("dev1", dir, ["link", "alice/shop", "alice/kit"])).out).toContain("Linked alice/shop and alice/kit");
+    expect((await run("dev1", dir, ["project"])).out).toMatch(/alice\/kit\s+owner alice · linked alice\/shop/);
+    expect((await run("dev1", dir, ["unlink", "alice/shop", "alice/kit"])).out).toContain("Unlinked alice/shop and alice/kit.");
+    expect((await run("dev1", dir, ["link", "alice/shop"])).err).toContain('axos link does nothing: "link" means two different things');
+    const add = await run("dev1", dir, ["machine", "add"]);
+    expect(add.out).toMatch(new RegExp(`axos join ${base}/join/axosinv_`));
+    expect((await run("dev1", dir, ["machine"])).out).toMatch(/dev3\s+/);
+    expect((await run("dev1", dir, ["machine", "revoke", "dev1"])).err).toContain("this is the machine you are on");
+    expect((await run("dev1", dir, ["login-link"])).out).toContain(`${base}/ui/login/axoslogin_`);
+    expect((await run("dev1", dir, ["admin", "health"])).err).toContain('"admin_ssh": "<ssh host>"');
+
+    // Connected by its remote on dev1: a clone on dev3 connects at its first session, and says so once.
+    const sh = (cwd: string, ...a: string[]) => { if (Bun.spawnSync(a, { cwd }).exitCode !== 0) throw new Error(a.join(" ")); };
+    const one = join(dir, "one"), two = join(dir, "two");
+    for (const w of [one, two]) { sh(dir, "git", "init", "-q", w); sh(w, "git", "remote", "add", "origin", "git@github.com:alice/shop.git"); }
+    expect((await run("dev1", one, ["use", "alice/shop"])).out).toContain("every checkout of github.com/alice/shop -> alice/shop");
+    expect(hub.remotesOf("alice")).toEqual([{ remote: "github.com/alice/shop", project: SHOP }]);
+    expect(config("dev3").folders ?? []).toEqual([]);
+    const start = await run("dev3", two, ["hook", "start"], JSON.stringify({ session_id: "aaaabbbb-1111-2222-3333-444444444444", cwd: two }));
+    expect(start.out).toContain("is connected to alice/shop, as on your other machine");
+    expect(config("dev3").folders).toEqual([{ remote: "github.com/alice/shop", project: "alice/shop", name: "alice/shop" }]);
+    // Disconnected on dev1: forgotten for the person.
+    expect((await run("dev1", one, ["use", "--none"])).out).toContain("Disconnected github.com/alice/shop");
+    expect(hub.remotesOf("alice")).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

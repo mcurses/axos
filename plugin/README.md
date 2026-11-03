@@ -37,7 +37,10 @@ output is piped or an agent runs it).
 "ana/parser"}`. It names the repo's git remote (origin, or `--remote <name>`; no user, password or port is kept), so
 every clone and worktree of it connects; without a remote, or with `--here`, it names the folder. A `path` rule beats a
 `remote` rule. `axos use --none` removes the rule for the checkout you are in. A connected folder moved or renamed
-with `mv` keeps its project (the rule follows it). `axos rename <new name>` renames the folder's project, `axos rename
+with `mv` keeps its project (the rule follows it). Bare `axos` says where you are; `axos project …`, `axos machine …`, `axos login-link` and `axos person invite` do
+from any machine what the page does (links between your own projects at once, with other people's as a request they
+accept); `axos admin …` runs the hub's admin command on its server over ssh. A repo connected by its remote is
+connected for you: your other machines connect a clone of it at its first session. `axos rename <new name>` renames the folder's project, `axos rename
 <owner>/<name> <new name>` a named one from anywhere (its owner only; the old name keeps working). A bare `axos use` in a connected folder
 says which project it is connected to and by which rule (`axos whoami` shows the same, with the session's view). A
 checkout that already belongs to another project moves only after a yes at the terminal, or with `--move`; without a

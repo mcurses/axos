@@ -744,28 +744,36 @@ export class Hub {
   }
 
   // Share and link requests waiting for this person.
-  pendingFor(human: string): { id: number; kind: "share" | "link"; from: string; project: string; created_at: number }[] {
+  pendingFor(human: string): { id: number; kind: "share" | "link" | "join"; from: string; project: string; created_at: number }[] {
     const t = this.now();
-    return (this.db.query(`SELECT id, kind, invited_by, project, created_at FROM invites WHERE human = ? AND kind IN ('share', 'link') AND decided_at IS NULL AND expires_at > ?
-      ORDER BY id`).all(human, t) as { id: number; kind: "share" | "link"; invited_by: string; project: string; created_at: number }[])
+    return (this.db.query(`SELECT id, kind, invited_by, project, created_at FROM invites WHERE human = ? AND kind IN ('share', 'link', 'join') AND decided_at IS NULL AND expires_at > ?
+      ORDER BY id`).all(human, t) as { id: number; kind: "share" | "link" | "join"; invited_by: string; project: string; created_at: number }[])
       .map((r) => ({ id: r.id, kind: r.kind, from: r.invited_by, project: r.project, created_at: r.created_at }));
   }
 
   // The person answers: a share puts them into the project; a link joins the asked project with one they own.
   decideInvite(human: string, id: number, accept: boolean, target?: string): void {
-    const inv = this.db.query("SELECT * FROM invites WHERE id = ? AND human = ? AND kind IN ('share', 'link')").get(id, human) as
-      { id: number; kind: "share" | "link"; project: string; invited_by: string; decided_at: number | null; expires_at: number } | null;
+    const inv = this.db.query("SELECT * FROM invites WHERE id = ? AND human = ? AND kind IN ('share', 'link', 'join')").get(id, human) as
+      { id: number; kind: "share" | "link" | "join"; project: string; invited_by: string; decided_at: number | null; expires_at: number } | null;
     if (!inv) throw new AxosError(`no request ${id} for you`);
     if (inv.decided_at) throw new AxosError("that request was answered already");
     if (inv.expires_at <= this.now()) throw new AxosError("that request has expired; ask for it again");
     const t = this.now();
     if (!accept) {
       this.db.query("UPDATE invites SET decided_at = ?, decision = 'declined' WHERE id = ?").run(t, id);
-      this.event(`human:${human}`, inv.kind === "share" ? "project.share_declined" : "project.link_declined", inv.project, { by: inv.invited_by });
-      if (this.otherPushAllowed(human, inv.invited_by)) void this.pushToHuman(inv.invited_by, `${human}: not now`, `${inv.kind === "share" ? "Sharing" : "Linking"} ${this.projectName(inv.project)}.`, "", [], { priority: "low" });
+      this.event(`human:${human}`, `project.${inv.kind}_declined`, inv.project, { by: inv.invited_by });
+      if (this.otherPushAllowed(human, inv.invited_by)) void this.pushToHuman(inv.invited_by, `${human}: not now`, `${inv.kind === "share" ? "Sharing" : inv.kind === "join" ? "Joining" : "Linking"} ${this.projectName(inv.project)}.`, "", [], { priority: "low" });
       return;
     }
-    if (inv.kind === "share") {
+    if (inv.kind === "join") {
+      // The owner lets the asker in.
+      if (this.projectOwner(inv.project) !== human) throw new AxosError("only the project's owner lets people in");
+      this.addHumanToProject(inv.invited_by, inv.project);
+      this.tellLinkedSides(inv.project, inv.invited_by, [human]);
+      this.db.query("UPDATE invites SET decided_at = ?, decision = 'accepted' WHERE id = ?").run(t, id);
+      this.event(`human:${human}`, "project.join_accepted", inv.project, { who: inv.invited_by });
+      if (this.otherPushAllowed(human, inv.invited_by)) void this.pushToHuman(inv.invited_by, `${human} let you into ${this.projectName(inv.project)}`, "Your sessions there connect at their next prompt.", "", [], { priority: "low" });
+    } else if (inv.kind === "share") {
       this.addHumanToProject(human, inv.project);
       this.tellLinkedSides(inv.project, human, [inv.invited_by]);
       this.db.query("UPDATE invites SET decided_at = ?, decision = 'accepted' WHERE id = ?").run(t, id);
@@ -798,6 +806,122 @@ export class Hub {
   unlinkByOwner(by: string, p: string, q: string): void {
     if (this.projectOwner(p) !== by && this.projectOwner(q) !== by) throw new AxosError("only an owner of one of the two projects unlinks them");
     this.unlinkProjects(p, q);
+  }
+
+  // ---------------------------------------------------------------- from a machine: `axos project`, `axos machine`, …
+  // A machine's command acts as its person (2026-11-03 design, research/2026-11-03-command-design.md): the same rules
+  // as the page. What crosses to another person is a request they accept; nothing here reaches a project the person
+  // is not in, and a refusal names nothing they could not see.
+
+  // The first project with each of the others. Two of one's own: linked at once. Another person's: a request to that
+  // person (they pick which of theirs on their page), whatever the name they were given, so nothing is learned.
+  linkFromMachine(human: string, refs: string[]): string[] {
+    if (refs.length < 2) throw new AxosError("name two projects or more: the first is linked with each of the others");
+    const mine = this.projectsOfHuman(human);
+    const first = this.projectId(refs[0]!, mine);
+    if (!first) throw new AxosError(`you are not in a project '${refs[0]}'`);
+    const out: string[] = [];
+    for (const ref of refs.slice(1)) {
+      const q = this.projectId(ref, mine);
+      if (q) {
+        if (this.projectOwner(first) !== human || this.projectOwner(q) !== human) {
+          throw new AxosError(`${this.projectName(this.projectOwner(first) !== human ? first : q)} is ${this.projectOwner(this.projectOwner(first) !== human ? first : q)}'s; only its owner links it`);
+        }
+        if (this.linkedProjects(first).includes(q)) { out.push(`${this.projectName(first)} and ${this.projectName(q)} are linked already.`); continue; }
+        this.linkProjects(first, q, [human]);
+        out.push(`Linked ${this.projectName(first)} and ${this.projectName(q)}: their sessions reach each other.`);
+        continue;
+      }
+      const owner = ref.includes("/") ? ref.split("/")[0]! : null;
+      if (!owner || owner === human) throw new AxosError(`you are not in a project '${ref}'`);
+      this.linkRequest(human, first, owner);
+      out.push(`Asked ${owner} to link ${this.projectName(first)} with one of their projects; they pick which on their page.`);
+    }
+    return out;
+  }
+
+  unlinkFromMachine(human: string, refs: string[]): string[] {
+    if (refs.length < 2) throw new AxosError("name two projects or more: the first is unlinked from each of the others");
+    const first = this.projectId(refs[0]!, this.projectsOfHuman(human));
+    if (!first) throw new AxosError(`you are not in a project '${refs[0]}'`);
+    return refs.slice(1).map((ref) => {
+      const q = this.projectId(ref, this.linkedProjects(first));
+      if (!q) throw new AxosError(`${this.projectName(first)} has no linked project '${ref}'`);
+      this.unlinkByOwner(human, first, q);
+      return `Unlinked ${this.projectName(first)} and ${this.projectName(q)}.`;
+    });
+  }
+
+  // A person asks to be let into a project: its owner answers on their page or phone. The answer to the asker is the same
+  // whether the project exists or not (a committed .axos.json names it; the hub confirms nothing). One open request per
+  // person and project.
+  askToJoin(human: string, ref: string): string {
+    const said = `Asked the owner of ${ref} to let you in; you hear on your page when they answer. Your sessions here connect once you are in.`;
+    if (this.projectId(ref, this.projectsOfHuman(human))) throw new AxosError(`you are in ${ref} already`);
+    const hits = this.findProjects(ref.trim());
+    const project = hits.length === 1 ? hits[0]! : null;
+    if (!project || this.isPair(project)) return said;
+    const owner = this.projectOwner(project)!;
+    const t = this.now();
+    if (this.db.query("SELECT 1 FROM invites WHERE kind = 'join' AND project = ? AND invited_by = ? AND decided_at IS NULL AND expires_at > ?").get(project, human, t)) return said;
+    const r = this.db.query("INSERT INTO invites (code_hash, human, project, created_at, expires_at, invited_by, kind) VALUES (?, ?, ?, ?, ?, ?, 'join')")
+      .run(hashSecret(newSecret("axosinv")), owner, project, t, t + INVITE_TTL_S * 1000, human);
+    const id = Number(r.lastInsertRowid);
+    this.event(`human:${human}`, "project.join_asked", project, { owner });
+    if (this.otherPushAllowed(human, owner)) void this.pushToHuman(owner, `${human} wants to join ${this.projectName(project)}`, "Let them in, or not now: on your page under Humans.", `#invite-${id}`);
+    return said;
+  }
+
+  // A person's machines: each login of one computer (the hub's agents), with when it was last seen and mail waiting.
+  machinesOf(human: string): { name: string; created_at: number; last_seen: number | null; unread: number; sessions: number }[] {
+    return (this.db.query("SELECT id, name, created_at, last_seen FROM agents WHERE human = ? AND revoked = 0 ORDER BY name").all(human) as
+      { id: string; name: string; created_at: number; last_seen: number | null }[]).map((a) => ({
+      name: a.name, created_at: a.created_at, last_seen: a.last_seen,
+      unread: this.unreadCount(`agent:${a.id}`) + (this.db.query("SELECT key FROM sessions WHERE agent_id = ? AND ended_at IS NULL").all(a.id) as { key: string }[])
+        .reduce((n, x) => n + this.unreadCount(`session:${x.key}`), 0),
+      sessions: (this.db.query("SELECT COUNT(*) AS n FROM sessions WHERE agent_id = ? AND ended_at IS NULL AND kind = 'session'").get(a.id) as { n: number }).n,
+    }));
+  }
+
+  // A one-time join link for another machine of this person's (seven days); `axos join <link>` there.
+  addMachine(human: string): { code: string; expires_at: number } {
+    return this.createInvite(human, null, INVITE_TTL_S, human);
+  }
+
+  renameMachine(human: string, name: string, to: string): void {
+    checkName("agent", to);
+    const id = this.agentId(`${human}/${name}`);
+    if (!id) throw new AxosError(`you have no machine '${name}'`);
+    if (this.agentId(`${human}/${to}`)) throw new AxosError(`you have a machine '${to}' already`);
+    this.db.query("UPDATE agents SET name = ? WHERE id = ?").run(to, id);
+    this.event(`human:${human}`, "agent.renamed", null, { agent: id, from: name, to });
+  }
+
+  // The kill switch, for one's own machines; not the one asking (it would cut its own line: use another machine or the
+  // admin).
+  revokeMachine(human: string, name: string, self: string): void {
+    const id = this.agentId(`${human}/${name}`);
+    if (!id) throw new AxosError(`you have no machine '${name}'`);
+    if (id === self) throw new AxosError("this is the machine you are on; revoke it from another machine of yours, or ask the admin");
+    this.revokeAgent(id);
+  }
+
+  // Repos a person connected by their git remote: every machine of theirs connects a clone of one to the same project.
+  rememberRemote(human: string, remote: string, ref: string): void {
+    const project = this.projectId(ref, this.projectsOfHuman(human));
+    if (!project) throw new AxosError(`you are not in a project '${ref}'`);
+    if (!/^[a-z0-9.-]+(:\d+)?\/[\w.\/~-]{1,300}$/i.test(remote)) throw new AxosError("not a normalised git remote (host/path)");
+    this.db.query("INSERT OR REPLACE INTO remotes (human, remote, project, created_at) VALUES (?, ?, ?, ?)").run(human, remote.toLowerCase(), project, this.now());
+  }
+
+  forgetRemote(human: string, remote: string): void {
+    this.db.query("DELETE FROM remotes WHERE human = ? AND remote = ?").run(human, remote.toLowerCase());
+  }
+
+  remotesOf(human: string): { remote: string; project: string }[] {
+    const mine = new Set(this.projectsOfHuman(human));
+    return (this.db.query("SELECT remote, project FROM remotes WHERE human = ? ORDER BY remote").all(human) as { remote: string; project: string }[])
+      .filter((r) => mine.has(r.project));
   }
 
   // A project made on the page (the folder is linked afterwards, on the machine).

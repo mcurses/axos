@@ -39,7 +39,7 @@ interface FolderRule {
   project: string; // an id (prj_…) or a name
   name?: string; // the project's name when project is an id, for people reading the file
   // The folder's identity when it was connected (device, inode, birth time): a folder moved or renamed with mv keeps
-  // it, so its rule follows it to the new path instead of leaving it unconnected (Max, 2026-11-03: atrium → Ensemble).
+  // it, so its rule follows it to the new path instead of leaving it unconnected (2026-11-03: a renamed folder lost its project).
   born?: string;
   // A local role system to mirror into AXOS: a directory of JSON claim files {"role", "session_id"} (for example a repo's roles/claims).
   roles_dir?: string;
@@ -53,6 +53,7 @@ interface Config {
   profiles?: Record<string, string>; // profile name -> token file
   folders?: FolderRule[];
   check_every_s?: number; // how often PostToolUse looks for new messages during a long turn
+  admin_ssh?: string; // the ssh host of the hub's server: `axos admin …` runs `axos …` there (the hub's admin command)
 }
 
 const HOME = homedir();
@@ -452,6 +453,16 @@ async function hook(kind: string): Promise<void> {
     !headless(claudeArgs())) {
     recordPrompt(id.sessionId, input.prompt);
   }
+  // A checkout connected on another machine of this person's (by its git remote): connected here too, said once.
+  let adopted = "";
+  if (kind === "start" && id && !id.quiet && !id.project && !id.untrusted && input.cwd) {
+    const got = await adoptRemote(id.c, input.cwd).catch(() => null);
+    if (got) {
+      adopted = got;
+      const again = identity(input.session_id, input.cwd, input.session_title);
+      if (again) Object.assign(id, again);
+    }
+  }
   if (id && !id.quiet && !id.project && id.untrusted && kind === "start") {
     // Said once per session, and only in a folder whose repo asks to join a project.
     const f = id.untrusted.file; // validated: only a project name or id
@@ -483,6 +494,7 @@ async function hook(kind: string): Promise<void> {
     state.unreachable = true;
   }
   if (kind === "start" && context && !state.unreachable && wakeupOff() === true) context = `${context}\n${WAKEUP_OFF}`;
+  if (adopted) context = [adopted, context].filter(Boolean).join("\n\n");
   state.last_check = Date.now();
   writeFileSync(stateFile(id.sessionId), JSON.stringify(state));
   if (!context || kind === "end") return;
@@ -736,6 +748,16 @@ async function trust(): Promise<void> {
   mkdirSync(dirname(TRUST_PATH), { recursive: true });
   writeFileSync(TRUST_PATH, `${JSON.stringify(all, null, 2)}\n`, { mode: 0o600 });
   console.log("Trusted. New sessions in this folder connect; running ones at their next prompt.");
+  // Not a member yet: the owner is asked to let this person in (Max, 2026-11-03: commit the file, a teammate clones,
+  // connects, and the owner agrees in AXOS).
+  const t = token(c);
+  if (!t || !f.project) return;
+  try {
+    const who = await meGet(c, t);
+    if (!who.projects.some((p) => p.name === f.project || p.name.endsWith(`/${f.project}`))) {
+      for (const line of await mePost(c, t, { op: "join", project: f.project })) console.log(line);
+    }
+  } catch (e) { console.log(`(Could not ask the owner to let you in: ${(e as Error).message}. axos project join ${f.project} tries again.)`); }
 }
 
 // The invite link's hub answers with this machine's token; it is written to a file only this user can read, and never
@@ -1117,7 +1139,7 @@ async function moveAllowed(from: string, to: string, move: boolean, retry: strin
 async function use(args: string[]): Promise<void> {
   if (args.includes("--none")) {
     if (args.length > 1) throw new Error("usage: axos use --none");
-    return unlink();
+    return await unlink();
   }
   const c = config();
   const t = c && token(c);
@@ -1231,6 +1253,8 @@ async function use(args: string[]): Promise<void> {
   if (old) Object.assign(old, { project: rule.project, name: rule.name }, rule.born ? { born: rule.born } : {}); // keeps roles_dir and the like
   else folders.push(rule);
   writeConfig({ ...c, folders });
+  // A repo connected by its remote is connected for the person: their other machines connect a clone of it by themselves.
+  if (rule.remote && !rule.remote.startsWith("file:")) await mePost(c, t, { op: "remember-remote", remote: rule.remote, project: project.id }).catch(() => {});
 
   const label = project.name ?? project.id;
   // A re-pointed folder says what it left: a second link in the wrong folder is otherwise silent (vinea, 2026-11-02).
@@ -1241,6 +1265,155 @@ async function use(args: string[]): Promise<void> {
   const now = projectOf({ ...c, folders }, cwd).project;
   if (now !== project.id) console.log(`Note: here ${now} still wins (a folder rule or a trusted .axos.json); axos whoami shows which.`);
   else console.log("Nothing was written into the repo. New sessions here connect; running ones at their next prompt.");
+}
+
+// ---------------------------------------------------------------- the person's own things, from any machine
+// (research/2026-11-03-command-design.md): the hub's /api/me does them as this machine's person, under the page's rules.
+
+interface Me {
+  human: string; machine: string; operator: boolean;
+  projects: { name: string; owner: string; pair: boolean; people: string[]; links: string[]; sessions: number }[];
+  pending: { id: number; kind: string; from: string; project: string }[];
+  machines: { name: string; created_at: number; last_seen: number | null; unread: number; sessions: number; this: boolean }[];
+  remotes: { remote: string; project: string }[];
+}
+
+async function meGet(c: Config, t: string): Promise<Me> {
+  const res = await fetch(`${c.url.replace(/\/$/, "")}/api/me`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(10_000) });
+  if (res.status === 401) throw new Error("the hub refused this machine's token");
+  const r = (await res.json().catch(() => null)) as (Me & { error?: string }) | null;
+  if (!r || r.error) throw new Error(r?.error ?? `the hub answered ${res.status} (older than 0.24.22?)`);
+  return r;
+}
+
+async function mePost(c: Config, t: string, body: Record<string, unknown>): Promise<string[]> {
+  const res = await fetch(`${c.url.replace(/\/$/, "")}/api/me`, {
+    method: "POST", headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000),
+  });
+  const r = (await res.json().catch(() => null)) as { said?: string[]; error?: string } | null;
+  if (!r || r.error) throw new Error(r?.error ?? `the hub answered ${res.status}`);
+  return r.said ?? [];
+}
+
+function setUp(): { c: Config; t: string } {
+  const c = config();
+  const t = c && token(c);
+  if (!c || !t) throw new Error("AXOS is not set up on this machine: axos join <invite link> first");
+  return { c, t };
+}
+
+// A checkout with no rule here whose remote this person connected on another machine: a rule here too.
+async function adoptRemote(c: Config, cwd: string): Promise<string | null> {
+  const git = gitRemotes(cwd);
+  const t = token(c);
+  if (!git?.remotes.length || !t) return null;
+  const me = await meGet(c, t);
+  const keys = new Map(git.remotes.map((r) => [r.key, r]));
+  const hit = me.remotes.find((r) => keys.has(r.remote));
+  if (!hit) return null;
+  const folders = c.folders ?? [];
+  if (!folders.some((f) => f.remote === hit.remote)) folders.push({ remote: hit.remote, project: hit.project, name: hit.project });
+  writeConfig({ ...c, folders });
+  return `AXOS: this checkout of ${hit.remote} is connected to ${hit.project}, as on your other machine (axos use --none here disconnects it on this machine).`;
+}
+
+function ago(ms: number | null): string {
+  if (ms === null) return "never seen";
+  const m = Math.round((Date.now() - ms) / 60_000);
+  return m < 2 ? "online" : m < 120 ? `seen ${m} min ago` : m < 48 * 60 ? `seen ${Math.round(m / 60)} h ago` : `not seen for ${Math.round(m / 1440)} days`;
+}
+
+// Bare `axos`: where am I, in words.
+async function status(): Promise<void> {
+  const c = config();
+  if (!c) return console.log("AXOS is not set up on this machine. With an invite link: axos join <link>.");
+  const t = token(c);
+  if (!t) return console.log(`AXOS: ${c.url}, but this machine has no token (${tokenPath(c)}). axos join <link> sets it up.`);
+  const me = await meGet(c, t);
+  const lines = [`AXOS at ${c.url}: you are ${me.human}, on machine ${me.machine}${me.operator ? " (you run this hub: axos person invite adds people)" : ""}.`];
+  const here = projectOf(c, process.cwd());
+  const rule = here.rule;
+  lines.push(here.project
+    ? `This folder: ${here.rule?.name ?? me.projects.find((p) => p.name === here.project)?.name ?? here.project} (${rule?.remote ? `every checkout of ${rule.remote}` : rule?.path ? `folder rule ${rule.path}` : "the repo's .axos.json"}).`
+    : here.untrusted ? `This folder: its .axos.json names ${here.untrusted.file.project ?? here.untrusted.file.id}, not trusted yet (axos trust).`
+    : "This folder belongs to no project (axos use <owner>/<name> connects it; axos use --new makes one).");
+  const own = me.projects.filter((p) => !p.pair);
+  lines.push("", `Your projects (${own.length}):`);
+  for (const p of own) {
+    const bits = [p.sessions ? `${p.sessions} session${p.sessions === 1 ? "" : "s"} now` : "nobody now"];
+    if (p.owner !== me.human) bits.push(`${p.owner}'s`);
+    if (p.people.length > 1) bits.push(`with ${p.people.filter((x) => x !== me.human).join(", ")}`);
+    if (p.links.length) bits.push(`linked: ${p.links.join(", ")}`);
+    lines.push(`  ${p.name.padEnd(24)} ${bits.join(" · ")}`);
+  }
+  lines.push("", "Your machines:");
+  for (const m of me.machines) {
+    const bits = [m.this ? "this one" : ago(m.last_seen)];
+    if (m.sessions) bits.push(`${m.sessions} session${m.sessions === 1 ? "" : "s"}`);
+    if (m.unread) bits.push(`${m.unread} unread`);
+    lines.push(`  ${m.name.padEnd(24)} ${bits.join(" · ")}`);
+  }
+  if (me.pending.length) lines.push("", `Waiting for your answer on your page: ${me.pending.map((r) => `${r.from} ${r.kind === "join" ? "wants to join" : r.kind === "share" ? "shares" : "wants to link"} ${r.project}`).join("; ")}.`);
+  console.log(lines.join("\n"));
+}
+
+async function projectCmd(args: string[]): Promise<void> {
+  const [sub, ...rest] = args;
+  const usage = "usage: axos project [list] | new <name> | rename [<project>] <new name> | link <project> <project>… | unlink <project> <project>… | share <project> <person> | join <project>";
+  if (sub === "rename") return rename(rest);
+  const { c, t } = setUp();
+  const say = (lines: string[]) => { for (const l of lines) console.log(l); };
+  if (!sub || sub === "list") {
+    const me = await meGet(c, t);
+    for (const p of me.projects.filter((x) => !x.pair)) console.log(`${p.name.padEnd(24)} owner ${p.owner}${p.people.length > 1 ? ` · people ${p.people.join(", ")}` : ""}${p.links.length ? ` · linked ${p.links.join(", ")}` : ""} · ${p.sessions} session${p.sessions === 1 ? "" : "s"} now`);
+    return;
+  }
+  if (sub === "new" && rest.length === 1) return say(await mePost(c, t, { op: "new", name: rest[0] }));
+  if (sub === "link" && rest.length >= 2) return say(await mePost(c, t, { op: "link", projects: rest }));
+  if (sub === "unlink" && rest.length >= 2) return say(await mePost(c, t, { op: "unlink", projects: rest }));
+  if (sub === "share" && rest.length === 2) return say(await mePost(c, t, { op: "share", project: rest[0], person: rest[1] }));
+  if (sub === "join" && rest.length === 1) return say(await mePost(c, t, { op: "join", project: rest[0] }));
+  throw new Error(usage);
+}
+
+async function machineCmd(args: string[]): Promise<void> {
+  const [sub, ...rest] = args;
+  const { c, t } = setUp();
+  const say = (lines: string[]) => { for (const l of lines) console.log(l); };
+  if (!sub || sub === "list") {
+    for (const m of (await meGet(c, t)).machines) {
+      console.log(`${m.name.padEnd(24)} ${m.this ? "this one" : ago(m.last_seen)}${m.sessions ? ` · ${m.sessions} session${m.sessions === 1 ? "" : "s"}` : ""}${m.unread ? ` · ${m.unread} unread` : ""}`);
+    }
+    return;
+  }
+  if (sub === "add" && rest.length === 0) return say(await mePost(c, t, { op: "machine-add" }));
+  if (sub === "rename" && rest.length === 2) return say(await mePost(c, t, { op: "machine-rename", name: rest[0], to: rest[1] }));
+  if (sub === "revoke" && rest.length === 1) return say(await mePost(c, t, { op: "machine-revoke", name: rest[0] }));
+  throw new Error("usage: axos machine [list] | add | rename <name> <new name> | revoke <name>");
+}
+
+async function personCmd(args: string[]): Promise<void> {
+  const [sub, name, ...rest] = args;
+  const pi = rest.indexOf("--project");
+  if (sub !== "invite" || !name || (rest.length && (pi !== 0 || rest.length !== 2))) throw new Error("usage: axos person invite <name> [--project <project>]   (the hub's operator)");
+  const { c, t } = setUp();
+  for (const l of await mePost(c, t, { op: "invite", person: name, project: pi === 0 ? rest[1] : undefined })) console.log(l);
+}
+
+async function loginLink(): Promise<void> {
+  const { c, t } = setUp();
+  for (const l of await mePost(c, t, { op: "login-link" })) console.log(l);
+}
+
+// `axos admin …`: the hub's admin command on its server, over ssh (the hub's human, 2026-11-03: "what if I alias axos to ssh
+// <hub host> axos?"). The ssh key is the authorisation; the hub has no admin route.
+function admin(args: string[]): number {
+  const c = config();
+  const host = process.env.AXOS_ADMIN_SSH ?? c?.admin_ssh;
+  if (!host) throw new Error(`axos admin runs the hub's admin command on its server over ssh; say which host: "admin_ssh": "<ssh host>" in ${CONFIG_PATH} (or AXOS_ADMIN_SSH).`);
+  const q = (a: string) => `'${a.replace(/'/g, `'\\''`)}'`;
+  const r = Bun.spawnSync(["ssh", host, ["axos", ...args].map(q).join(" ")], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+  return r.exitCode ?? 1;
 }
 
 // `axos rename <new name>` in a connected folder renames its project; `axos rename <project> <new name>` names the
@@ -1269,7 +1442,7 @@ async function rename(args: string[]): Promise<void> {
   console.log(`Renamed ${r.from} to ${r.to}. Its mail, roles and links stay; the old name keeps working for anyone who still uses it.`);
 }
 
-function unlink(): void {
+async function unlink(): Promise<void> {
   const c = config();
   if (!c) throw new Error(`AXOS is not configured: no ${CONFIG_PATH}`);
   const cwd = process.cwd();
@@ -1280,6 +1453,8 @@ function unlink(): void {
   if (!gone.length) return console.log("This checkout is not connected by a rule of this machine.");
   writeConfig({ ...c, folders: (c.folders ?? []).filter((r) => !gone.includes(r)) });
   for (const r of gone) console.log(`Disconnected ${r.remote ?? r.path} (was ${r.name ?? r.project}).`);
+  const t = token(c);
+  for (const r of gone) if (r.remote && t) await mePost(c, t, { op: "forget-remote", remote: r.remote }).catch(() => {});
 }
 
 // The current folder's project, which is what a person or agent checking a link wants. Inside a session (its Bash
@@ -1344,7 +1519,18 @@ else if (cmd === "landed") {
     process.exit(1);
   });
 }
+else if ((cmd === "link" || cmd === "unlink") && process.argv.length >= 5) {
+  await projectCmd([cmd, ...process.argv.slice(3)]).catch((e: Error) => { console.error(e.message); process.exit(1); });
+}
 else if (cmd === "link" || cmd === "unlink") linkSaysWhich(cmd);
+else if (cmd === undefined) await status().catch((e: Error) => { console.error(e.message); process.exit(1); });
+else if (cmd === "project" || cmd === "machine" || cmd === "person" || cmd === "login-link") {
+  const f = cmd === "project" ? projectCmd : cmd === "machine" ? machineCmd : cmd === "person" ? personCmd : () => loginLink();
+  await f(process.argv.slice(3)).catch((e: Error) => { console.error(e.message); process.exit(1); });
+}
+else if (cmd === "admin") {
+  try { process.exit(admin(process.argv.slice(3))); } catch (e) { console.error((e as Error).message); process.exit(1); }
+}
 else if (cmd === "use") {
   await use(process.argv.slice(3)).catch((e: Error) => {
     console.error(e.message);
@@ -1371,7 +1557,15 @@ else if (cmd === "trust") {
 } else {
   const unknown = !!cmd && cmd !== "help" && cmd !== "--help";
   if (unknown) console.error(`axos has no command '${cmd}'.`);
-  console.error("usage: axos join <invite link> | use [<project>] | use --none | rename [<project>] <new name> | trust | whoami | landed <remote>/<branch> | send --name <script> … | inbox --name <script> … | codex [<codex args>] | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
+  console.error(`usage: axos                      where you are: hub, you, this folder's project, your projects and machines
+       axos join <invite link>    set this machine up
+       axos use [<project>] [--new [<name>]] [--move] | use --none     this folder's project
+       axos project [list] | new <name> | rename [<project>] <name> | link <a> <b>… | unlink <a> <b>… | share <project> <person> | join <project>
+       axos machine [list] | add | rename <name> <new name> | revoke <name>
+       axos person invite <name> [--project <project>]     axos login-link     axos trust     axos whoami (JSON)
+       axos admin <command>       the hub's admin command on its server, over ssh (admin_ssh in the config)
+       axos send --name <script> … | inbox --name <script> … | landed <remote>/<branch> | codex [<codex args>] | codex-bell --thread <id>
+       short forms: axos link <a> <b>… · axos unlink <a> <b>… · axos rename [<project>] <name>`);
   process.exit(unknown ? 2 : 0);
 }
 }

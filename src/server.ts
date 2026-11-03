@@ -317,6 +317,71 @@ function handleWhoami(hub: Hub, req: Request, url: URL, agent: AgentRow): Respon
   }
 }
 
+// The machine's command (`axos`, `axos project …`, `axos machine …`): GET is what bare `axos` shows; POST {op, …} does one
+// thing as the machine's person. Every rule is the hub's (the page's rules); this only maps ops to them.
+async function handleMe(hub: Hub, req: Request, agent: AgentRow): Promise<Response> {
+  const human = agent.human;
+  const base = hub.publicUrl || new URL(req.url).origin;
+  if (req.method === "GET") {
+    const projects = hub.projectsOfHuman(human).filter((p) => !hub.isPair(p) || hub.projectHumans(p).length > 1).map((p) => ({
+      name: hub.projectName(p), owner: hub.projectOwner(p), pair: hub.isPair(p), people: hub.projectHumans(p),
+      links: hub.linkedProjects(p).map((q) => hub.projectName(q)), sessions: hub.presence(p).filter((x) => x.online).length,
+    }));
+    const pending = hub.pendingFor(human).map((r) => ({ ...r, project: hub.projectName(r.project) }));
+    return json(JSON.parse(hub.display(JSON.stringify({
+      human, machine: agent.name, operator: hub.isOperator(human), projects, pending,
+      machines: hub.machinesOf(human).map((m) => ({ ...m, this: m.name === agent.name })),
+      remotes: hub.remotesOf(human).map((r) => ({ remote: r.remote, project: hub.projectName(r.project) })),
+    }), { agent: agent.id })));
+  }
+  if (req.method !== "POST") return new Response("method not allowed\n", { status: 405 });
+  const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  const str = (k: string) => (typeof b[k] === "string" ? (b[k] as string).trim() : "");
+  const list = (k: string) => (Array.isArray(b[k]) ? (b[k] as unknown[]).filter((x): x is string => typeof x === "string").map((x) => x.trim()) : []);
+  const pid = (ref: string) => {
+    const id = hub.projectId(ref, hub.projectsOfHuman(human));
+    if (!id) throw new AxosError(`you are not in a project '${ref}'`);
+    return id;
+  };
+  try {
+    switch (str("op")) {
+      case "link": return json({ said: hub.linkFromMachine(human, list("projects")) });
+      case "unlink": return json({ said: hub.unlinkFromMachine(human, list("projects")) });
+      case "share": {
+        const p = pid(str("project"));
+        hub.shareProject(human, p, str("person").toLowerCase());
+        return json({ said: [`Asked ${str("person").toLowerCase()} to join ${hub.projectName(p)}; they answer on their page.`] });
+      }
+      case "join": return json({ said: [hub.askToJoin(human, str("project"))] });
+      case "new": {
+        const id = hub.createProjectForHuman(human, str("name").toLowerCase(), str("brief"), str("repo"));
+        return json({ said: [`Project ${hub.projectName(id)} made. Connect a folder to it: axos use ${hub.projectName(id)}.`], id, name: hub.projectName(id) });
+      }
+      case "machine-add": {
+        const inv = hub.addMachine(human);
+        return json({ said: [`On the other machine, within 7 days: axos join ${base}/join/${inv.code}`], link: `${base}/join/${inv.code}` });
+      }
+      case "machine-rename": hub.renameMachine(human, str("name"), str("to").toLowerCase()); return json({ said: [`Renamed machine ${str("name")} to ${str("to").toLowerCase()}.`] });
+      case "machine-revoke": hub.revokeMachine(human, str("name"), agent.id); return json({ said: [`Revoked ${str("name")}: its login stopped working, its sessions ended, its roles and leases are free.`] });
+      case "login-link": {
+        const l = hub.createLoginLink(human, 600, { withCode: true });
+        return json({ said: [`Open within 10 minutes, once: ${base}/ui/login/${l.token}`, `or type the code ${l.code!.slice(0, 4)}-${l.code!.slice(4)} on the page's login.`], link: `${base}/ui/login/${l.token}` });
+      }
+      case "invite": {
+        const name = str("person").toLowerCase();
+        const inv = hub.createInvite(name, str("project") ? pid(str("project")) : null, undefined, human);
+        return json({ said: [`Send ${name} this link (7 days, once): ${base}/join/${inv.code}`], link: `${base}/join/${inv.code}` });
+      }
+      case "remember-remote": hub.rememberRemote(human, str("remote"), str("project")); return json({ said: [] });
+      case "forget-remote": hub.forgetRemote(human, str("remote")); return json({ said: [] });
+      default: return json({ error: "unknown op" }, 400);
+    }
+  } catch (e) {
+    if (e instanceof AxosError) return json({ error: hub.display(e.message, { agent: agent.id }) }, 400);
+    throw e;
+  }
+}
+
 // A landing script reports what it pushed: {project?, repo, remote?, branch, head, commits?, subject?}. The project is
 // the body's, or the folder's the client named in x-axos-project.
 async function handleLanded(hub: Hub, req: Request, agent: AgentRow, conn: Connection): Promise<Response> {
@@ -519,7 +584,7 @@ export function makeFetch(hub: Hub) {
     }
     const join = /^\/join\/(axosinv_[A-Za-z0-9_-]+)$/.exec(path);
     if (join) return handleJoinPage(hub, url, join[1]!);
-    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/projects" || path === "/api/unshown" || path === "/api/attach" || path === "/api/inbox") {
+    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/me" || path === "/api/projects" || path === "/api/unshown" || path === "/api/attach" || path === "/api/inbox") {
       const token = bearer(req);
       const agent = token ? hub.authenticateAgent(token) : null;
       if (!agent) return unauthorized();
@@ -534,6 +599,7 @@ export function makeFetch(hub: Hub) {
       if (path === "/api/hook") return handleHook(hub, req, agent, conn);
       if (path === "/api/landed") return handleLanded(hub, req, agent, conn);
       if (path === "/api/whoami") return handleWhoami(hub, req, url, agent);
+      if (path === "/api/me") return handleMe(hub, req, agent);
       // `axos use --new`: a project for this agent's human, made from the machine, then linked there.
       if (path === "/api/projects") {
         if (req.method !== "POST") return new Response("method not allowed\n", { status: 405 });

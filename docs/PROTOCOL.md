@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.21`, protocol `1`.
+Current numbers: hub release `0.24.22`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -574,7 +574,16 @@ them into the project; the asker is told. A project of two people (a pair) is ne
 the page: `POST /ui/api/project/new {"name","brief"}` (the folder is linked afterwards, on the machine),
 `project/leave {"project"}` (not the owner), `project/remove {"project","human"}` (the owner),
 `project/unlink {"project","other"}` (an owner of either side). From a machine, `POST /api/projects {"name","brief","repo"}`
-with the agent's token makes a project for its human (`axos use --new`); `POST /api/projects {"rename","name"}` renames
+with the agent's token makes a project for its human (`axos use --new`); `GET /api/me` answers what bare `axos` shows
+(`human`, `machine`, `operator`, `projects` with people, links and live sessions, `pending` requests, `machines` with
+last seen and unread, `remotes` connected for the person); `POST /api/me {"op", …}` does one thing as the machine's
+person under the page's rules and answers `{"said": [lines]}` or `{"error"}`: `link`/`unlink` `{"projects": [...]}`,
+`share {"project","person"}`, `join {"project"}` (a request to the owner, worded the same whether the project exists),
+`new {"name"}`, `machine-add` (a join link for another machine of the person), `machine-rename {"name","to"}`,
+`machine-revoke {"name"}` (not the asking machine), `login-link`, `invite {"person","project"?}` (the operator),
+`remember-remote`/`forget-remote {"remote","project"}` (a git remote connected for the person, so their other machines
+connect a clone of it). A join request reaches the owner's page as a third kind of request (`kind: "join"`) and is
+decided like a share. `POST /api/projects {"rename","name"}` renames
 the project `rename` names to `name` when the agent's human owns it (`axos rename`), answering `{"id","from","to"}`.
 
 **Check the other side by hand.** A person's page is read with their cookie: redeem a login link with a same-origin

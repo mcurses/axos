@@ -163,8 +163,9 @@ export function NewProject({ onChange }: { onChange: () => void }) {
   </>;
 }
 
-// Share and link requests from people you know, answered here like a question.
-export function PendingRequests({ pending, projects, onChange }: { pending: { id: number; kind: "share" | "link"; from: string; project: string; created_at: number }[]; projects: Project[]; onChange: () => void }) {
+// Share and link requests from people you know, and people asking to join a project of yours (from a clone of its
+// repo), answered here like a question.
+export function PendingRequests({ pending, projects, onChange }: { pending: { id: number; kind: "share" | "link" | "join"; from: string; project: string; created_at: number }[]; projects: Project[]; onChange: () => void }) {
   const [pick, setPick] = useState<Record<number, string>>({});
   const own = projects.filter((p) => !p.pair);
   const decide = (id: number, accept: boolean, project?: string) =>
@@ -172,11 +173,14 @@ export function PendingRequests({ pending, projects, onChange }: { pending: { id
   if (!pending.length) return null;
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="font-medium">Requests from humans you know <span className="text-muted-foreground">({pending.length})</span></h2>
+      <h2 className="font-medium">Requests <span className="text-muted-foreground">({pending.length})</span></h2>
       {pending.map((r) => (
         <Card key={r.id} id={`invite-${r.id}`} className="border-l-4 border-l-primary">
           <CardContent className="flex flex-wrap items-center gap-2 pt-4 text-sm">
-            {r.kind === "share"
+            {r.kind === "join"
+              ? <><span><b>{r.from}</b> wants to join <b>{r.project}</b> (their session found it in a clone of its repo).</span>
+                  <Button size="sm" onClick={() => decide(r.id, true)}>Let them in</Button><Button size="sm" variant="ghost" onClick={() => decide(r.id, false)}>Not now</Button></>
+              : r.kind === "share"
               ? <><span><b>{r.from}</b> wants to share <b>{r.project}</b> with you.</span>
                   <Button size="sm" onClick={() => decide(r.id, true)}>Join</Button><Button size="sm" variant="ghost" onClick={() => decide(r.id, false)}>Not now</Button></>
               : <><span><b>{r.from}</b> wants to link <b>{r.project}</b> with one of your projects.</span>

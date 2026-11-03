@@ -842,6 +842,60 @@ describe("presence", () => {
   });
 });
 
+describe("from a machine (axos project, axos machine)", () => {
+  test("link: two of one's own at once; another person's project is a request; a member who is not the owner and an outsider cannot", () => {
+    expect(hub.linkFromMachine("alice", ["alice/shop", "alice/game"])).toEqual(["Linked alice/shop and alice/game: their sessions reach each other."]);
+    expect(hub.linkedProjects(SHOP)).toEqual([GAME]);
+    expect(hub.linkFromMachine("alice", ["shop", "game"])).toEqual(["alice/shop and alice/game are linked already."]);
+    // bob is in game, not its owner; shop is not his at all.
+    expect(() => hub.linkFromMachine("bob", ["alice/game", "alice/shop"])).toThrow("only the project's owner links it");
+    expect(() => hub.linkFromMachine("bob", ["alice/shop", "alice/game"])).toThrow("you are not in a project 'alice/shop'");
+    // bob's own project with one of alice's: a request to alice, worded the same whether the named project exists.
+    const mine = hub.createProjectForHuman("bob", "tools");
+    expect(hub.linkFromMachine("bob", ["bob/tools", "alice/nope"])).toEqual(["Asked alice to link bob/tools with one of their projects; they pick which on their page."]);
+    expect(hub.pendingFor("alice").map((r) => [r.kind, r.from, r.project])).toEqual([["link", "bob", mine]]);
+    expect(hub.unlinkFromMachine("alice", ["alice/shop", "alice/game"])).toEqual(["Unlinked alice/shop and alice/game."]);
+    expect(() => hub.unlinkFromMachine("bob", ["alice/shop", "alice/game"])).toThrow("you are not in a project 'alice/shop'");
+  });
+
+  test("a person asks to join a project; its owner lets them in; the answer never says whether the project exists", () => {
+    hub.addHuman("carol");
+    const said = hub.askToJoin("carol", "alice/shop");
+    expect(said).toContain("Asked the owner of alice/shop to let you in");
+    expect(hub.askToJoin("carol", "alice/nope")).toBe(said.replace("alice/shop", "alice/nope"));
+    expect(hub.askToJoin("carol", "alice/shop")).toBe(said); // one open request, asked again: the same words
+    const req = hub.pendingFor("alice").filter((r) => r.kind === "join");
+    expect(req.map((r) => [r.from, r.project])).toEqual([["carol", SHOP]]);
+    expect(hub.pendingFor("bob").filter((r) => r.kind === "join")).toEqual([]);
+    expect(() => hub.decideInvite("bob", req[0]!.id, true)).toThrow("no request");
+    hub.decideInvite("alice", req[0]!.id, true);
+    expect(hub.humanInProject("carol", SHOP)).toBe(true);
+    expect(() => hub.askToJoin("carol", "alice/shop")).toThrow("you are in alice/shop already");
+  });
+
+  test("machines: one's own listed, renamed, revoked (not the one asking); another person's are not there", () => {
+    expect(hub.machinesOf("alice").map((m) => m.name)).toEqual(["dev1", "dev3"]);
+    hub.renameMachine("alice", "dev3", "laptop");
+    expect(hub.machinesOf("alice").map((m) => m.name)).toEqual(["dev1", "laptop"]);
+    expect(() => hub.revokeMachine("alice", "dev1", DEV1)).toThrow("this is the machine you are on");
+    expect(() => hub.revokeMachine("bob", "laptop", SC)).toThrow("you have no machine 'laptop'");
+    expect(() => hub.renameMachine("bob", "dev1", "x")).toThrow("you have no machine 'dev1'");
+    hub.revokeMachine("alice", "laptop", DEV1);
+    expect(hub.machinesOf("alice").map((m) => m.name)).toEqual(["dev1"]);
+    expect(hub.addMachine("bob").code).toMatch(/^axosinv_/);
+  });
+
+  test("a remote connected for the person: kept per person, only for projects they are in", () => {
+    hub.rememberRemote("alice", "github.com/alice/shop", "alice/shop");
+    expect(hub.remotesOf("alice")).toEqual([{ remote: "github.com/alice/shop", project: SHOP }]);
+    expect(hub.remotesOf("bob")).toEqual([]);
+    expect(() => hub.rememberRemote("bob", "github.com/alice/shop", "alice/shop")).toThrow("you are not in a project 'alice/shop'");
+    expect(() => hub.rememberRemote("alice", "not a remote", "alice/shop")).toThrow("not a normalised git remote");
+    hub.forgetRemote("alice", "github.com/alice/shop");
+    expect(hub.remotesOf("alice")).toEqual([]);
+  });
+});
+
 describe("project links", () => {
   test("across a link another person's holder is 'a session of <human>'; one's own keeps its label", () => {
     hub.linkProjects(SHOP, GAME);

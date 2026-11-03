@@ -208,7 +208,7 @@ CREATE TABLE IF NOT EXISTS invites (     -- one-time links that set up a machine
   agent_id      TEXT,                          -- the agent the redemption created
   invited_by    TEXT,                          -- the person who made it on their page; for another person, redemption pairs the two
   new_human     INTEGER,                       -- made for a name nobody had: refused if someone has it by redemption
-  kind          TEXT NOT NULL DEFAULT 'machine', -- machine (a code), share (a person into a project), link (two projects)
+  kind          TEXT NOT NULL DEFAULT 'machine', -- machine (a code), share (a person into a project), link (two projects), join (a person asks the owner to let them in)
   target_project TEXT,                         -- link: the project the other side picked
   decided_at    INTEGER,                       -- share and link: when the other side joined, linked or declined
   decision      TEXT,                          -- 'accepted' | 'declined'
@@ -261,6 +261,14 @@ CREATE TABLE IF NOT EXISTS push_devices (
   last_ok       INTEGER,
   login_id      INTEGER                        -- the device's login (logins.id); signing it out ends its pushes too
 );
+CREATE TABLE IF NOT EXISTS remotes (     -- a git remote a person connected to a project: every machine of theirs connects a clone of it
+  human      TEXT NOT NULL REFERENCES humans(name) ON DELETE CASCADE,
+  remote     TEXT NOT NULL,                -- normalised: host/path, no user, password or port
+  project    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (human, remote)
+);
+
 CREATE TABLE IF NOT EXISTS kv (
   k             TEXT PRIMARY KEY,
   v             TEXT NOT NULL
