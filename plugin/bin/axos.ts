@@ -1317,6 +1317,11 @@ async function adoptRemote(c: Config, cwd: string): Promise<string | null> {
   return `AXOS: this checkout of ${hit.remote} is connected to ${hit.project}, as on your other machine (axos use --none here disconnects it on this machine).`;
 }
 
+// Unused for 14 days or ever (the hub's UNUSED_MACHINE_MS): worth revoking.
+function unusedHint(m: { name: string; last_seen: number | null; created_at: number; this: boolean }): string {
+  return !m.this && (m.last_seen ?? m.created_at) < Date.now() - 14 * 86_400_000 ? ` · unused: axos machine revoke ${m.name}` : "";
+}
+
 function ago(ms: number | null): string {
   if (ms === null) return "never seen";
   const m = Math.round((Date.now() - ms) / 60_000);
@@ -1351,7 +1356,7 @@ async function status(): Promise<void> {
     const bits = [m.this ? "this one" : ago(m.last_seen)];
     if (m.sessions) bits.push(`${m.sessions} session${m.sessions === 1 ? "" : "s"}`);
     if (m.unread) bits.push(`${m.unread} unread`);
-    lines.push(`  ${m.name.padEnd(24)} ${bits.join(" · ")}`);
+    lines.push(`  ${m.name.padEnd(24)} ${bits.join(" · ")}${unusedHint(m)}`);
   }
   if (me.pending.length) lines.push("", `Waiting for your answer on your page: ${me.pending.map((r) => `${r.from} ${r.kind === "join" ? "wants to join" : r.kind === "share" ? "shares" : "wants to link"} ${r.project}`).join("; ")}.`);
   console.log(lines.join("\n"));
@@ -1382,7 +1387,7 @@ async function machineCmd(args: string[]): Promise<void> {
   const say = (lines: string[]) => { for (const l of lines) console.log(l); };
   if (!sub || sub === "list") {
     for (const m of (await meGet(c, t)).machines) {
-      console.log(`${m.name.padEnd(24)} ${m.this ? "this one" : ago(m.last_seen)}${m.sessions ? ` · ${m.sessions} session${m.sessions === 1 ? "" : "s"}` : ""}${m.unread ? ` · ${m.unread} unread` : ""}`);
+      console.log(`${m.name.padEnd(24)} ${m.this ? "this one" : ago(m.last_seen)}${m.sessions ? ` · ${m.sessions} session${m.sessions === 1 ? "" : "s"}` : ""}${m.unread ? ` · ${m.unread} unread` : ""}${unusedHint(m)}`);
     }
     return;
   }

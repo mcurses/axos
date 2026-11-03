@@ -165,6 +165,10 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
       } else if (url.pathname === "/ui/api/password") {
         hub.setPassword(human, str("password"), { current: str("current") || undefined, label: deviceLabel(req.headers.get("user-agent") ?? "") });
         return json({ ok: true });
+      } else if (url.pathname === "/ui/api/machine/revoke") {
+        // The kill switch for one of the person's machines (the page is none of them).
+        hub.revokeMachine(human, str("name"), "");
+        return json({ ok: true });
       } else if (url.pathname === "/ui/api/logout-all") {
         hub.signOutAll(human);
         return json({ ok: true });
@@ -297,7 +301,7 @@ function state(hub: Hub, human: string, mark = true) {
   // Share and link requests waiting for this person; the project names are the asker's, which the person may see.
   const pending = hub.pendingFor(human).map((r) => ({ ...r, project: hub.projectName(r.project) ?? r.project }));
   const invites = hub.invitesBy(human).map((i) => ({ id: i.id, name: i.human, project: i.project, created_at: i.created_at, expires_at: i.expires_at, used_at: i.used_at, gone: i.gone }));
-  const me = { operator: hub.isOperator(human), logins: hub.logins(human), password: hub.hasPassword(human) };
+  const me = { operator: hub.isOperator(human), logins: hub.logins(human), password: hub.hasPassword(human), machines: hub.machinesOf(human) };
   const projects = mine.map((p) => {
     const leases = hub.leases(p);
     return {

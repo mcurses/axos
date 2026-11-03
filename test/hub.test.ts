@@ -478,6 +478,17 @@ describe("sessions", () => {
   });
 
   test("a request to the whole project has one taker: the first to answer or ack it done; the others' copies are withdrawn", () => {
+    // The first session holds the project's main seat; while it is online, a call to the project goes to it alone.
+    expect(hub.rolesHeldBy(`session:${coord}`, SHOP)).toContain("main");
+    expect(hub.rolesHeldBy(`session:${helper}`, SHOP)).not.toContain("main");
+    const toMain = hub.send(A, { ...note(["project"], "who runs the merge queue?"), type: "ask" });
+    expect(toMain.delivered_to).toEqual([expect.stringContaining(`role:${SHOP}/main (held by shop-5c`)]);
+    expect(toMain.unattended.join("\n")).toContain("this ask went to the project's main session");
+    expect(hub.getMessage(toMain.id)!.takers).toBeNull();
+    // Main does not make the session speak as main: its one other role still is its voice.
+    expect(hub.getMessage(hub.send(C(), note(["session:shop-e9"], "x")).id)!.sender).toBe(`role:${SHOP}/main-coordinator`);
+    // Main away: the call fans out to everyone, with one taker.
+    t += 11 * 60_000;
     const req = hub.send(A, { ...note(["project"], "review the design"), type: "review" });
     expect(req.delivered_to).toEqual(expect.arrayContaining([`session:${coord}`, `session:${helper}`]));
     expect(hub.getMessage(req.id)!.takers).toBe("one");
@@ -842,6 +853,38 @@ describe("presence", () => {
   });
 });
 
+describe("unused machines", () => {
+  test("health lists a machine unused for 14 days apart from mail nobody reads; it is not counted there", () => {
+    hub.send(A, note([`agent:${SC}`], "for bob's machine", GAME));
+    t += 15 * 86_400_000;
+    const h = hub.health(0);
+    expect(h.unused_machines.map((m) => `${m.human}/${m.name}`)).toEqual(expect.arrayContaining(["bob/claude"]));
+    expect(h.unused_machines.find((m) => m.name === "claude")!.unread).toBe(1);
+    expect(h.unread_agents.some((a) => a.name === "claude")).toBe(false);
+  });
+});
+
+describe("the main seat", () => {
+  test("the first session holds it; it passes by itself only from an away or ended holder, and only to the same person", () => {
+    const a1 = hub.openSession(DEV1, { client_session: "a1a1a1a1-0000-0000-0000-000000000000", project: GAME, name: "g-a1" });
+    const b1 = hub.openSession(SC, { client_session: "b1b1b1b1-0000-0000-0000-000000000000", project: GAME, name: "g-b1" });
+    const holder = () => hub.roles(GAME).find((r) => r.role === "main")!.holder;
+    expect(holder()).toBe(a1);
+    // alice's first session goes away: bob's next session does not take her seat; alice's next one does.
+    t += 11 * 60_000;
+    hub.openSession(SC, { client_session: "b2b2b2b2-0000-0000-0000-000000000000", project: GAME, name: "g-b2" });
+    expect(holder()).toBe(a1);
+    const a2 = hub.openSession(DEV3, { client_session: "a2a2a2a2-0000-0000-0000-000000000000", project: GAME, name: "g-a2" });
+    expect(holder()).toBe(a2);
+    // Online, it stays: a later session of the same person does not take it by itself; claiming it needs force.
+    hub.openSession(DEV1, { client_session: "a3a3a3a3-0000-0000-0000-000000000000", project: GAME, name: "g-a3" });
+    expect(holder()).toBe(a2);
+    const a3 = hub.openSession(DEV1, { client_session: "a3a3a3a3-0000-0000-0000-000000000000", project: GAME });
+    expect(() => hub.claimRole(DEV1, GAME, "main", undefined, a3)).toThrow("a takeover needs force");
+    expect(b1).toBeTruthy();
+  });
+});
+
 describe("from a machine (axos project, axos machine)", () => {
   test("link: two of one's own at once; another person's project is a request; a member who is not the owner and an outsider cannot", () => {
     expect(hub.linkFromMachine("alice", ["alice/shop", "alice/game"])).toEqual(["Linked alice/shop and alice/game: their sessions reach each other."]);
@@ -908,7 +951,7 @@ describe("project links", () => {
     const away = hub.send(A, note(["role:game/modder"], "still there?"));
     expect(away.unattended[0]).not.toContain("game-bob");
     expect(shown(away.unattended[0]!)).toContain("is held by a session of bob (away, seen 11m ago)");
-    expect(shown(away.unattended[0]!)).toContain("Roles held in alice/game: none");
+    expect(shown(away.unattended[0]!)).toContain("Roles held in alice/game: role:alice/game/main (a session of bob; away");
     // Alice's own session in the linked project keeps its label for Alice.
     hub.defineRole(GAME, "tester");
     const mine = hub.openSession(DEV1, { client_session: "a11ce000-0000-0000-0000-000000000000", project: GAME, name: "game-alice" });

@@ -248,6 +248,12 @@ test("the human page: key login, the state document, answering an ask; the app s
   expect(peeked.inbox.map((m) => m.id)).toContain(forPage);
   expect(peeked.asks.map((a) => a.id)).toContain(ask.ask_id);
   expect(hub.receipts(forPage)[0]!.shown_at).toBeNull();
+  // The person's machines are on the page; one is revoked from there (the page itself is none of them).
+  const spare = hub.addAgent("alice", "spare", [SHOP]);
+  const st = await (await fetch(`${base}/ui/api/state?peek=1`, { headers: { cookie } })).json() as { me: { machines: { name: string }[] } };
+  expect(st.me.machines.map((m) => m.name)).toContain("spare");
+  expect((await fetch(`${base}/ui/api/machine/revoke`, { method: "POST", body: JSON.stringify({ name: "spare" }), headers: { cookie, "Content-Type": "application/json" } })).status).toBe(200);
+  expect(hub.authenticateAgent(spare.token)).toBeNull();
   // Such a program logs in with a link of the person's and is listed under its own name in their logins.
   const prog = await fetch(`${base}/ui/login/${hub.createLoginLink("alice").token}`, { method: "POST", redirect: "manual", headers: { "user-agent": "vinea axos-bridge" } });
   expect(prog.status).toBe(303);
@@ -776,9 +782,9 @@ test("scripts: axos send and axos inbox as a named script; speaking for a role a
     // Not a live session: not in presence, not reached by a project-wide message, no roles.
     expect(hub.presence(SHOP).some((x) => x.name === "nightly-check")).toBe(false);
     const all = hub.send({ kind: "agent", id: ids.dev1!, human: "alice" }, { project: SHOP, to: ["project:shop"], type: "request", summary: "everyone: pause deploys" });
-    // A request to the whole project: the sender is told that every receiver got it as its own (meum-05, 2026-11-02).
-    expect(all.delivered_to.length).toBeGreaterThan(1);
-    expect(all.unattended.join("\n")).toContain(`Through the project address, ${all.delivered_to.length} receivers got this request; the first to answer it or ack it done takes it`);
+    // A request to the whole project goes to its main seat while that is online (Max, 2026-11-03), never to a script.
+    expect(all.delivered_to).toEqual([expect.stringMatching(/^role:.*\/main \(held by /)]);
+    expect(all.unattended.join("\n")).toContain("this request went to the project's main session");
     expect(hub.send({ kind: "agent", id: ids.dev1!, human: "alice" }, { project: SHOP, to: ["project:shop"], type: "note", summary: "fyi" }).unattended.join("\n")).not.toContain("Through the project address");
     expect(all.delivered_to.some((r) => r.includes(hub.openScript(ids.dev3!, SHOP, "nightly-check")))).toBe(false);
     expect(() => hub.claimRole(ids.dev3!, SHOP, "supervisor", "x", hub.openScript(ids.dev3!, SHOP, "nightly-check"))).toThrow("a script holds no roles");

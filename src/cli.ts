@@ -139,6 +139,10 @@ Next: a project for a repo: axos project add ${name}/<name> --repo <git address>
       ...h.unread_humans.map((u) => `${u.human} has ${u.n} high-priority message(s) unhandled on the page for over a day`),
     ];
     lines.push(nobody.length ? `Nobody reading (${nobody.length}):` : "Nobody reading: nothing.", ...nobody.map((x) => `  - ${x}`));
+    if (h.unused_machines.length) {
+      lines.push(`Machines nobody has used for 14 days or ever (${h.unused_machines.length}; their owner revokes them with axos machine revoke <name>): ` +
+        h.unused_machines.map((m) => `${m.human}/${m.name} (${m.last_seen === null ? "never used" : `last ${iso(m.last_seen)}`}${m.unread ? `, ${m.unread} unread` : ""})`).join("; ") + ".");
+    }
     lines.push(`Phone: ${h.pushes.sent} push(es) sent, ${h.pushes.failed} failed. Expired unread in the window: ${h.expired_since}.`);
     lines.push(`New in the window: humans ${h.new.humans.join(", ") || "none"}; projects ${h.new.projects.join(", ") || "none"}; agents ${h.new.agents.join(", ") || "none"}.`);
     out(lines.join("\n"));

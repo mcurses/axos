@@ -22,7 +22,8 @@ export interface Project {
 // push: the hub's key this browser subscribes with (null: the hub cannot push) and the devices registered so far.
 export interface Person { name: string; pair: string | null }
 export interface Invite { id: number; name: string; project: string | null; created_at: number; expires_at: number; used_at: number | null; gone: boolean }
-export interface Me { operator: boolean; password: boolean; logins: { id: number; label: string; created_at: number; last_seen: number | null }[] }
+export interface Me { operator: boolean; password: boolean; logins: { id: number; label: string; created_at: number; last_seen: number | null }[];
+  machines?: { name: string; created_at: number; last_seen: number | null; unread: number; sessions: number }[] }
 export interface Pending { id: number; kind: "share" | "link" | "join"; from: string; project: string; created_at: number }
 export interface State { human: string; me: Me; people: Person[]; invites: Invite[]; pending: Pending[]; push: { key: string | null; devices: { label: string; created_at: number; last_ok: number | null }[] }; now: number; types: string[]; asks: Ask[]; inbox: InboxMessage[]; sent: SentMessage[]; projects: Project[] }
 
@@ -35,7 +36,7 @@ export async function loadState(): Promise<State> {
   return res.json();
 }
 
-export async function post(action: "answer" | "ack" | "send" | "push/subscribe" | "push/unsubscribe" | "invite" | "invite/withdraw" | "invite/dismiss" | "login-link" | "login/remove" | "logout-all" | "password" | "invite/decide" | "project/new" | "project/share" | "project/link" | "project/leave" | "project/remove" | "project/unlink" | "project/repo", body: Record<string, unknown>): Promise<unknown> {
+export async function post(action: "answer" | "ack" | "send" | "push/subscribe" | "push/unsubscribe" | "invite" | "invite/withdraw" | "invite/dismiss" | "login-link" | "login/remove" | "logout-all" | "machine/revoke" | "password" | "invite/decide" | "project/new" | "project/share" | "project/link" | "project/leave" | "project/remove" | "project/unlink" | "project/repo", body: Record<string, unknown>): Promise<unknown> {
   const res = await fetch(`/ui/api/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const out = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new Error(out.error ?? `the hub answered ${res.status}`);

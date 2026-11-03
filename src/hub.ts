@@ -213,6 +213,12 @@ const REF_RE = /^[A-Za-z0-9._@+-][A-Za-z0-9._@+\/-]{0,199}$/;
 const SHA_RE = /^[0-9a-f]{7,64}$/;
 
 export const SYSTEM_SENDER = "axos";
+// The project's main seat (takeMain); calls to the whole project go to it while its holder is online.
+export const MAIN_ROLE = "main";
+// A machine login not used for this long is listed as unused (health, axos machine), not as mail nobody reads.
+export const UNUSED_MACHINE_MS = 14 * 86_400_000;
+const MAIN_DESCRIPTION = "the project's main session: calls to the whole project go here; the first session holds it, claim_role main moves it";
+
 // Types that call for someone to act: sent to the project address and fanned out to several, they have one taker.
 export const ONE_TAKER_TYPES: readonly string[] = ["ask", "request", "review", "handoff"];
 
@@ -1454,7 +1460,29 @@ export class Hub {
     if (kept && !this.isMember(agentId, kept)) this.db.query("UPDATE sessions SET project = NULL WHERE key = ?").run(key);
     if (!prev || prev.ended_at !== null) this.event(`session:${key}`, "session.started", project, { name, profile });
     if (!prev) this.claimNext(key);
+    this.takeMain(key);
     return key;
+  }
+
+  // Every project has a main seat: the role `main`, held by the first session that comes and kept by it while it is
+  // online. Calls to the whole project go to it (send). It passes by itself only from a holder that ended or went away,
+  // and only to a session of the same person; anyone else claims it with claim_role (an online holder: force).
+  // (Max, 2026-11-03: "every project always has a main … by default the first session … main can be switched";
+  // Ensemble's rework 3, R1.)
+  takeMain(key: string): void {
+    const s = this.session(key);
+    if (!s?.project || s.kind !== "session" || s.ended_at !== null) return;
+    const row = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(s.project, MAIN_ROLE) as { holder: string | null } | null;
+    if (!row) this.defineRole(s.project, MAIN_ROLE, MAIN_DESCRIPTION);
+    const prev = row?.holder ?? null;
+    if (prev === key) return;
+    if (prev) {
+      const gone = (this.session(prev)?.ended_at ?? null) !== null || !this.isOnline(prev);
+      if (!gone || this.humanOfHolder(prev) !== this.humanOfHolder(key)) return;
+    }
+    this.db.query("UPDATE roles SET holder = ?, since = ? WHERE project = ? AND role = ?").run(key, this.now(), s.project, MAIN_ROLE);
+    this.event(`session:${key}`, "role.claimed", s.project, { role: MAIN_ROLE, auto: true, ...(prev ? { from: prev } : {}) });
+    this.emit(`session:${key}`, { kind: "role" });
   }
 
   // A new session hands itself the notes its human left for the next session in its project (not its own notes).
@@ -1767,7 +1795,8 @@ export class Hub {
     if (as === "human") throw new AxosError('there is no "human" seat: to pass on what your human typed, send with quotes_human: true and their words as the body');
     if (!as) {
       if (!session) return agentId;
-      const held = this.rolesHeldBy(`session:${session}`, project);
+      // The main seat receives; it is not a voice: a session speaks as main only when it says so (as: "main").
+      const held = this.rolesHeldBy(`session:${session}`, project).filter((r) => r !== MAIN_ROLE);
       return held.length === 1 ? `role:${project}/${held[0]}` : session;
     }
     const parts = as.replace(/^role:/, "").split("/");
@@ -2090,6 +2119,21 @@ export class Hub {
     // Written by someone other than the sender: a script, or a client without a session, speaking for a role.
     const holder = sender.startsWith("role:") ? (this.db.query("SELECT holder FROM roles WHERE project || '/' || role = ?").get(sender.slice(5)) as { holder: string | null } | null)?.holder : null;
     const sentBy = actor.kind === "agent" && sender.startsWith("role:") && holder !== (actor.session ?? actor.id) ? addr(actor.session ?? actor.id) : null;
+    // A call to a whole project goes to its main seat while that seat's holder is online (and is not the sender):
+    // one receiver, the role's mailbox. Otherwise it fans out with one taker, below.
+    const toMain: string[] = [];
+    if (ONE_TAKER_TYPES.includes(input.type)) {
+      const vias = new Set([...recipients.values()].filter((v) => v.startsWith("project:")));
+      for (const via of vias) {
+        const p = via.slice(8);
+        const holder = this.roleHolder(`role:${p}/${MAIN_ROLE}`);
+        const me = actor.kind === "agent" ? actor.session ?? actor.id : null;
+        if (!holder || holder === me || !this.isOnline(holder)) continue;
+        for (const [r, v] of [...recipients]) if (v === via) recipients.delete(r);
+        recipients.set(`role:${p}/${MAIN_ROLE}`, `role:${p}/${MAIN_ROLE}`);
+        toMain.push(`Through the project address this ${input.type} went to the project's main session, ${this.labelFor(holder, human, p !== input.project)} (role main); claim_role main moves that seat.`);
+      }
+    }
     // A call to a whole project (an ask, request, review or handoff that the project address fanned out to several) has
     // one taker: the first to answer it or ack it done (Max, 2026-11-03: two meum and two vinea sessions each answered
     // one review request; "footgun").
@@ -2166,7 +2210,7 @@ export class Hub {
       delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => r.startsWith("role:") ? `${r} (held by ${holderText(r)})` : r),
       waiting_for_role: [...recipients.keys()].filter(vacant),
       not_sent: notSent,
-      unattended: [...unattended, ...stale, ...scripts, ...many, ...takenNote],
+      unattended: [...unattended, ...stale, ...scripts, ...many, ...takenNote, ...toMain],
     };
   }
 
@@ -3028,11 +3072,17 @@ export class Hub {
          JOIN messages m ON m.id = d.message_id JOIN sessions s ON 'session:' || s.key = d.recipient
         WHERE d.acked_at IS NULL AND d.shown_at IS NULL AND s.ended_at IS NULL AND m.created_at < ? GROUP BY s.key ORDER BY oldest`, t - 3_600_000)
       .map((s) => ({ ...s, label: this.label(`session:${s.key}`) }));
-    // Agents' mailboxes with mail and no reader lately (the mail expires after a week).
-    const unread_agents = all<{ id: string; human: string; name: string; last_seen: number | null; n: number; oldest: number }>(
-      `SELECT a.id, a.human, a.name, a.last_seen, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d
+    // Agents' mailboxes with mail and no reader lately (the mail expires after a week). A machine nobody has used for 14
+    // days (or ever) is listed apart: its mail is not a delivery the product failed, it is a login to clean up.
+    const unread_agents_all = all<{ id: string; human: string; name: string; last_seen: number | null; created_at: number; n: number; oldest: number }>(
+      `SELECT a.id, a.human, a.name, a.last_seen, a.created_at, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d
          JOIN messages m ON m.id = d.message_id JOIN agents a ON 'agent:' || a.id = d.recipient
-        WHERE d.acked_at IS NULL AND (a.last_seen IS NULL OR a.last_seen < ?) GROUP BY a.id ORDER BY n DESC`, t - SESSION_LIVE_MS);
+        WHERE d.acked_at IS NULL AND a.revoked = 0 AND (a.last_seen IS NULL OR a.last_seen < ?) GROUP BY a.id ORDER BY n DESC`, t - SESSION_LIVE_MS);
+    const unused = (a: { last_seen: number | null; created_at: number }) => (a.last_seen ?? a.created_at) < t - UNUSED_MACHINE_MS;
+    const unread_agents = unread_agents_all.filter((a) => !unused(a));
+    const unused_machines = all<{ id: string; human: string; name: string; last_seen: number | null; created_at: number }>(
+      "SELECT id, human, name, last_seen, created_at FROM agents WHERE revoked = 0 AND COALESCE(last_seen, created_at) < ? ORDER BY human, name", t - UNUSED_MACHINE_MS)
+      .map((a) => ({ ...a, unread: unread_agents_all.find((x) => x.id === a.id)?.n ?? 0 }));
     // Roles with mail whose holder is nobody or away.
     const unread_roles = all<{ project: string; role: string; holder: string | null; n: number; oldest: number }>(
       `SELECT r.project, r.role, r.holder, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM roles r
@@ -3050,7 +3100,7 @@ export class Hub {
     return {
       version: VERSION, now: t, since,
       messages: one<{ n: number }>("SELECT COUNT(*) AS n FROM messages WHERE created_at >= ?", since).n,
-      delivered, open, stuck_sessions, unread_agents, unread_roles, unread_humans,
+      delivered, open, stuck_sessions, unread_agents, unused_machines, unread_roles, unread_humans,
       pushes: { sent: count("push.sent"), failed: count("push.failed") },
       expired_since: count("delivery.expired") ? one<{ n: number }>("SELECT COALESCE(SUM(json_extract(data_json, '$.n')), 0) AS n FROM events WHERE kind = 'delivery.expired' AND at >= ?", since).n : 0,
       new: { humans: names("human.added", "name").length ? names("human.added", "name") : all<{ actor: string }>("SELECT actor FROM events WHERE kind = 'human.added' AND at >= ?", since).map((e) => e.actor.replace(/^human:/, "")),
