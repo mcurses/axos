@@ -1011,7 +1011,8 @@ async function claudeBell(args: string[]): Promise<void> {
     // Resuming a session whose process still lives starts a copy under a new id; stopped first, it wakes as itself
     // (vigil's test, 2639). Only "done" (then stopped) or "stopped" is woken.
     if (st.alive) {
-      await Bun.spawn([claude, "stop", session], { stdout: "ignore", stderr: "ignore" }).exited;
+      // `claude stop` takes the job's short id, not the session id (vigil's test, 2643).
+      await Bun.spawn([claude, "stop", st.id ?? session], { stdout: "ignore", stderr: "ignore" }).exited;
       for (let i = 0; i < 60 && (await claudeState(claude, session)).alive; i++) await Bun.sleep(500);
       if ((await claudeState(claude, session)).alive) return log(`${new Date().toISOString()} could not stop it to wake it; the message waits`);
     }
@@ -1024,14 +1025,14 @@ async function claudeBell(args: string[]): Promise<void> {
 
 // How Claude Code lists the session (`claude agents --json --all`): working (state "working" or status "busy", whatever
 // the other says) and alive (a pid). Not listed, or unreadable: neither.
-async function claudeState(claude: string, session: string): Promise<{ working: boolean; alive: boolean }> {
+async function claudeState(claude: string, session: string): Promise<{ working: boolean; alive: boolean; id?: string }> {
   try {
     const r = Bun.spawn([claude, "agents", "--json", "--all"], { stdout: "pipe", stderr: "ignore" });
     if ((await r.exited) !== 0) return { working: false, alive: false };
     const list = JSON.parse(await new Response(r.stdout).text()) as Record<string, unknown>[];
     const me = list.find((x) => x.sessionId === session || x.id === session);
     if (!me) return { working: false, alive: false };
-    return { working: me.state === "working" || me.status === "busy", alive: me.pid !== undefined && me.pid !== null };
+    return { working: me.state === "working" || me.status === "busy", alive: me.pid !== undefined && me.pid !== null, id: typeof me.id === "string" ? me.id : undefined };
   } catch { return { working: false, alive: false }; }
 }
 

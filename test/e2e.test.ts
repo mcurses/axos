@@ -962,10 +962,11 @@ test("axos claude-bell: mail to an idle background session resumes it once with 
   // A stand-in for claude: `agents --json --all` prints the state file (the real fields: status, state, pid); `stop`
   // drops the pid; a resume is recorded.
   const st = join(dir, "state");
-  writeFileSync(st, `{"sessionId":"${sid}","status":"idle","state":"done","pid":4242}`);
+  // `stop` takes only the short job id, as the real one does.
+  writeFileSync(st, `{"id":"c1c1c1c1","sessionId":"${sid}","status":"idle","state":"done","pid":4242}`);
   writeFileSync(join(dir, "claude"), `#!/bin/sh
 if [ "$1" = agents ]; then printf '[%s]' "$(cat ${st})"; exit 0; fi
-if [ "$1" = stop ]; then echo stop >> "${join(dir, "stops")}"; printf '{"sessionId":"${sid}","state":"stopped"}' > ${st}; exit 0; fi
+if [ "$1" = stop ]; then [ "$2" = c1c1c1c1 ] || exit 1; echo stop >> "${join(dir, "stops")}"; printf '{"id":"c1c1c1c1","sessionId":"${sid}","state":"done"}' > ${st}; exit 0; fi
 printf '%s\\n' "$@" >> "${join(dir, "calls")}"
 echo woke
 `, { mode: 0o755 });
@@ -985,7 +986,7 @@ echo woke
     expect(calls()[0]).toStartWith(`--resume\n${sid}\n--permission-mode\nauto\nAXOS: a new message is waiting for you.`);
     expect(calls()[0]).not.toContain("nightly"); // no message text passes through the bell
     // Working (even with status idle): left alone; its hooks show the mail at its next step.
-    writeFileSync(st, `{"sessionId":"${sid}","status":"idle","state":"working","pid":4243}`);
+    writeFileSync(st, `{"id":"c1c1c1c1","sessionId":"${sid}","status":"idle","state":"working","pid":4243}`);
     await call(dev1, "send", { project: "alice/shop", to: "session:bg-job", type: "note", summary: "Another." });
     await Bun.sleep(3000);
     expect(calls()).toHaveLength(1);
