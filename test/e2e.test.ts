@@ -952,6 +952,52 @@ test("axos codex-bell: a message to the Codex session queues one nudge into Code
   }
 }, 20_000);
 
+test("axos claude-bell: mail to an idle background session resumes it once with a fixed line; a busy one is left to its hooks", async () => {
+  const sid = "c1c1c1c1-1111-2222-3333-444444444444";
+  const bg = await connect(tokens.dev3!, { "x-axos-session": sid, "x-axos-project": "shop", "x-axos-name": "bg-job" });
+  const dev1 = await connect(tokens.dev1!);
+  const dir = mkdtempSync(join(tmpdir(), "axos-claude-"));
+  writeFileSync(join(dir, "token"), `${tokens.dev3}\n`);
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ url: base, token_file: join(dir, "token") }));
+  // A stand-in for claude: `agents --json --all` prints the state file (the real fields: status, state, pid); `stop`
+  // drops the pid; a resume is recorded.
+  const st = join(dir, "state");
+  writeFileSync(st, `{"sessionId":"${sid}","status":"idle","state":"done","pid":4242}`);
+  writeFileSync(join(dir, "claude"), `#!/bin/sh
+if [ "$1" = agents ]; then printf '[%s]' "$(cat ${st})"; exit 0; fi
+if [ "$1" = stop ]; then echo stop >> "${join(dir, "stops")}"; printf '{"sessionId":"${sid}","state":"stopped"}' > ${st}; exit 0; fi
+printf '%s\\n' "$@" >> "${join(dir, "calls")}"
+echo woke
+`, { mode: 0o755 });
+  const calls = () => existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8").split("--bg\n").filter(Boolean) : [];
+  const stops = () => existsSync(join(dir, "stops")) ? readFileSync(join(dir, "stops"), "utf8").split("\n").filter(Boolean).length : 0;
+  const bell = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), "claude-bell", "--session", sid, "--project", "alice/shop", "--permission-mode", "auto", "--claude", join(dir, "claude")],
+    { cwd: dir, env: { ...process.env, AXOS_CONFIG: join(dir, "config.json") }, stdout: "pipe", stderr: "pipe" });
+  const until = async (ok: () => Promise<boolean> | boolean) => { for (let i = 0; i < 100 && !(await ok()); i++) await Bun.sleep(100); };
+  try {
+    await until(async () => /bg-job.*wakes on messages/.test((await call(dev1, "presence", { project: "alice/shop" })).text));
+    await call(dev1, "send", { project: "alice/shop", to: "session:bg-job", type: "request", summary: "Rerun the nightly check." });
+    await until(() => calls().length > 0);
+    await Bun.sleep(2500);
+    expect(calls()).toHaveLength(1);
+    // Idle but alive: stopped first (a resume would start a copy), then resumed with the job's permission mode.
+    expect(stops()).toBe(1);
+    expect(calls()[0]).toStartWith(`--resume\n${sid}\n--permission-mode\nauto\nAXOS: a new message is waiting for you.`);
+    expect(calls()[0]).not.toContain("nightly"); // no message text passes through the bell
+    // Working (even with status idle): left alone; its hooks show the mail at its next step.
+    writeFileSync(st, `{"sessionId":"${sid}","status":"idle","state":"working","pid":4243}`);
+    await call(dev1, "send", { project: "alice/shop", to: "session:bg-job", type: "note", summary: "Another." });
+    await Bun.sleep(3000);
+    expect(calls()).toHaveLength(1);
+    expect((await call(bg, "inbox")).text).toContain("Rerun the nightly check.");
+  } finally {
+    bell.kill();
+    await bg.close();
+    await dev1.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 25_000);
+
 test("the stdio proxy outside Claude Code: a wrapper's fixed session id and AXOS_SESSION_NAME name the session", async () => {
   const dir = mkdtempSync(join(tmpdir(), "axos-proxy-"));
   writeFileSync(join(dir, "token"), `${tokens.dev3}\n`);

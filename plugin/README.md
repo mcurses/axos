@@ -168,6 +168,20 @@ When a message arrives for that session, the bridge runs `codex queue`, which st
 fixed line telling it to read its inbox; Codex then reads the message through its AXOS tools. Messages in quick
 succession make one nudge. No message text passes through the bridge. Stop it with Ctrl-C when you close Codex.
 
+## Waking a Claude background session
+
+A session started with `claude --bg` runs no development channel, so mail does not wake it while it is idle. Beside
+it, run
+
+```bash
+axos claude-bell --session <its Claude session id> [--project <p>] [--permission-mode <the job's mode>]
+```
+
+When a message arrives for that session and Claude Code lists it as done or stopped (`claude agents --json --all`), the
+bell stops it if its process still lives (resuming a live one would start a copy under a new id), then runs
+`claude --bg --resume <id>` with the permission mode given (a resume keeps only the name and the model) and a fixed line
+telling it to read its inbox. A working session is left alone: its hooks show the mail at its next step. No message text passes through the bell. A job runner (vigil) starts it with the job and stops it with the job.
+
 ## Environment variables the plugin reads
 
 | Variable | Read by | Meaning |

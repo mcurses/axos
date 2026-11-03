@@ -971,20 +971,80 @@ async function codexBell(args: string[]): Promise<void> {
 
 // Rings within a few seconds become one nudge; a ring while a nudge is being queued is kept for after it.
 function codexRinger(codex: string, thread: string, log: (line: string) => void): () => void {
-  let state: "idle" | "waiting" | "queueing" = "idle", again = false;
-  const nudge = async () => {
+  return ringer(async () => {
     const r = Bun.spawn([codex, "queue", "--thread", thread, "--message", CODEX_NUDGE], { stdout: "pipe", stderr: "pipe" });
     const code = await r.exited;
     const out = (code === 0 ? await new Response(r.stdout).text() : await new Response(r.stderr).text()).trim().split("\n").at(-1);
     log(`${new Date().toISOString()} ${code === 0 ? "nudged" : `codex queue failed (${code})`}: ${out}`);
+  }, (e) => log(`${new Date().toISOString()} codex queue failed: ${e.message}`));
+}
+
+// Wake an idle Claude background session (`claude --bg`), where the development channel does not run (vigil's report,
+// 2026-11-03, 2630): listen to that session's mailboxes and, when mail arrives while it is idle, resume it with a fixed
+// line. The session reads the message itself through its AXOS tools; no message text passes through here. A busy
+// session is left alone: its own hooks show it the mail at its next step (resuming a running one would start a copy).
+const CLAUDE_NUDGE = "AXOS: a new message is waiting for you. Read it with the axos inbox tool, handle what concerns your work, " +
+  "reply with the axos send tool (re=<its id>) when there is something to say, and ack it.";
+
+async function claudeBell(args: string[]): Promise<void> {
+  const opt = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    if (i < 0) return undefined;
+    const v = args[i + 1];
+    args.splice(i, 2);
+    return v;
   };
+  const session = opt("--session"), projectArg = opt("--project"), claude = opt("--claude") ?? "claude", mode = opt("--permission-mode");
+  if (!session || args.length) throw new Error("usage: axos claude-bell --session <the Claude session id> [--project <p>] [--permission-mode <mode>] [--claude <path>]");
+  if (!/^[A-Za-z0-9-]{8,80}$/.test(session)) throw new Error("--session must be the Claude session id (8-80 letters, digits or '-')");
+  const c = config();
+  const t = c && token(c);
+  if (!c || !t) throw new Error(`AXOS is not configured: ${CONFIG_PATH} or the token is missing`);
+  const project = projectArg ?? projectOf(c, process.cwd()).project;
+  if (!project) throw new Error("this folder belongs to no AXOS project; run it in the session's folder, or say --project <p>");
+  const h: Record<string, string> = { Authorization: `Bearer ${t}`, "x-axos-profile": encodeURIComponent(profile()), "x-axos-project": encodeURIComponent(project), "x-axos-session": session };
+  const log = (line: string) => console.error(line);
+  console.error(`Listening for AXOS messages of Claude session ${session} in ${project}; resuming it in the background when one arrives while it is idle.`);
+  await doorbell(() => ({ url: c.url, headers: h }), ringer(async () => {
+    const st = await claudeState(claude, session);
+    if (st.working) return log(`${new Date().toISOString()} working: its hooks will show the message at its next step`);
+    // Resuming a session whose process still lives starts a copy under a new id; stopped first, it wakes as itself
+    // (vigil's test, 2639). Only "done" (then stopped) or "stopped" is woken.
+    if (st.alive) {
+      await Bun.spawn([claude, "stop", session], { stdout: "ignore", stderr: "ignore" }).exited;
+      for (let i = 0; i < 60 && (await claudeState(claude, session)).alive; i++) await Bun.sleep(500);
+      if ((await claudeState(claude, session)).alive) return log(`${new Date().toISOString()} could not stop it to wake it; the message waits`);
+    }
+    const r = Bun.spawn([claude, "--bg", "--resume", session, ...(mode ? ["--permission-mode", mode] : []), CLAUDE_NUDGE], { stdout: "pipe", stderr: "pipe" });
+    const code = await r.exited;
+    const out = (code === 0 ? await new Response(r.stdout).text() : await new Response(r.stderr).text()).trim().split("\n").at(-1);
+    log(`${new Date().toISOString()} ${code === 0 ? "resumed" : `claude --bg --resume failed (${code})`}: ${out}`);
+  }, (e) => log(`${new Date().toISOString()} resume failed: ${e.message}`)), true);
+}
+
+// How Claude Code lists the session (`claude agents --json --all`): working (state "working" or status "busy", whatever
+// the other says) and alive (a pid). Not listed, or unreadable: neither.
+async function claudeState(claude: string, session: string): Promise<{ working: boolean; alive: boolean }> {
+  try {
+    const r = Bun.spawn([claude, "agents", "--json", "--all"], { stdout: "pipe", stderr: "ignore" });
+    if ((await r.exited) !== 0) return { working: false, alive: false };
+    const list = JSON.parse(await new Response(r.stdout).text()) as Record<string, unknown>[];
+    const me = list.find((x) => x.sessionId === session || x.id === session);
+    if (!me) return { working: false, alive: false };
+    return { working: me.state === "working" || me.status === "busy", alive: me.pid !== undefined && me.pid !== null };
+  } catch { return { working: false, alive: false }; }
+}
+
+// One nudge per burst of rings; a ring while a nudge runs is kept for after it.
+function ringer(nudge: () => Promise<void>, fail: (e: Error) => void): () => void {
+  let state: "idle" | "waiting" | "queueing" = "idle", again = false;
   const ring = () => {
     if (state === "queueing") again = true;
     if (state !== "idle") return;
     state = "waiting";
     setTimeout(async () => {
       state = "queueing";
-      await nudge().catch((e: Error) => log(`${new Date().toISOString()} codex queue failed: ${e.message}`));
+      await nudge().catch(fail);
       state = "idle";
       if (again) {
         again = false;
@@ -1515,6 +1575,12 @@ else if (cmd === "codex") {
     return 1;
   }));
 }
+else if (cmd === "claude-bell") {
+  await claudeBell(process.argv.slice(3)).catch((e: Error) => {
+    console.error(e.message);
+    process.exit(1);
+  });
+}
 else if (cmd === "codex-bell") {
   await codexBell(process.argv.slice(3)).catch((e: Error) => {
     console.error(e.message);
@@ -1572,7 +1638,7 @@ else if (cmd === "trust") {
        axos machine [list] | add | rename <name> <new name> | revoke <name>
        axos person invite <name> [--project <project>]     axos login-link (read-only, for a program)     axos trust     axos whoami (JSON)
        axos admin <command>       the hub's admin command on its server, over ssh (admin_ssh in the config)
-       axos send --name <script> … | inbox --name <script> … | landed <remote>/<branch> | codex [<codex args>] | codex-bell --thread <id>
+       axos send --name <script> … | inbox --name <script> … | landed <remote>/<branch> | codex [<codex args>] | codex-bell --thread <id> | claude-bell --session <id>
        short forms: axos link <a> <b>… · axos unlink <a> <b>… · axos rename [<project>] <name>`);
   process.exit(unknown ? 2 : 0);
 }
