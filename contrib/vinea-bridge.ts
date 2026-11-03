@@ -64,7 +64,9 @@ export function itemsFor(project: string, s: AxosState, base: string): { items: 
 /** The `axos-sessions` Table: sessions seen in the last day, across the person's projects, grouped by project. */
 export function sessionRows(s: AxosState, base: string) {
   const day = 86_400_000;
-  const rows = s.projects.flatMap((p) => p.sessions.filter((x) => x.online || (x.last_seen !== null && s.now - x.last_seen < day)).map((x) => ({
+  // Sessions only: a machine's own mailbox (an agent without a session, labelled like "ana/mac") is not a session.
+  const isSession = (x: { name: string | null; label: string }) => x.name !== null || x.label.includes("#");
+  const rows = s.projects.flatMap((p) => p.sessions.filter((x) => isSession(x) && (x.online || (x.last_seen !== null && s.now - x.last_seen < day))).map((x) => ({
     project: p.id,
     session: cut(x.name ?? who(x.label), 60),
     state: x.online ? { state: "ok", text: x.bell ? "online" : "online, no wake-up" } : { state: "muted", text: "away" },

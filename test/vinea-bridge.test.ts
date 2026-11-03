@@ -13,6 +13,7 @@ const state: AxosState = {
     { id: "ana/shop", sessions: [
       { label: "shop-1 (ana/mac#1)", name: "shop-1", human: "ana", online: true, bell: true, unread: 2, roles: ["main"], last_seen: now },
       { label: "x", name: "old", human: "ana", online: false, bell: false, unread: 0, roles: [], last_seen: now - 3 * 86_400_000 },
+      { label: "ana/mac", name: null, human: "ana", online: true, bell: false, unread: 4, roles: [], last_seen: now },
     ] },
     { id: "ana/game", sessions: [{ label: "g (ben/box#2)", name: "g", human: "ben", online: false, bell: false, unread: 0, roles: [], last_seen: now - 3_600_000 }] },
   ],
