@@ -343,6 +343,19 @@ function migrate(db: Database): void {
   column("logins", "read_only", "INTEGER NOT NULL DEFAULT 0");
   column("login_links", "read_only", "INTEGER NOT NULL DEFAULT 0");
   column("asks", "action_json", "TEXT");
+  // 0.24.26: the one main seat per project of 0.24.24 becomes one per person (main.<human>); a held one goes to its
+  // holder's person, its mail with it; a vacant one goes (the next session of each person takes theirs).
+  const hasRoles = !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roles'").get();
+  const mains = !hasRoles ? [] : db.query(`SELECT r.project, r.holder, a.human FROM roles r LEFT JOIN agents a ON a.id = substr(r.holder, 1, instr(r.holder || '#', '#') - 1)
+    WHERE r.role = 'main'`).all() as { project: string; holder: string | null; human: string | null }[];
+  for (const m of mains) {
+    if (m.holder && m.human && !db.query("SELECT 1 FROM roles WHERE project = ? AND role = ?").get(m.project, `main.${m.human}`)) {
+      db.query("UPDATE roles SET role = ? WHERE project = ? AND role = 'main'").run(`main.${m.human}`, m.project);
+      db.query("UPDATE deliveries SET recipient = ? WHERE recipient = ?").run(`role:${m.project}/main.${m.human}`, `role:${m.project}/main`);
+    } else {
+      db.query("DELETE FROM roles WHERE project = ? AND role = 'main'").run(m.project);
+    }
+  }
   column("projects", "pair", "INTEGER NOT NULL DEFAULT 0");
   column("invites", "invited_by", "TEXT");
   column("invites", "new_human", "INTEGER");

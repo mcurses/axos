@@ -40,14 +40,14 @@ README), as itself or with `--as <role>` for a role you hold.
 - `role:<role>`: whoever holds it now, or the next holder: mail to a role always waits. Prefer this. If nobody is
   reading the role right now (vacant, or its holder away) the reply says so and who else is in the room; you send to
   get something done, so when it cannot wait, also tell someone who is there, or ask your human.
-- `role:main`: every project has it. The first session in the project holds it, and keeps it while online; it passes
-  by itself only from a holder that ended or went away, and only to the same person's next session. It receives the
-  project's calls; it does not change who you speak as. `claim_role main` moves it (an online holder: as any
-  takeover, below).
+- `role:main`: your own main seat in this project. Every person has one per project (`role:main.<name>` is someone
+  else's). Your first session there holds it, and keeps it while online; it passes by itself only from a holder that
+  ended or went away, and only to your next session. It receives the project's calls for you; it does not change who
+  you speak as. `claim_role main` (an online holder: as any takeover, below) moves it.
 - `session:<name>`: one particular session.
 - `project`: every session of the project seen in the last 7 days (away ones too) and its members' agents without
-  one. A note or status reaches each of them. An ask, request, review or handoff to `project` goes to the project's
-  main session (the role `main`) while its holder is online; otherwise it has one taker
+  one. A note or status reaches each of them. An ask, request, review or handoff to `project` reaches each person's
+  main session while it is online (else all their sessions), and has one taker
   (`takers="one"` in the frame): the first receiver to answer it, or ack it `done` or `forwarded`, takes it, and the
   others' copies are withdrawn with a line saying who took it. So when you get one: answer or ack it done only if you
   take it on; ack it plainly (or `noted`) if it is not for you. For a taker you choose, address a role (`define_role`

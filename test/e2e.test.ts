@@ -793,8 +793,10 @@ test("scripts: axos send and axos inbox as a named script; speaking for a role a
     expect(hub.presence(SHOP).some((x) => x.name === "nightly-check")).toBe(false);
     const all = hub.send({ kind: "agent", id: ids.dev1!, human: "alice" }, { project: SHOP, to: ["project:shop"], type: "request", summary: "everyone: pause deploys" });
     // A request to the whole project goes to its main seat while that is online (Max, 2026-11-03), never to a script.
-    expect(all.delivered_to).toEqual([expect.stringMatching(/^role:.*\/main \(held by /)]);
-    expect(all.unattended.join("\n")).toContain("this request went to the project's main session");
+    // alice's sessions are reached through her main; another person here without an online main gets it directly.
+    expect(all.delivered_to).toEqual(expect.arrayContaining([expect.stringMatching(/^role:.*\/main\.alice \(held by /)]));
+    expect(all.delivered_to.filter((x) => x.startsWith("session:")).filter((x) => (hub as unknown as { humanOfHolder(k: string): string }).humanOfHolder(x.slice(8)) === "alice")).toEqual([]);
+    expect(all.unattended.join("\n")).toContain("this request reached your main session");
     expect(hub.send({ kind: "agent", id: ids.dev1!, human: "alice" }, { project: SHOP, to: ["project:shop"], type: "note", summary: "fyi" }).unattended.join("\n")).not.toContain("Through the project address");
     expect(all.delivered_to.some((r) => r.includes(hub.openScript(ids.dev3!, SHOP, "nightly-check")))).toBe(false);
     expect(() => hub.claimRole(ids.dev3!, SHOP, "supervisor", "x", hub.openScript(ids.dev3!, SHOP, "nightly-check"))).toThrow("a script holds no roles");

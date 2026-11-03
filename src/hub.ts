@@ -215,13 +215,17 @@ const SHA_RE = /^[0-9a-f]{7,64}$/;
 export const SYSTEM_SENDER = "axos";
 // The project's main seat (takeMain); calls to the whole project go to it while its holder is online.
 export const MAIN_ROLE = "main";
+// One main seat per person and project (Max, 2026-11-03: in a shared project one person's session held the only main,
+// and calls to the project reached nobody else): the role `main.<human>`. `role:main` means the sender's own.
+export const mainRole = (human: string) => `${MAIN_ROLE}.${human}`;
+const isMainRole = (role: string) => role === MAIN_ROLE || role.startsWith(`${MAIN_ROLE}.`);
 // A machine login not used for this long is listed as unused (health, axos machine), not as mail nobody reads.
 export const UNUSED_MACHINE_MS = 14 * 86_400_000;
 // After the human says no to a takeover, the same one is not asked again for this long.
 const TAKEOVER_NO_PAUSE_MS = 3_600_000;
 // A holder on another machine counts as away (taken over without asking the human) only after this much silence.
 const CROSS_MACHINE_AWAY_MS = 3_600_000;
-const MAIN_DESCRIPTION = "the project's main session: calls to the whole project go here; the first session holds it, claim_role main moves it";
+const MAIN_DESCRIPTION = "main session here: calls to the whole project reach this person here; their first session holds it, claim_role main moves it";
 
 // Types that call for someone to act: sent to the project address and fanned out to several, they have one taker.
 export const ONE_TAKER_TYPES: readonly string[] = ["ask", "request", "review", "handoff"];
@@ -1485,8 +1489,10 @@ export class Hub {
   takeMain(key: string): void {
     const s = this.session(key);
     if (!s?.project || s.kind !== "session" || s.ended_at !== null) return;
-    const row = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(s.project, MAIN_ROLE) as { holder: string | null } | null;
-    if (!row) this.defineRole(s.project, MAIN_ROLE, MAIN_DESCRIPTION);
+    const human = this.humanOfHolder(key)!;
+    const role = mainRole(human);
+    const row = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(s.project, role) as { holder: string | null } | null;
+    if (!row) this.defineRole(s.project, role, `${human}'s ${MAIN_DESCRIPTION}`, true);
     const prev = row?.holder ?? null;
     if (prev === key) return;
     if (prev) {
@@ -1494,8 +1500,8 @@ export class Hub {
       const gone = (this.session(prev)?.ended_at ?? null) !== null || (!this.isOnline(prev) && (!otherMachine || this.silentFor(prev, CROSS_MACHINE_AWAY_MS)));
       if (!gone || this.humanOfHolder(prev) !== this.humanOfHolder(key)) return;
     }
-    this.db.query("UPDATE roles SET holder = ?, since = ? WHERE project = ? AND role = ?").run(key, this.now(), s.project, MAIN_ROLE);
-    this.event(`session:${key}`, "role.claimed", s.project, { role: MAIN_ROLE, auto: true, ...(prev ? { from: prev } : {}) });
+    this.db.query("UPDATE roles SET holder = ?, since = ? WHERE project = ? AND role = ?").run(key, this.now(), s.project, role);
+    this.event(`session:${key}`, "role.claimed", s.project, { role, auto: true, ...(prev ? { from: prev } : {}) });
     this.emit(`session:${key}`, { kind: "role" });
   }
 
@@ -1738,8 +1744,9 @@ export class Hub {
 
   // ---------------------------------------------------------------- roles
 
-  defineRole(project: string, role: string, description?: string): void {
+  defineRole(project: string, role: string, description?: string, internal = false): void {
     checkName("role", role);
+    if (!internal && isMainRole(role)) throw new AxosError(`'${role}' is the hub's: every person has a main seat in every project (role:main is yours)`);
     if (!this.db.query("SELECT 1 FROM projects WHERE id = ?").get(project)) throw new AxosError(`no project '${project}'`);
     this.db.query("INSERT OR IGNORE INTO roles (project, role) VALUES (?, ?)").run(project, role);
     if (description !== undefined) this.db.query("UPDATE roles SET description = ? WHERE project = ? AND role = ?").run(oneLine(description, 300), project, role);
@@ -1758,6 +1765,11 @@ export class Hub {
   claimRole(agentId: string, project: string, role: string, force?: string, session?: string, opts: { noAsk?: boolean } = {}): { took_over_from: string | null; asked?: { ask_id: number; human: string } } {
     this.requireScope(agentId, project, session);
     checkName("role", role);
+    // claim_role main: one's own main seat.
+    if (role === MAIN_ROLE) {
+      role = mainRole(this.humanOf(agentId)!);
+      this.defineRole(project, role, `${this.humanOf(agentId)}'s ${MAIN_DESCRIPTION}`, true);
+    }
     this.sweep();
     if (!this.db.query("SELECT 1 FROM roles WHERE project = ? AND role = ?").get(project, role)) {
       const known = this.roles(project).map((r) => r.role).join(", ") || "none";
@@ -1822,11 +1834,12 @@ export class Hub {
     if (!as) {
       if (!session) return agentId;
       // The main seat receives; it is not a voice: a session speaks as main only when it says so (as: "main").
-      const held = this.rolesHeldBy(`session:${session}`, project).filter((r) => r !== MAIN_ROLE);
+      const held = this.rolesHeldBy(`session:${session}`, project).filter((r) => !isMainRole(r));
       return held.length === 1 ? `role:${project}/${held[0]}` : session;
     }
     const parts = as.replace(/^role:/, "").split("/");
-    const role = parts.pop()!;
+    let role = parts.pop()!;
+    if (role === MAIN_ROLE) role = mainRole(this.humanOf(agentId)!);
     if (parts.length && this.projectId(parts.join("/"), [project]) !== project) throw new AxosError(`role '${as}' is not in '${project}'`);
     this.sweep();
     const row = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(project, role) as { holder: string | null } | null;
@@ -1956,6 +1969,7 @@ export class Hub {
 
   releaseRole(agentId: string, project: string, role: string, session?: string): void {
     const me = session ?? agentId;
+    if (role === MAIN_ROLE) role = mainRole(this.humanOf(agentId)!);
     const r = this.db.query("UPDATE roles SET holder = NULL, since = NULL WHERE project = ? AND role = ? AND holder = ?").run(project, role, me);
     if (r.changes === 0) throw new AxosError(`you do not hold role '${role}' in '${project}'`);
     this.event(addr(me), "role.released", project, { role });
@@ -2037,8 +2051,13 @@ export class Hub {
     if (a.startsWith("role:")) {
       // role:<role>, role:<slug>/<role> or role:<owner>/<slug>/<role>; role names hold no '/'.
       const parts = a.slice(5).split("/");
-      const rest = parts.pop()!;
+      let rest = parts.pop()!;
       const p = parts.length ? this.reach(project, parts.join("/"), a) : project;
+      // role:main is the sender's own main seat; another person's is role:main.<name>.
+      if (rest === MAIN_ROLE) {
+        if (!senderHuman) throw new AxosError("role:main is a person's own main seat; name whose: role:main.<name>");
+        rest = mainRole(senderHuman);
+      }
       const row = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(p, rest) as { holder: string | null } | null;
       if (!row) {
         const known = this.roles(p).map((r) => r.role).join(", ") || "none";
@@ -2187,17 +2206,26 @@ export class Hub {
     const sentBy = actor.kind === "agent" && sender.startsWith("role:") && holder !== (actor.session ?? actor.id) ? addr(actor.session ?? actor.id) : null;
     // A call to a whole project goes to its main seat while that seat's holder is online (and is not the sender):
     // one receiver, the role's mailbox. Otherwise it fans out with one taker, below.
+    // A call to a whole project reaches each person there through their main seat, while that is online (and is not
+    // the sender): instead of all their sessions. A person without an online main gets it in every session, as before.
     const toMain: string[] = [];
     if (ONE_TAKER_TYPES.includes(input.type)) {
       const vias = new Set([...recipients.values()].filter((v) => v.startsWith("project:")));
+      const me = actor.kind === "agent" ? actor.session ?? actor.id : null;
       for (const via of vias) {
         const p = via.slice(8);
-        const holder = this.roleHolder(`role:${p}/${MAIN_ROLE}`);
-        const me = actor.kind === "agent" ? actor.session ?? actor.id : null;
-        if (!holder || holder === me || !this.isOnline(holder)) continue;
-        for (const [r, v] of [...recipients]) if (v === via) recipients.delete(r);
-        recipients.set(`role:${p}/${MAIN_ROLE}`, `role:${p}/${MAIN_ROLE}`);
-        toMain.push(`Through the project address this ${input.type} went to the project's main session, ${this.labelFor(holder, human, p !== input.project)} (role main); claim_role main moves that seat.`);
+        const reached: string[] = [];
+        for (const h of this.projectHumans(p)) {
+          const box = `role:${p}/${mainRole(h)}`;
+          const holder = this.roleHolder(box);
+          if (!holder || holder === me || !this.isOnline(holder)) continue;
+          for (const [r, v] of [...recipients]) {
+            if (v === via && (r.startsWith("session:") || r.startsWith("agent:")) && this.humanOfHolder(holderOf(r)) === h) recipients.delete(r);
+          }
+          recipients.set(box, via);
+          reached.push(`${h === human ? "your" : `${h}'s`} main session, ${this.labelFor(holder, human ?? "", p !== input.project)}`);
+        }
+        if (reached.length) toMain.push(`Through the project address this ${input.type} reached ${reached.join(" and ")} instead of all of that person's sessions.`);
       }
     }
     // A call to a whole project (an ask, request, review or handoff that the project address fanned out to several) has

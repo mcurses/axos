@@ -487,11 +487,11 @@ describe("sessions", () => {
 
   test("a request to the whole project has one taker: the first to answer or ack it done; the others' copies are withdrawn", () => {
     // The first session holds the project's main seat; while it is online, a call to the project goes to it alone.
-    expect(hub.rolesHeldBy(`session:${coord}`, SHOP)).toContain("main");
-    expect(hub.rolesHeldBy(`session:${helper}`, SHOP)).not.toContain("main");
+    expect(hub.rolesHeldBy(`session:${coord}`, SHOP)).toContain("main.alice");
+    expect(hub.rolesHeldBy(`session:${helper}`, SHOP)).not.toContain("main.alice");
     const toMain = hub.send(A, { ...note(["project"], "who runs the merge queue?"), type: "ask" });
-    expect(toMain.delivered_to).toEqual([expect.stringContaining(`role:${SHOP}/main (held by shop-5c`)]);
-    expect(toMain.unattended.join("\n")).toContain("this ask went to the project's main session");
+    expect(toMain.delivered_to).toEqual([expect.stringContaining(`role:${SHOP}/main.alice (held by shop-5c`)]);
+    expect(toMain.unattended.join("\n")).toContain("this ask reached your main session");
     expect(hub.getMessage(toMain.id)!.takers).toBeNull();
     // Main does not make the session speak as main: its one other role still is its voice.
     expect(hub.getMessage(hub.send(C(), note(["session:shop-e9"], "x")).id)!.sender).toBe(`role:${SHOP}/main-coordinator`);
@@ -926,7 +926,7 @@ describe("the main seat", () => {
   test("the first session holds it; it passes by itself only from an away or ended holder, and only to the same person", () => {
     const a1 = hub.openSession(DEV1, { client_session: "a1a1a1a1-0000-0000-0000-000000000000", project: GAME, name: "g-a1" });
     const b1 = hub.openSession(SC, { client_session: "b1b1b1b1-0000-0000-0000-000000000000", project: GAME, name: "g-b1" });
-    const holder = () => hub.roles(GAME).find((r) => r.role === "main")!.holder;
+    const holder = () => hub.roles(GAME).find((r) => r.role === "main.alice")!.holder;
     expect(holder()).toBe(a1);
     // alice's first session goes away (an hour, since her next one is on another machine): bob's next session does
     // not take her seat; alice's next one does.
@@ -941,6 +941,48 @@ describe("the main seat", () => {
     const a3 = hub.openSession(DEV1, { client_session: "a3a3a3a3-0000-0000-0000-000000000000", project: GAME });
     expect(hub.claimRole(DEV1, GAME, "main", undefined, a3).asked).toBeTruthy(); // another machine: alice is asked
     expect(b1).toBeTruthy();
+  });
+
+  test("a database with 0.24.24's one main per project: a held one becomes its holder's person's, with its mail; a vacant one goes", () => {
+    const path = join(tmpdir(), `axos-main-${process.pid}-${Date.now()}.db`);
+    try {
+      const h = new Hub(openDb(path), { sweep: false });
+      h.addHuman("ana");
+      const p = h.addProject("ana/x"), q = h.addProject("ana/y");
+      const a = h.addAgent("ana", "mac", [p, q]);
+      const sKey = h.openSession(a.id, { client_session: "f1f1f1f1-0000-0000-0000-000000000000", project: p });
+      const db0 = openDb(path);
+      db0.exec(`DELETE FROM roles WHERE role LIKE 'main.%'`);
+      db0.query("INSERT INTO roles (project, role, holder, since) VALUES (?, 'main', ?, 1), (?, 'main', NULL, NULL)").run(p, sKey, q);
+      db0.query("INSERT INTO messages (id, project, sender, to_json, type, summary, body, priority, created_at) VALUES (900, ?, 'axos', '[]', 'note', 's', '', 'normal', 1)").run(p);
+      db0.query("INSERT INTO deliveries (message_id, recipient, via) VALUES (900, ?, ?)").run(`role:${p}/main`, `role:${p}/main`);
+      db0.close();
+      const db = openDb(path);
+      expect(db.query("SELECT project, role, holder FROM roles WHERE role LIKE 'main%' ORDER BY project").all()).toEqual([{ project: p, role: "main.ana", holder: sKey }]);
+      expect(db.query("SELECT recipient FROM deliveries WHERE message_id = 900").get()).toEqual({ recipient: `role:${p}/main.ana` });
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  test("one main per person: in a shared project a call reaches each person's online main, with one taker; role:main is one's own", () => {
+    const a1 = hub.openSession(DEV1, { client_session: "e1e1e1e1-0000-0000-0000-000000000000", project: GAME, name: "g-alice" });
+    const b1 = hub.openSession(SC, { client_session: "e2e2e2e2-0000-0000-0000-000000000000", project: GAME, name: "g-bob" });
+    const b2 = hub.openSession(SC, { client_session: "e3e3e3e3-0000-0000-0000-000000000000", project: GAME, name: "g-bob2" });
+    expect(hub.roles(GAME).filter((r) => r.role.startsWith("main.")).map((r) => [r.role, r.holder]).sort())
+      .toEqual([["main.alice", a1], ["main.bob", b1]]);
+    // alice's helper (no session: the agent) asks the project: alice's main and bob's main, not bob's second session.
+    const r = hub.send(A, { ...note(["project"], "who updates the mod list?", GAME), type: "request" });
+    expect(r.delivered_to.map((x) => x.split(" ")[0])).toEqual(expect.arrayContaining([`role:${GAME}/main.alice`, `role:${GAME}/main.bob`]));
+    expect(r.delivered_to.some((x) => x.includes(b2))).toBe(false);
+    expect(hub.getMessage(r.id)!.takers).toBe("one");
+    // bob's main answers: it takes it; alice's main's copy is withdrawn.
+    hub.send({ ...S, session: b1 }, { ...note([], "I do", GAME), re: r.id });
+    expect(hub.getMessage(r.id)!.taken_by).toBe(`role:${GAME}/main.bob`);
+    expect(hub.inbox(`role:${GAME}/main.alice`).some((m) => m.id === r.id)).toBe(false);
+    // role:main is the sender's own; a person cannot define a main role.
+    expect(hub.send({ ...S, session: b2 }, note(["role:main"], "for my main", GAME)).delivered_to[0]).toContain(`role:${GAME}/main.bob`);
+    expect(() => hub.defineRole(GAME, "main.carol")).toThrow("is the hub's");
   });
 });
 
@@ -1010,7 +1052,7 @@ describe("project links", () => {
     const away = hub.send(A, note(["role:game/modder"], "still there?"));
     expect(away.unattended[0]).not.toContain("game-bob");
     expect(shown(away.unattended[0]!)).toContain("is held by a session of bob (away, seen 11m ago)");
-    expect(shown(away.unattended[0]!)).toContain("Roles held in alice/game: role:alice/game/main (a session of bob; away");
+    expect(shown(away.unattended[0]!)).toContain("Roles held in alice/game: role:alice/game/main.bob (a session of bob; away");
     // Alice's own session in the linked project keeps its label for Alice.
     hub.defineRole(GAME, "tester");
     const mine = hub.openSession(DEV1, { client_session: "a11ce000-0000-0000-0000-000000000000", project: GAME, name: "game-alice" });
