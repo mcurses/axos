@@ -911,6 +911,36 @@ describe("what counts as the human's word (2026-11-03 trust fix)", () => {
   });
 });
 
+describe("an open role (a feedback address)", () => {
+  test("every session of the owner's human reaches it from any project without a link; another person cannot; the answer comes back", () => {
+    const HQ = hub.addProject("alice/hq");
+    hub.addHumanToProject("alice", HQ);
+    hub.addHumanToProject("bob", HQ); // a member, so bob's agents are in hq only through a link: he is not its owner
+    hub.defineRole(HQ, "owner", "Feedback about the tools goes to the suite owner");
+    const inShop = hub.openSession(DEV1, { client_session: "f0f0f0f0-0000-0000-0000-000000000000", project: SHOP, name: "shop-fb" });
+    const holder = hub.openSession(DEV3, { client_session: "f1f1f1f1-0000-0000-0000-000000000000", project: HQ, name: "hq-owner" });
+    hub.claimRole(DEV3, HQ, "owner", undefined, holder);
+    const fb = (who: typeof A, project = SHOP) => hub.send(who, note(["role:alice/hq/owner"], "the bell resumed a copy", project));
+    // Closed: the wall holds, as for any unlinked project.
+    expect(() => fb({ ...A, session: inShop })).toThrow("cannot address another project");
+    expect(() => hub.setRoleOpen("bob", HQ, "owner", true)).toThrow("only the project's owner");
+    hub.setRoleOpen("alice", HQ, "owner", true);
+    const sent = fb({ ...A, session: inShop });
+    expect(sent.delivered_to[0]).toContain(`role:${HQ}/owner`);
+    expect(hub.openRolesOf("alice")).toEqual([{ project: HQ, role: "owner", description: "Feedback about the tools goes to the suite owner" }]);
+    // Another person's agent: no (bob's agent is in game; the open role is alice's own).
+    expect(() => hub.send(S, note(["role:alice/hq/owner"], "hi", GAME))).toThrow("cannot address another project");
+    // Only the role is open: nothing else of hq is reachable.
+    expect(() => hub.send({ ...A, session: inShop }, note(["project:alice/hq"], "all of you", SHOP))).toThrow("cannot address another project");
+    // The holder answers from hq; the answer reaches the sender's session in shop.
+    const back = hub.send({ ...B, session: holder }, { ...note([], "thanks, logged", HQ), re: sent.id });
+    expect(back.delivered_to).toEqual([`session:${inShop}`]);
+    expect(hub.inbox(hub.mailboxes({ id: DEV1, session: inShop })).map((m) => m.summary)).toContain("thanks, logged");
+    hub.setRoleOpen("alice", HQ, "owner", false);
+    expect(() => fb({ ...A, session: inShop })).toThrow("cannot address another project");
+  });
+});
+
 describe("unused machines", () => {
   test("health lists a machine unused for 14 days apart from mail nobody reads; it is not counted there", () => {
     hub.send(A, note([`agent:${SC}`], "for bob's machine", GAME));

@@ -44,6 +44,8 @@ README), as itself or with `--as <role>` for a role you hold.
   else's). Your first session there holds it, and keeps it while online; it passes by itself only from a holder that
   ended or went away, and only to your next session. It receives the project's calls for you; it does not change who
   you speak as. `claim_role main` (an online holder: as any takeover, below) moves it.
+- An open role of your person (told at session start, e.g. a feedback address): reachable as `role:<project>/<role>`
+  from any of your projects, without a link.
 - `session:<name>`: one particular session.
 - `project`: every session of the project seen in the last 7 days (away ones too) and its members' agents without
   one. A note or status reaches each of them. An ask, request, review or handoff to `project` reaches each person's

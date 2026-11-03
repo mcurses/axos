@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.28`, protocol `1`.
+Current numbers: hub release `0.24.29`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -587,7 +587,13 @@ them into the project; the asker is told. A project of two people (a pair) is ne
 the page: `POST /ui/api/project/new {"name","brief"}` (the folder is linked afterwards, on the machine),
 `project/leave {"project"}` (not the owner), `project/remove {"project","human"}` (the owner),
 `project/unlink {"project","other"}` (an owner of either side). From a machine, `POST /api/projects {"name","brief","repo"}`
-with the agent's token makes a project for its human (`axos use --new`); **The main seat.** Every person in a project has a main seat there: the role `main.<human>`, defined by the hub (a
+with the agent's token makes a project for its human (`axos use --new`); **Open roles.** The project's owner may open a role with `define_role(…, open: true)`: every session of that owner's
+person may then send to `role:<project>/<role>` from any of their projects, linked or not (a feedback address).
+Nothing else of the project is reachable that way, and other people's agents still need a link. Every session of the
+person is told at start, in one line: the role's description and its address. The holder answers with `re` as usual,
+and the answer reaches the sender in its own project. `open: false` closes it.
+
+**The main seat.** Every person in a project has a main seat there: the role `main.<human>`, defined by the hub (a
 client cannot define a role named `main` or `main.<anything>`). That person's first session in the project holds it;
 it passes by itself only from a holder that ended or is away (not seen for the online window on the same machine, for
 an hour from another), and only to a session of the same person; otherwise `claim_role main` moves it (an online

@@ -1278,9 +1278,15 @@ export class Hub {
   }
 
   // The project an address points into: the message's own, or one linked to it. Anything else is refused alike.
-  private reach(project: string, target: string, address: string): string {
+  // openRole: the role named in the address; a project of the sender's own human with that role open is reachable
+  // without a link (a feedback address, 2026-11-03). Nothing else of that project is.
+  private reach(project: string, target: string, address: string, openRole?: { role: string; human?: string }): string {
     const hit = this.projectId(target, [project, ...this.linkedProjects(project)]);
     if (hit) return hit;
+    if (openRole?.human) {
+      const own = this.projectId(target, this.projectsOfHuman(openRole.human).filter((q) => this.projectOwner(q) === openRole.human));
+      if (own && this.db.query("SELECT 1 FROM roles WHERE project = ? AND role = ? AND open = 1").get(own, openRole.role)) return own;
+    }
     throw new AxosError(`cannot address another project ('${address}') from '${project}'; only linked projects: ${this.linkedProjects(project).join(", ") || "none"}`);
   }
 
@@ -1904,6 +1910,22 @@ export class Hub {
     return [...roles.filter((r) => r === MAIN_ROLE), ...roles.filter((r) => r !== MAIN_ROLE)].slice(0, 4).map((r) => r.slice(0, 24));
   }
 
+  // The project's owner opens (or closes) a role to every session of their own: it is then addressed from any of their
+  // projects without a link. Other people's agents still need a link.
+  setRoleOpen(human: string, project: string, role: string, open: boolean): void {
+    if (this.projectOwner(project) !== human) throw new AxosError("only the project's owner opens a role to all their sessions");
+    if (isMainRole(role)) throw new AxosError("a main seat is not opened; open a role of the project's own");
+    const r = this.db.query("UPDATE roles SET open = ? WHERE project = ? AND role = ?").run(open ? 1 : 0, project, role);
+    if (!r.changes) throw new AxosError(`no role '${role}' in '${project}'`);
+    this.event(`human:${human}`, open ? "role.opened" : "role.closed", project, { role });
+  }
+
+  // A human's open roles, for the start line of every session of theirs: where feedback and the like go.
+  openRolesOf(human: string): { project: string; role: string; description: string }[] {
+    return this.db.query(`SELECT r.project, r.role, r.description FROM roles r JOIN projects p ON p.id = r.project WHERE r.open = 1 AND p.owner = ? ORDER BY r.project, r.role`)
+      .all(human) as { project: string; role: string; description: string }[];
+  }
+
   roleUnread(project: string, role: string): number {
     return this.unreadCount(`role:${project}/${role}`);
   }
@@ -2062,7 +2084,7 @@ export class Hub {
       // role:<role>, role:<slug>/<role> or role:<owner>/<slug>/<role>; role names hold no '/'.
       const parts = a.slice(5).split("/");
       let rest = parts.pop()!;
-      const p = parts.length ? this.reach(project, parts.join("/"), a) : project;
+      const p = parts.length ? this.reach(project, parts.join("/"), a, { role: rest, human: senderHuman }) : project;
       // role:main is the sender's own main seat; another person's is role:main.<name>.
       if (rest === MAIN_ROLE) {
         if (!senderHuman) throw new AxosError("role:main is a person's own main seat; name whose: role:main.<name>");
@@ -2140,7 +2162,13 @@ export class Hub {
       const m = this.db.query("SELECT project FROM messages WHERE id = ?").get(id) as { project: string } | null;
       if (!m) return false;
       if (m.project === input.project) return true;
-      if (!this.linkedProjects(input.project).includes(m.project)) return false;
+      // A message that reached one of the replier's mailboxes through an open role is answered from where it arrived.
+      const received = (): boolean => {
+        const boxes = actor.kind === "agent" ? [sender, ...this.mailboxes(actor)] : [sender];
+        const box = this.boxSql(boxes);
+        return !!this.db.query(`SELECT 1 FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.message_id = ? AND ${box.sql} LIMIT 1`).get(id, ...box.args);
+      };
+      if (!this.linkedProjects(input.project).includes(m.project)) return received();
       const boxes = actor.kind === "agent" ? [sender, ...this.mailboxes(actor)] : [sender];
       const senders = boxes.map((b) => this.boxKey(b));
       const inList = senders.map(() => "?").join(", ");

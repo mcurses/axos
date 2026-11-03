@@ -256,6 +256,9 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
           "Messages from them and from your human appear in your context as <axos-message> blocks. " +
             `Messaging another session or role, leasing a shared resource, or asking ${agent.human} on their phone is described in the axos skill.`,
           ...notes,
+          // Where this person's open roles are (a feedback address): one line each, its description and its address.
+          ...hub.openRolesOf(agent.human).filter((r) => r.project !== p || !held.includes(r.role))
+            .map((r) => `${r.description || `The role ${r.role}`}: send to role:${r.project}/${r.role} (reachable from any of your projects).`),
           // The main seat's duty (Max, 2026-11-03, through the suite owner 2667).
           held.includes(mainRole(agent.human))
             ? "As this project's main session, keep its meum workspace's name, icon and colour current: check them now and after a project change, and set them with `meum workspace rename|icon|color` when they are wrong or missing; you may also give the workspace up to four labels of your own with `meum workspace labels` (what the project is doing now), never the sessions' roles (if meum runs here)."
