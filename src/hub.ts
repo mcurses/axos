@@ -980,7 +980,7 @@ export class Hub {
   }
 
   // The old name keeps resolving, so .axos.json files and habits do not break.
-  renameProject(project: string, slug: string): void {
+  renameProject(project: string, slug: string, actor = "admin"): void {
     checkName("project", slug);
     const p = this.db.query("SELECT owner, slug FROM projects WHERE id = ?").get(project) as { owner: string; slug: string } | null;
     if (!p) throw new AxosError(`no project '${project}'`);
@@ -991,7 +991,23 @@ export class Hub {
       this.db.query("INSERT OR REPLACE INTO project_aliases (owner, slug, project) VALUES (?, ?, ?)").run(p.owner, p.slug, project);
       this.db.query("UPDATE projects SET slug = ? WHERE id = ?").run(slug, project);
     })();
-    this.event("admin", "project.renamed", project, { from: `${p.owner}/${p.slug}`, to: `${p.owner}/${slug}` });
+    this.event(actor, "project.renamed", project, { from: `${p.owner}/${p.slug}`, to: `${p.owner}/${slug}` });
+  }
+
+  // `axos rename <name>` in a connected folder: the project's owner renames it from a machine of theirs. Same rule as
+  // the admin's: the id, mail, roles, leases and links stay, and the old name keeps resolving.
+  renameProjectByOwner(agentId: string, ref: string, slug: string): { from: string; to: string } {
+    const a = this.db.query("SELECT human FROM agents WHERE id = ?").get(agentId) as { human: string } | null;
+    if (!a) throw new AxosError(`no agent '${agentId}'`);
+    const id = this.projectId(ref, this.projectsOfHuman(a.human));
+    if (!id) throw new AxosError(`you are not in a project '${ref}'`);
+    const owner = this.projectOwner(id);
+    const from = this.projectName(id)!;
+    if (owner !== a.human) throw new AxosError(`${from} is ${owner}'s; only they rename it`);
+    const own = slug.startsWith(`${owner}/`) ? slug.slice(owner.length + 1) : slug;
+    if (own.includes("/")) throw new AxosError(`a project keeps its owner: ${owner}/<name>`);
+    this.renameProject(id, own, `agent:${agentId}`);
+    return { from, to: this.projectName(id)! };
   }
 
   setProjectBrief(project: string, brief: string): void {

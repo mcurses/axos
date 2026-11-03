@@ -981,6 +981,17 @@ describe("ids and names", () => {
     expect(hub.projectId("shop2")).toBe(SHOP);
   });
 
+  test("the owner renames a project from a machine of theirs; a member who is not the owner and an outsider cannot", () => {
+    // bob is a member of alice's game, not its owner; bob is not in shop at all and learns nothing about it.
+    expect(() => hub.renameProjectByOwner(SC, "alice/game", "g2")).toThrow("alice/game is alice's; only they rename it");
+    expect(() => hub.renameProjectByOwner(SC, "alice/shop", "s2")).toThrow("you are not in a project 'alice/shop'");
+    expect(() => hub.renameProjectByOwner(SC, SHOP, "s2")).toThrow("you are not in a project");
+    expect(() => hub.renameProjectByOwner(DEV1, SHOP, "bob/shop")).toThrow("a project keeps its owner: alice/<name>");
+    expect(hub.renameProjectByOwner(DEV1, SHOP, "alice/shop3")).toEqual({ from: "alice/shop", to: "alice/shop3" });
+    expect(hub.projectId("alice/shop")).toBe(SHOP);
+    expect(hub.events().filter((e) => e.kind === "project.renamed").at(-1)).toMatchObject({ actor: `agent:${DEV1}` });
+  });
+
   test("revoking is final: no new token, the label can be added again as a new agent with an empty mailbox", () => {
     const old = hub.send(A, note(["agent:alice/dev3"], "for the old dev3"));
     expect(() => hub.addAgent("alice", "dev3", [SHOP])).toThrow(/exists; revoke it first/);

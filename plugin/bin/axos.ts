@@ -38,6 +38,9 @@ interface FolderRule {
   remote?: string; // or: every checkout whose git remotes include this one (as remoteKey() writes it)
   project: string; // an id (prj_…) or a name
   name?: string; // the project's name when project is an id, for people reading the file
+  // The folder's identity when it was connected (device, inode, birth time): a folder moved or renamed with mv keeps
+  // it, so its rule follows it to the new path instead of leaving it unconnected (Max, 2026-11-03: atrium → Ensemble).
+  born?: string;
   // A local role system to mirror into AXOS: a directory of JSON claim files {"role", "session_id"} (for example a repo's roles/claims).
   roles_dir?: string;
   roles_ignore?: string[]; // roles not mirrored (e.g. adhoc, which many sessions hold at once)
@@ -124,10 +127,38 @@ function folderRule(c: Config, cwd: string): FolderRule | null {
     .filter((r) => cwd === r.path || cwd.startsWith(`${r.path}/`))
     .sort((a, b) => b.path.length - a.path.length);
   if (byPath[0]) return byPath[0];
+  const moved = movedRule(c, cwd);
+  if (moved) return moved;
   const byRemote = (c.folders ?? []).filter((r) => r.remote);
   if (!byRemote.length) return null;
   const keys = new Set(gitRemotes(cwd)?.remotes.map((r) => r.key));
   return byRemote.find((r) => keys.has(r.remote!)) ?? null;
+}
+
+export function folderBorn(dir: string): string | null {
+  try {
+    const st = statSync(dir, { bigint: true });
+    return st.isDirectory() ? `${st.dev}:${st.ino}:${st.birthtimeMs}` : null;
+  } catch { return null; }
+}
+
+// A path rule whose folder is gone, and a folder here (cwd or above) with the identity that folder had: the folder was
+// moved or renamed. The rule follows it: its path is rewritten in the config, once, and it applies from now on.
+function movedRule(c: Config, cwd: string): FolderRule | null {
+  const lost = (c.folders ?? []).filter((r) => r.path && r.born && !existsSync(resolve(expand(r.path))));
+  if (!lost.length) return null;
+  for (let d = resolve(cwd); ; d = dirname(d)) {
+    const born = folderBorn(d);
+    const r = born ? lost.find((x) => x.born === born) : undefined;
+    if (r) {
+      const from = r.path!;
+      r.path = d;
+      try { writeConfig(c); } catch { /* read-only: it still applies for this call */ }
+      try { console.error(`AXOS: ${from} moved to ${d}; it still belongs to ${r.name ?? r.project}.`); } catch { /* no stderr */ }
+      return { ...r, path: d };
+    }
+    if (dirname(d) === d) return null;
+  }
 }
 
 // ---------------------------------------------------------------- git, read from files (hooks run on every prompt)
@@ -1190,13 +1221,14 @@ async function use(args: string[]): Promise<void> {
     rule = { remote: pick.key, project: project.id, ...(project.name ? { name: project.name } : {}) };
   } else {
     if (remoteName) throw new Error("--remote needs a git checkout with that remote");
-    rule = { path: git?.root ?? cwd, project: project.id, ...(project.name ? { name: project.name } : {}) };
+    const path = git?.root ?? cwd;
+    rule = { path, project: project.id, ...(project.name ? { name: project.name } : {}), ...(folderBorn(path) ? { born: folderBorn(path)! } : {}) };
   }
   const same = (r: FolderRule) => rule.remote ? r.remote === rule.remote : !!r.path && resolve(expand(r.path)) === rule.path;
   const folders = c.folders ?? [];
   const old = folders.find(same);
   const before = old && old.project !== rule.project ? (old.name ?? old.project) : undefined;
-  if (old) Object.assign(old, { project: rule.project, name: rule.name }); // keeps roles_dir and the like
+  if (old) Object.assign(old, { project: rule.project, name: rule.name }, rule.born ? { born: rule.born } : {}); // keeps roles_dir and the like
   else folders.push(rule);
   writeConfig({ ...c, folders });
 
@@ -1209,6 +1241,28 @@ async function use(args: string[]): Promise<void> {
   const now = projectOf({ ...c, folders }, cwd).project;
   if (now !== project.id) console.log(`Note: here ${now} still wins (a folder rule or a trusted .axos.json); axos whoami shows which.`);
   else console.log("Nothing was written into the repo. New sessions here connect; running ones at their next prompt.");
+}
+
+// `axos rename <name>` in a connected folder: its project gets the new name (only its owner may). The id, mail, roles,
+// leases and links stay; the old name keeps resolving; this machine's rule shows the new name.
+async function rename(args: string[]): Promise<void> {
+  if (args.length !== 1 || args[0]!.startsWith("--")) throw new Error("usage: axos rename <new name>   (in a folder connected to the project; axos use says which)");
+  const c = config();
+  const t = c && token(c);
+  if (!c || !t) throw new Error("AXOS is not set up on this machine: axos join <invite link> first");
+  const { project, rule } = projectOf(c, process.cwd());
+  if (!project) throw new Error("This folder belongs to no project, so there is nothing to rename. Connect it first: axos use <owner>/<name>.");
+  const res = await fetch(`${c.url.replace(/\/$/, "")}/api/projects`, {
+    method: "POST", headers: { Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ rename: project, name: args[0] }), signal: AbortSignal.timeout(10_000),
+  });
+  const r = (await res.json().catch(() => null)) as { from?: string; to?: string; error?: string } | null;
+  if (!r || r.error || !r.to) throw new Error(r?.error ?? `the hub answered ${res.status}`);
+  if (rule && (rule.project === project || rule.name === project)) {
+    for (const f of c.folders ?? []) if (f.project === rule.project) f.name = r.to;
+    writeConfig(c);
+  }
+  console.log(`Renamed ${r.from} to ${r.to}. Its mail, roles and links stay; the old name keeps working for anyone who still uses it.`);
 }
 
 function unlink(): void {
@@ -1299,13 +1353,21 @@ else if (cmd === "send" || cmd === "inbox") {
     process.exit(1);
   });
 }
+else if (cmd === "rename") {
+  await rename(process.argv.slice(3)).catch((e: Error) => {
+    console.error(e.message);
+    process.exit(1);
+  });
+}
 else if (cmd === "trust") {
   await trust().catch((e: Error) => {
     console.error(e.message);
     process.exit(1);
   });
 } else {
-  console.error("usage: axos join <invite link> | use [<project>] | use --none | trust | whoami | landed <remote>/<branch> | send --name <script> … | inbox --name <script> … | codex [<codex args>] | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
-  process.exit(2);
+  const unknown = !!cmd && cmd !== "help" && cmd !== "--help";
+  if (unknown) console.error(`axos has no command '${cmd}'.`);
+  console.error("usage: axos join <invite link> | use [<project>] | use --none | rename <new name> | trust | whoami | landed <remote>/<branch> | send --name <script> … | inbox --name <script> … | codex [<codex args>] | codex-bell --thread <id>   (and for Claude Code: axos.ts mcp | hook <start|prompt|tool|stop|end>)");
+  process.exit(unknown ? 2 : 0);
 }
 }

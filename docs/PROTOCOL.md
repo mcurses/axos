@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.16`, protocol `1`.
+Current numbers: hub release `0.24.18`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -572,7 +572,8 @@ them into the project; the asker is told. A project of two people (a pair) is ne
 the page: `POST /ui/api/project/new {"name","brief"}` (the folder is linked afterwards, on the machine),
 `project/leave {"project"}` (not the owner), `project/remove {"project","human"}` (the owner),
 `project/unlink {"project","other"}` (an owner of either side). From a machine, `POST /api/projects {"name","brief","repo"}`
-with the agent's token makes a project for its human (`axos use --new`).
+with the agent's token makes a project for its human (`axos use --new`); `POST /api/projects {"rename","name"}` renames
+the project `rename` names to `name` when the agent's human owns it (`axos rename`), answering `{"from","to"}`.
 
 **Check the other side by hand.** A person's page is read with their cookie: redeem a login link with a same-origin
 `POST` (a `GET` only shows the confirm page), keep the cookie, then read the state document:
@@ -581,6 +582,10 @@ with the agent's token makes a project for its human (`axos use --new`).
 curl -si -X POST -H "Origin: https://axos.example.com" https://axos.example.com/ui/login/axoslogin_…   # Set-Cookie: axos_ui=…
 curl -s -b "axos_ui=…" https://axos.example.com/ui/api/state | jq '.asks, .inbox'
 ```
+
+Reading the state marks every listed message as shown to the person and every open question as seen: the senders'
+receipts say so. A program that reads for the person without putting it in front of them (a board that mirrors the
+inbox) reads `GET /ui/api/state?peek=1`: the same document, nothing marked.
 
 What the person does on the page goes through the same routes, with the cookie and, on https hubs, the same-origin
 `Origin` header: a reply or a new message `POST /ui/api/send {"project","to","summary","body"?,"re"?,"type"?,

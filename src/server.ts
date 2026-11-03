@@ -537,8 +537,10 @@ export function makeFetch(hub: Hub) {
       // `axos use --new`: a project for this agent's human, made from the machine, then linked there.
       if (path === "/api/projects") {
         if (req.method !== "POST") return new Response("method not allowed\n", { status: 405 });
-        const b = (await req.json().catch(() => ({}))) as { name?: unknown; brief?: unknown; repo?: unknown };
+        const b = (await req.json().catch(() => ({}))) as { name?: unknown; brief?: unknown; repo?: unknown; rename?: unknown };
         try {
+          // `axos rename <name>`: {"rename": "<project>", "name": "<new name>"}; only the project's owner.
+          if (typeof b.rename === "string") return json(hub.renameProjectByOwner(agent.id, b.rename, String(b.name ?? "").trim().toLowerCase()));
           const id = hub.createProject(agent.id, String(b.name ?? "").trim().toLowerCase(), typeof b.brief === "string" ? b.brief : "", typeof b.repo === "string" ? b.repo : "");
           return json({ id, name: hub.projectName(id) });
         } catch (e) {

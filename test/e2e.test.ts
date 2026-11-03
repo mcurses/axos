@@ -6,7 +6,7 @@ import { Hub } from "../src/hub.ts";
 import type { WebPushPayload } from "../src/webpush.ts";
 import { makeFetch } from "../src/server.ts";
 import { PLUGIN, VERSION } from "../src/version.ts";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -243,6 +243,15 @@ test("the human page: key login, the state document, answering an ask; the app s
   const ask = hub.askHuman(ids.dev1!, { project: SHOP, human: "alice", question: "Merge the hub branch?", options: ["merge", "wait"] });
   const forPage = hub.send({ kind: "agent", id: ids.dev1!, human: "alice" }, { project: SHOP, to: ["human:alice"], type: "note", summary: "the hub branch is green" }).id;
   expect(hub.receipts(forPage)[0]!.shown_at).toBeNull();
+  // A program reading for the person (a board mirroring the inbox) peeks: the same document, nothing marked shown.
+  const peeked = await (await fetch(`${base}/ui/api/state?peek=1`, { headers: { cookie } })).json() as { inbox: { id: number }[]; asks: { id: number }[] };
+  expect(peeked.inbox.map((m) => m.id)).toContain(forPage);
+  expect(peeked.asks.map((a) => a.id)).toContain(ask.ask_id);
+  expect(hub.receipts(forPage)[0]!.shown_at).toBeNull();
+  // Such a program logs in with a link of the person's and is listed under its own name in their logins.
+  const prog = await fetch(`${base}/ui/login/${hub.createLoginLink("alice").token}`, { method: "POST", redirect: "manual", headers: { "user-agent": "vinea axos-bridge" } });
+  expect(prog.status).toBe(303);
+  expect(hub.logins("alice").map((l) => l.label)).toContain("program: vinea axos-bridge");
   const raw = await (await fetch(`${base}/ui/api/state`, { headers: { cookie } })).text();
   expect(raw).not.toMatch(/prj_|agt_/);
   // Listed on the page counts as shown: the sender's receipt says so.
@@ -1227,7 +1236,7 @@ test("axos use connects every checkout of a remote on this machine, writes nothi
     const again = await axos(bare, "use", "alice/plain-two");
     expect(again.code).toBe(0);
     expect(again.out).not.toContain("Moved");
-    expect((config().folders ?? []).filter((f: { path?: string }) => f.path === bare)).toEqual([{ path: bare, project: PLAIN2, name: "alice/plain-two" }]);
+    expect((config().folders ?? []).filter((f: { path?: string }) => f.path === bare)).toEqual([{ path: bare, project: PLAIN2, name: "alice/plain-two", born: expect.any(String) }]);
     // `axos link` and `axos unlink` do nothing and say which of the two meanings is which.
     for (const cmd of ["link", "unlink"]) {
       const said = await axos(bare, cmd, "alice/shop");
@@ -1236,7 +1245,34 @@ test("axos use connects every checkout of a remote on this machine, writes nothi
       expect(said.err).toContain("axos use <owner>/<name>");
       expect(said.err).toContain("Link with a project of");
     }
-    expect((config().folders ?? []).filter((f: { path?: string }) => f.path === bare)).toEqual([{ path: bare, project: PLAIN2, name: "alice/plain-two" }]);
+    expect((config().folders ?? []).filter((f: { path?: string }) => f.path === bare)).toEqual([{ path: bare, project: PLAIN2, name: "alice/plain-two", born: expect.any(String) }]);
+
+    // A connected folder moved or renamed with mv keeps its project; the rule follows it (Max, 2026-11-03: atrium →
+    // Ensemble left the folder unconnected).
+    const renamed = join(dir, "Renamed");
+    renameSync(bare, renamed);
+    mkdirSync(join(renamed, "deep"));
+    const real = realpathSync(renamed);
+    const after = await axos(join(renamed, "deep"), "use");
+    expect(after.out).toContain("This folder is connected to alice/plain-two");
+    expect(after.err).toContain(`${bare} moved to ${real}; it still belongs to alice/plain-two.`);
+    expect((config().folders ?? []).filter((f: { project?: string }) => f.project === PLAIN2)).toEqual([{ path: real, project: PLAIN2, name: "alice/plain-two", born: expect.any(String) }]);
+    // A new, different folder at the old path is not the moved one.
+    mkdirSync(bare);
+    expect((await axos(bare, "use")).out).not.toContain("connected to alice/plain-two");
+    // `axos rename <name>`: the folder's project, by its owner; the old name keeps resolving.
+    const rn = await axos(renamed, "rename", "plain-renamed");
+    expect(rn.code).toBe(0);
+    expect(rn.out).toContain("Renamed alice/plain-two to alice/plain-renamed.");
+    expect(hub.projectName(PLAIN2)).toBe("alice/plain-renamed");
+    expect(hub.projectId("alice/plain-two")).toBe(PLAIN2);
+    expect((config().folders ?? []).find((f: { project?: string }) => f.project === PLAIN2)).toMatchObject({ name: "alice/plain-renamed" });
+    expect((await axos(bare, "rename", "x")).err).toContain("This folder belongs to no project");
+    hub.renameProject(PLAIN2, "plain-two");
+    // An unknown command says so before the usage line.
+    const unknown = await axos(renamed, "frobnicate");
+    expect(unknown.code).toBe(2);
+    expect(unknown.err).toContain("axos has no command 'frobnicate'.");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

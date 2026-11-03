@@ -23,6 +23,8 @@ const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inl
 
 // "iPhone, Safari" from a user agent, for the person's own list of logins; never shown to anyone else.
 function deviceLabel(ua: string): string {
+  // A program that names itself (vinea's axos-bridge logs in as one of the person's devices) is listed by that name.
+  if (!ua.startsWith("Mozilla/") && /^[A-Za-z][\w .\/-]{0,39}$/.test(ua)) return `program: ${ua}`;
   const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Mac OS/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "device";
   const app = /Firefox/.test(ua) ? "Firefox" : /Edg\//.test(ua) ? "Edge" : /Chrome/.test(ua) ? "Chrome" : /Safari/.test(ua) ? "Safari" : "browser";
   return `${os}, ${app}`;
@@ -135,7 +137,9 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
 
   if (url.pathname.startsWith("/ui/api/")) {
     if (!human) return json({ error: "not logged in: open the page link with your key once (/ui?key=…, from axos human key)" }, 401);
-    if (req.method === "GET" && url.pathname === "/ui/api/state") return json(hub.display(JSON.stringify(state(hub, human)), { human }));
+    // peek=1: a program reading for the person (a board that mirrors the inbox) marks nothing as shown or seen; only a
+    // screen the person looks at does.
+    if (req.method === "GET" && url.pathname === "/ui/api/state") return json(hub.display(JSON.stringify(state(hub, human, url.searchParams.get("peek") !== "1")), { human }));
     if (req.method !== "POST") return json({ error: "not found" }, 404);
     // SameSite=Strict already keeps other sites out; JSON only and the Origin check are further locks.
     if (!sameOrigin(req)) return json({ error: "bad origin" }, 403);
@@ -266,7 +270,7 @@ function asset(path: string): Response {
 }
 
 // Everything the page shows, as one document. Ids stay ids here; the caller turns them into names the human may see.
-function state(hub: Hub, human: string) {
+function state(hub: Hub, human: string, mark = true) {
   // A pair whose other person was removed is kept for its history but is nothing to show.
   const mine = hub.projectsOfHuman(human).filter((p) => !hub.isPair(p) || hub.projectHumans(p).length > 1);
   const asks = hub.asks({ human, open: true }).map((a) => ({
@@ -274,10 +278,10 @@ function state(hub: Hub, human: string) {
     options: JSON.parse(a.options_json) as string[], default_answer: a.default_answer, deadline: a.deadline,
     created_at: hub.getMessage(a.message_id)?.created_at ?? null, images: hub.askImages(a.id).map((i) => ({ id: i.id, name: i.name })),
   }));
-  hub.asksSeen(human, asks.map((a) => a.id));
+  if (mark) hub.asksSeen(human, asks.map((a) => a.id));
   // Listed on the page is shown: the sender's receipt says so (asks have their own seen mark above).
   const items = hub.inbox(`human:${human}`, { limit: 50 });
-  hub.markShown([`human:${human}`], items.map((m) => m.id));
+  if (mark) hub.markShown([`human:${human}`], items.map((m) => m.id));
   const inbox = items.filter((m) => m.type !== "ask").map((m) => ({
     id: m.id, from: m.sender.startsWith("session:") ? hub.label(m.sender) : m.sender, sender_human: m.sender_human, project: m.project,
     type: m.type, priority: m.priority, created_at: m.created_at, summary: m.summary, body: m.body, re: m.re, quotes_human: m.quotes_human,
