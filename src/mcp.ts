@@ -179,6 +179,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       as_of: z.string().optional().describe("The state this is based on, e.g. a commit sha, so a reader can tell if it is stale"),
       priority: z.enum(PRIORITIES).optional().describe("low: wakes nobody, read at the recipient's next step (the default for a note or status to a whole project); high: a message to a human is pushed to their phone, use it rarely"),
       dedupe_key: z.string().optional().describe("Sending twice with the same key delivers once"),
+      deliver_at: z.string().optional().describe("Send later: an ISO 8601 time with its offset (2026-11-04T18:00+01:00), at most 30 days ahead. The hub holds it and sends it then to the addresses as they resolve then (a role to whoever holds it then), so it reaches its reader with this machine closed. cancel_send cancels it"),
       quotes_human: z.boolean().optional().describe("The body is what your human typed to this session, verbatim, as whole lines of one prompt (the summary, if given, one of those lines); the plugin compares it with their recent prompts. Readers see quotes-human=<name> and weigh it as your word; the message stays yours"),
       queue: z.union([z.boolean(), z.string()]).optional().describe("No effect (kept for older sessions): mail to a role always waits for its holder"),
       as: asArg,
@@ -196,8 +197,15 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     if (person && !viaPerson) throw new AxosError(`you share no project with ${person}, so there is no way to reach them from here`);
     const sentIn = across ? conn.project! : viaPerson ?? project(a.project);
     if (viaPerson && conn.session) hub.requireMember(agent.id, viaPerson);
-    const r = hub.send({ ...actor, as }, { ...a, type: a.type ?? "note", summary, project: sentIn, to, to_person: !!viaPerson });
+    let deliverAt: number | undefined;
+    if (a.deliver_at !== undefined) {
+      if (!/(Z|[+-]\d{2}:?\d{2})$/.test(a.deliver_at.trim())) throw new AxosError("deliver_at needs its offset (Z or +01:00), so the time is unambiguous");
+      deliverAt = Date.parse(a.deliver_at);
+      if (Number.isNaN(deliverAt)) throw new AxosError("deliver_at is not a time (ISO 8601, e.g. 2026-11-04T18:00+01:00)");
+    }
+    const r = hub.send({ ...actor, as }, { ...a, deliver_at: deliverAt, type: a.type ?? "note", summary, project: sentIn, to, to_person: !!viaPerson });
     if (r.duplicate) return `Already sent as message ${r.id}; not sent again.`;
+    if (deliverAt !== undefined && !r.delivered_to.length && !r.waiting_for_role.length && r.unattended[0]?.startsWith("Scheduled")) return `Held as message ${r.id}. ${r.unattended[0]}`;
     const parts = [`Sent message ${r.id} (${body ? `summary and a ${body.length}-character body` : "summary only, no body"}).`];
     if (viaPerson) parts.push(`Sent through the project you share with ${person}; their reply reaches this session's own mailbox (check it with inbox).`);
     if (r.delivered_to.length) parts.push(`Delivered to ${r.delivered_to.map((d) => peer(d, sentIn)).join(", ")}.`);
@@ -219,6 +227,15 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     }
     parts.push(...r.unattended);
     return parts.join(" ");
+  }));
+
+  server.registerTool("cancel_send", {
+    description: "Your messages held for later (send with deliver_at): with no id, lists them; with an id, cancels that one before it goes out.",
+    inputSchema: strict({ id: z.number().int().optional() }),
+  }, tool(({ id }) => {
+    if (id !== undefined) { hub.cancelScheduled(actor, id); return `Cancelled scheduled message ${id}; it will not be sent.`; }
+    const list = hub.scheduledBy(actor);
+    return list.length ? list.map((m) => `${m.id}: ${when(m.deliver_at)} to ${m.to.join(", ")} in ${m.project}: ${m.summary}`).join("\n") : "No messages held for later.";
   }));
 
   server.registerTool("inbox", {

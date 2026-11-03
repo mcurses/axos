@@ -922,14 +922,14 @@ function scriptHub(name: string | undefined, projectArg: string | undefined) {
 async function sendCmd(args: string[]): Promise<void> {
   const { opt } = scriptOpts(args);
   const name = opt("--name"), project = opt("--project"), as = opt("--as"), to = opt("--to"), summary = opt("--summary");
-  const type = opt("--type"), priority = opt("--priority"), re = opt("--re"), dedupe = opt("--dedupe");
+  const type = opt("--type"), priority = opt("--priority"), re = opt("--re"), dedupe = opt("--dedupe"), deliverAt = opt("--deliver-at");
   let body = opt("--body");
-  if (args.length) throw new Error(`unknown arguments: ${args.join(" ")}\nusage: axos send --name <script> (--to <address>[,…] | --re <id>) --summary <s> [--body <text>|-] [--type <t>] [--priority low|normal|high] [--as <role>] [--project <p>] [--dedupe <key>]`);
+  if (args.length) throw new Error(`unknown arguments: ${args.join(" ")}\nusage: axos send --name <script> (--to <address>[,…] | --re <id>) --summary <s> [--body <text>|-] [--type <t>] [--priority low|normal|high] [--as <role>] [--project <p>] [--dedupe <key>] [--deliver-at <ISO time with offset>]`);
   if (body === "-") body = await new Response(Bun.stdin.stream()).text();
   const hub = scriptHub(name, project);
   console.log(await hub.call("send", {
     ...(to ? { to: to.split(",").map((x) => x.trim()).filter(Boolean) } : {}), ...(summary ? { summary } : {}), ...(body ? { body } : {}),
-    ...(type ? { type } : {}), ...(priority ? { priority } : {}), ...(re ? { re: Number(re) } : {}), ...(as ? { as } : {}), ...(dedupe ? { dedupe_key: dedupe } : {}),
+    ...(type ? { type } : {}), ...(priority ? { priority } : {}), ...(re ? { re: Number(re) } : {}), ...(as ? { as } : {}), ...(dedupe ? { dedupe_key: dedupe } : {}), ...(deliverAt ? { deliver_at: deliverAt } : {}),
   }));
 }
 

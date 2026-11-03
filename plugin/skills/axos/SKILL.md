@@ -46,6 +46,8 @@ README), as itself or with `--as <role>` for a role you hold.
   you speak as. `claim_role main` (an online holder: as any takeover, below) moves it.
 - An open role of your person (told at session start, e.g. a feedback address): reachable as `role:<project>/<role>`
   from any of your projects, without a link.
+- A reminder for later: `send` with `deliver_at` (ISO time with offset, up to 30 days): the hub sends it then, also
+  with this machine closed, to whoever holds the role then. `cancel_send` lists or cancels yours.
 - `session:<name>`: one particular session.
 - `project`: every session of the project seen in the last 7 days (away ones too) and its members' agents without
   one. A note or status reaches each of them. An ask, request, review or handoff to `project` reaches each person's

@@ -911,6 +911,36 @@ describe("what counts as the human's word (2026-11-03 trust fix)", () => {
   });
 });
 
+describe("a message for later (deliver_at)", () => {
+  test("held until its time, then sent to the address as it resolves then; listed and cancelled by its sender only", () => {
+    hub.defineRole(SHOP, "planner");
+    const held = hub.send(A, { ...note(["role:planner"], "pick the plan up again"), deliver_at: t + 3_600_000 });
+    expect(held.delivered_to).toEqual([]);
+    expect(held.unattended[0]).toContain("Scheduled for");
+    expect(hub.inbox(`role:${SHOP}/planner`)).toEqual([]);
+    expect(hub.scheduledBy(A).map((m) => m.id)).toEqual([held.id]);
+    expect(hub.scheduledBy(S)).toEqual([]);
+    expect(() => hub.cancelScheduled(S, held.id)).toThrow("no scheduled message");
+    // A second one, cancelled.
+    const other = hub.send(A, { ...note(["role:planner"], "never mind"), deliver_at: t + 3_600_000 });
+    hub.cancelScheduled(A, other.id);
+    // Someone takes the role meanwhile: at the time, the message goes to the role (and so to its holder then).
+    const s = hub.openSession(DEV3, { client_session: "5c5c5c5c-0000-0000-0000-000000000000", project: SHOP, name: "planner-1" });
+    hub.claimRole(DEV3, SHOP, "planner", undefined, s);
+    t += 61 * 60_000;
+    hub.sweep();
+    const got = hub.inbox(hub.mailboxes({ id: DEV3, session: s }));
+    expect(got.map((m) => m.summary)).toEqual(["pick the plan up again"]);
+    expect(got[0]!.scheduled_at).not.toBeNull();
+    expect(renderMessage(got[0]!)).toMatch(/scheduled="/);
+    expect(hub.scheduledBy(A)).toEqual([]);
+    // A time already past is sent now; more than 30 days ahead is refused; an unreachable address is refused now.
+    expect(hub.send(A, { ...note(["role:planner"], "now"), deliver_at: t - 1 }).delivered_to.length).toBe(1);
+    expect(() => hub.send(A, { ...note(["role:planner"], "far"), deliver_at: t + 31 * 86_400_000 })).toThrow("at most 30 days");
+    expect(() => hub.send(A, { ...note(["role:nobody-here"], "x"), deliver_at: t + 60_000 })).toThrow("no role");
+  });
+});
+
 describe("vacant seats after a restart", () => {
   test("the next session here is told its predecessor's vacant roles; the main session hears once of mail to a vacant role", () => {
     hub.defineRole(SHOP, "keeper");

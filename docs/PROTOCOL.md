@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.32`, protocol `1`.
+Current numbers: hub release `0.24.33`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -369,6 +369,7 @@ the body, if any
 | `from` | always: `session:<key>`, `agent:<id>`, `role:<project>/<role>`, `human:<name>` or `axos` (names instead of ids as the viewer may see them) |
 | `sender-human` | when known and the sender is not a human |
 | `sender-name`, `sender-roles` | when the sender is a session with a name, or holds roles now |
+| `scheduled` | the message was sent at its `deliver_at`; the value is when it was scheduled |
 | `takers` | `one` when the project address gave (its main seat being away or vacant) an `ask`, `request`, `review` or `handoff` to several receivers: the first to reply to it (`re`) or ack it `done` or `forwarded` takes it; the others' copies are acked by the hub with the note "taken by <name>", and a receiver that had been shown it gets a low-priority line from `axos` saying who took it. A later reply is still sent; its send result says who was first |
 | `taken-by` | who took a `takers="one"` message, once someone has |
 | `sender-kind` | `script` when a command line sent it (`axos send --name`): a reply waits in that script's inbox, read only by `axos inbox --name`; the reply's send result says so |
@@ -587,7 +588,14 @@ them into the project; the asker is told. A project of two people (a pair) is ne
 the page: `POST /ui/api/project/new {"name","brief"}` (the folder is linked afterwards, on the machine),
 `project/leave {"project"}` (not the owner), `project/remove {"project","human"}` (the owner),
 `project/unlink {"project","other"}` (an owner of either side). From a machine, `POST /api/projects {"name","brief","repo"}`
-with the agent's token makes a project for its human (`axos use --new`); **Vacant seats.** A session starting in a project is told, as a hint and never a claim, which roles its predecessor
+with the agent's token makes a project for its human (`axos use --new`); **Messages for later.** `send` takes `deliver_at` (ISO 8601 with its offset, at most 30 days ahead; the script CLI:
+`--deliver-at`). The addresses are checked at once; the hub holds the message and sends it at its time (within the
+15-second sweep) through the normal send, to the addresses as they resolve then: a role to whoever holds it then, a
+vacant one waiting and announced to main as usual. The sent message carries `scheduled="<when it was scheduled>"`.
+A time already past is sent at once. `cancel_send()` lists the sender's held messages, `cancel_send(id)` cancels one;
+only the sender sees or cancels them. A held message cannot quote the human (`quotes_human`) and needs `to`.
+
+**Vacant seats.** A session starting in a project is told, as a hint and never a claim, which roles its predecessor
 (the same machine's last session in the project, ended within 30 minutes) held that are still vacant; a session
 holding its main seat is told which vacant roles have mail waiting. When a message goes to a vacant role, each person's
 main session that is online in that project gets it as a low-priority notice of its own from `axos`: the role, the

@@ -61,7 +61,7 @@ test("no token, no entry", async () => {
 test("tools are listed and the server explains itself", async () => {
   const c = await connect(tokens.dev1!);
   const names = (await c.listTools()).tools.map((t) => t.name).sort();
-  expect(names).toEqual(["ack", "ask_human", "asks", "claim_role", "create_project", "define_role", "inbox", "join", "lease", "leases", "presence", "projects",
+  expect(names).toEqual(["ack", "ask_human", "asks", "cancel_send", "claim_role", "create_project", "define_role", "inbox", "join", "lease", "leases", "presence", "projects",
     "release_lease", "release_role", "send", "set_brief", "subscribe", "subscriptions", "thread", "unsubscribe", "wait", "withdraw_ask"]);
   expect(c.getInstructions()).toContain("axos skill");
   await c.close();

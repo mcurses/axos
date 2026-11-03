@@ -81,6 +81,7 @@ export interface MessageRow {
   sent_by: string | null;
   quotes_human: string | null; // the human whose typed words the body holds (checked by the sender's plugin); the message stays the sender's
   takers?: string | null; // 'one': fanned out by the project address; the first to answer or ack it done takes it
+  scheduled_at?: number | null; // sent from a schedule: when it was scheduled
   taken_by?: string | null;
   taken_at?: number | null;
 }
@@ -2159,8 +2160,11 @@ export class Hub {
     no_push?: boolean;
     quotes_human?: boolean; to_person?: boolean; // the body is what the sender's human typed, as the plugin checked (actor.human_words)
     queue?: boolean; // accepted and ignored since 0.18.0: mail to a role always waits
+    deliver_at?: number; // a scheduled send: held until then, then sent as a new message to the addresses as they resolve then
+    scheduled_at?: number; // internal: the send that comes from a schedule
   }): { id: number; duplicate: boolean; delivered_to: string[]; waiting_for_role: string[]; not_sent: { to: string; reason: string }[]; unattended: string[] } {
     this.requireActorInProject(actor, input.project);
+    if (input.deliver_at !== undefined) return this.schedule(actor, input);
     if (input.to_person && !(input.to?.length === 1 && input.to[0]!.startsWith("human:") && !(actor.kind === "agent" && actor.as))) {
       throw new AxosError("from a folder outside every project only one person can be addressed (human:<name>)");
     }
@@ -2309,10 +2313,10 @@ export class Hub {
     const priority = input.priority ?? ((input.type === "note" || input.type === "status") && (input.to ?? []).some((a) => a === "project" || a.startsWith("project:")) ? "low" : "normal");
     const id = this.db.transaction(() => {
       const res = this.db.query(
-        `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at, sent_by, quotes_human, takers)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at, sent_by, quotes_human, takers, scheduled_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(input.project, sender, human, JSON.stringify(input.to?.filter((a) => !notSent.some((x) => x.to === a)) ?? [...recipients.keys()]), input.type, summary, body, thread, re ?? null,
-        input.as_of ?? null, priority, input.dedupe_key ?? null, this.now(), sentBy, quotes, oneTaker ? "one" : null);
+        input.as_of ?? null, priority, input.dedupe_key ?? null, this.now(), sentBy, quotes, oneTaker ? "one" : null, input.scheduled_at ?? null);
       const mid = Number(res.lastInsertRowid);
       for (const [recipient, via] of recipients) {
         this.db.query("INSERT INTO deliveries (message_id, recipient, via) VALUES (?, ?, ?)").run(mid, recipient, via);
@@ -2397,6 +2401,70 @@ export class Hub {
       not_sent: notSent,
       unattended: [...unattended, ...stale, ...scripts, ...many, ...takenNote, ...toMain],
     };
+  }
+
+  // A send for later (Max via a desk session, 2026-11-03: a reminder that wakes whoever holds the seat tomorrow, with the
+  // Mac closed): the addresses are checked now, the message is held as a row without deliveries, and the sweep sends it
+  // at its time through send() itself, so it reaches the addresses as they resolve then, with every rule of a send.
+  private schedule(actor: Actor, input: Parameters<Hub["send"]>[1]): ReturnType<Hub["send"]> {
+    const t = this.now();
+    const at = input.deliver_at!;
+    if (!Number.isFinite(at)) throw new AxosError("deliver_at must be a time (ISO 8601 with its offset)");
+    if (at > t + 30 * 86_400_000) throw new AxosError("deliver_at is at most 30 days ahead");
+    if (at <= t + 10_000) return this.send(actor, { ...input, deliver_at: undefined });
+    if (input.quotes_human) throw new AxosError("a scheduled message cannot quote your human (the check is about the words they typed now)");
+    if (!input.to?.length) throw new AxosError("a scheduled message names its addresses (to); a reply with re alone is sent now");
+    const sender = actor.kind === "agent" ? addr(this.seat(actor.id, input.project, actor.as, actor.session, input.to_person)) : `human:${actor.name}`;
+    const human = actor.kind === "agent" ? this.humanOf(actor.id) : actor.name;
+    for (const a of input.to) this.resolve(input.project, a, sender, human ?? undefined); // an address that cannot be reached now is refused now
+    const summary = oneLine(input.summary ?? "", 300);
+    if (!summary) throw new AxosError("summary is required");
+    const r = this.db.query(`INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, re, priority, created_at, deliver_at, scheduled_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(input.project, sender, human, JSON.stringify(input.to), input.type, summary, input.body ?? "", input.re ?? null,
+      input.priority ?? "normal", t, at, JSON.stringify({ actor, input: { ...input, deliver_at: undefined } }));
+    const id = Number(r.lastInsertRowid);
+    this.event(addr(actor.kind === "agent" ? actor.session ?? actor.id : actor.name), "message.scheduled", input.project, { id, at });
+    return { id, duplicate: false, delivered_to: [], waiting_for_role: [], not_sent: [],
+      unattended: [`Scheduled for ${when(at)}: held until then, then sent to ${input.to.join(", ")} as they resolve then (a role to its holder then). cancel_send(${id}) cancels it; cancel_send() lists yours.`] };
+  }
+
+  // The sender's held sends: listed, or one cancelled.
+  scheduledBy(actor: Actor, project?: string): { id: number; project: string; to: string[]; summary: string; deliver_at: number }[] {
+    const mine = actor.kind === "agent" ? [actor.id, ...(actor.session ? [actor.session] : [])] : [];
+    return (this.db.query("SELECT id, project, to_json, summary, deliver_at, scheduled_json FROM messages WHERE deliver_at IS NOT NULL AND scheduled_json IS NOT NULL ORDER BY deliver_at")
+      .all() as { id: number; project: string; to_json: string; summary: string; deliver_at: number; scheduled_json: string }[])
+      .filter((m) => {
+        const a = (JSON.parse(m.scheduled_json) as { actor: Actor }).actor;
+        return (actor.kind === "agent" ? a.kind === "agent" && mine.includes(a.id) || (a.kind === "agent" && !!a.session && mine.includes(a.session)) : a.kind === "human" && a.name === actor.name) &&
+          (!project || m.project === project);
+      })
+      .map((m) => ({ id: m.id, project: m.project, to: JSON.parse(m.to_json) as string[], summary: m.summary, deliver_at: m.deliver_at }));
+  }
+
+  cancelScheduled(actor: Actor, id: number): void {
+    if (!this.scheduledBy(actor).some((m) => m.id === id)) throw new AxosError(`no scheduled message ${id} of yours`);
+    this.db.query("DELETE FROM messages WHERE id = ? AND deliver_at IS NOT NULL AND scheduled_json IS NOT NULL").run(id);
+    this.event(actor.kind === "agent" ? `agent:${actor.id}` : `human:${actor.name}`, "message.unscheduled", null, { id });
+  }
+
+  // Due held sends go out (from the sweep). The sender's session may have ended since: then it is sent as its agent.
+  private sendDue(t: number): void {
+    for (const m of this.db.query("SELECT id, scheduled_json, created_at FROM messages WHERE deliver_at IS NOT NULL AND deliver_at <= ? AND scheduled_json IS NOT NULL ORDER BY deliver_at LIMIT 100").all(t) as
+      { id: number; scheduled_json: string; created_at: number }[]) {
+      this.db.query("DELETE FROM messages WHERE id = ?").run(m.id);
+      const { actor, input } = JSON.parse(m.scheduled_json) as { actor: Actor; input: Parameters<Hub["send"]>[1] };
+      const go = (a: Actor) => this.send(a, { ...input, deliver_at: undefined, scheduled_at: m.created_at });
+      try {
+        const r = go(actor);
+        this.event(SYSTEM_SENDER, "message.sent_scheduled", input.project, { scheduled: m.id, id: r.id });
+      } catch (e) {
+        if (!(e instanceof AxosError)) throw e;
+        try {
+          if (actor.kind === "agent" && actor.session) { const r = go({ ...actor, session: undefined }); this.event(SYSTEM_SENDER, "message.sent_scheduled", input.project, { scheduled: m.id, id: r.id }); continue; }
+        } catch { /* below */ }
+        this.event(SYSTEM_SENDER, "message.schedule_failed", input.project, { scheduled: m.id, reason: e.message });
+      }
+    }
   }
 
   // One of these mailboxes takes a one-taker message it received: the others' copies leave their inboxes, and a receiver
@@ -3168,6 +3236,7 @@ export class Hub {
   sweep(): void {
     if (!this.sweeps) return;
     const t = this.now();
+    this.sendDue(t);
     for (const x of this.db.query("SELECT key FROM sessions WHERE ended_at IS NULL AND kind = 'session' AND last_seen < ?").all(t - SESSION_LIVE_MS) as { key: string }[]) {
       this.endSession(x.key, "silent for 7 days");
     }

@@ -122,6 +122,9 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at    INTEGER NOT NULL,
   sent_by       TEXT,                          -- who wrote it when that is not the sender: a script speaking for a role
   quotes_human  TEXT,                          -- the human whose typed words the body holds, as the sender's plugin checked; the message stays the sender's
+  deliver_at    INTEGER,                       -- a scheduled send: held (no deliveries) until this time, then sent as a new message
+  scheduled_json TEXT,                         -- the held send's actor and input
+  scheduled_at  INTEGER,                       -- on a message sent from a schedule: when it was scheduled
   takers        TEXT,                          -- 'one': an ask, request, review or handoff that the project address fanned out; the first to answer or ack it done takes it
   taken_by      TEXT,                          -- the mailbox that took it
   taken_at      INTEGER,
@@ -347,6 +350,9 @@ function migrate(db: Database): void {
   column("asks", "action_json", "TEXT");
   column("roles", "open", "INTEGER DEFAULT 0");
   column("roles", "quiet", "INTEGER DEFAULT 0");
+  column("messages", "deliver_at", "INTEGER");
+  column("messages", "scheduled_json", "TEXT");
+  column("messages", "scheduled_at", "INTEGER");
   // 0.24.26: the one main seat per project of 0.24.24 becomes one per person (main.<human>); a held one goes to its
   // holder's person, its mail with it; a vacant one goes (the next session of each person takes theirs).
   const hasRoles = !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roles'").get();

@@ -50,6 +50,7 @@ export function renderMessage(m: (MessageRow | InboxItem) & { receipts?: string 
     m.thread !== null ? `thread="${m.thread}"` : "",
     m.as_of ? `as-of="${attr(m.as_of)}"` : "",
     `sent="${when(m.created_at)}"`,
+    m.scheduled_at ? `scheduled="${when(m.scheduled_at)}"` : "",
     m.takers === "one" ? `takers="one"` : "",
     m.taken_by ? `taken-by="${attr(nameOf?.(m.taken_by) ?? m.taken_by)}"` : "",
     m.receipts ? `receipts="${attr(m.receipts)}"` : "",
