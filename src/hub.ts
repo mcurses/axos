@@ -1902,6 +1902,29 @@ export class Hub {
     this.emit(addr(action.to), { kind: "role" });
   }
 
+  // What a starting session is told about seats: the roles its predecessor here held (same machine, same project,
+  // ended within NEXT_WINDOW_MS) that are still vacant, and, if it holds its main seat, the vacant roles with mail.
+  // A hint, never a claim (identity design R2; the suite owner 2708: vigil-6b did not take vigil-4e's maintainer).
+  seatHints(session: string, project: string): string[] {
+    const s = this.session(session);
+    if (!s) return [];
+    const t = this.now();
+    const vacant = (role: string) => !(this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(project, role) as { holder: string | null } | null)?.holder;
+    const out: string[] = [];
+    const prev = this.db.query(`SELECT key, name FROM sessions WHERE agent_id = ? AND project = ? AND key <> ? AND ended_at IS NOT NULL AND ended_at >= ?
+      ORDER BY ended_at DESC LIMIT 1`).get(s.agent_id, project, session, t - NEXT_WINDOW_MS) as { key: string; name: string | null } | null;
+    if (prev) {
+      const held = [...new Set((this.db.query("SELECT data_json FROM events WHERE actor = ? AND kind = 'role.released' AND project = ?").all(`session:${prev.key}`, project) as { data_json: string }[])
+        .map((e) => String((JSON.parse(e.data_json) as { role?: string }).role ?? "")).filter((r) => r && !isMainRole(r) && vacant(r)))];
+      if (held.length) out.push(`Your previous session here (${prev.name ?? prev.key}) held ${held.join(", ")}, now vacant: claim ${held.length === 1 ? "it" : "them"} (claim_role) if you are its successor.`);
+    }
+    if (this.rolesHeldBy(`session:${session}`, project).includes(mainRole(this.humanOfHolder(session) ?? ""))) {
+      const waiting = this.roles(project).filter((r) => !r.holder && !isMainRole(r.role)).map((r) => ({ role: r.role, n: this.roleUnread(project, r.role) })).filter((r) => r.n > 0);
+      if (waiting.length) out.push(`As main here: ${waiting.map((r) => `${r.role} is vacant with ${r.n} message${r.n === 1 ? "" : "s"} waiting`).join("; ")}. Claim a role if it is yours, or tell your human which session should.`);
+    }
+    return out;
+  }
+
   // The labels a session's terminal tab shows (meum's tab labels, written by the plugin): the roles it holds here, its
   // own main seat as "main" and first, at most four, each at most 24 characters.
   tabLabels(session: string, project: string): string[] {
@@ -2311,6 +2334,21 @@ export class Hub {
       }
     }
     const vacant = (r: string) => (r.startsWith("role:") && !this.roleHolder(r)) || r.startsWith("next:");
+    // Mail to a vacant role: each person's main session that is online in that project hears of it once per role (until
+    // it acks the notice), so a seat left empty by a restart does not hold mail unseen (the suite owner, 2708).
+    for (const r of recipients.keys()) {
+      if (!r.startsWith("role:") || this.roleHolder(r)) continue;
+      const [rp, rrole] = r.slice(5).split("/", 2) as [string, string];
+      if (isMainRole(rrole)) continue;
+      for (const h of this.projectHumans(rp)) {
+        const mainHolder = this.roleHolder(`role:${rp}/${mainRole(h)}`);
+        if (!mainHolder || !this.isOnline(mainHolder) || addr(mainHolder) === sender) continue;
+        const said = `A message for the vacant role '${rrole}' waits in its mailbox`;
+        if (this.db.query("SELECT 1 FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.recipient = ? AND d.acked_at IS NULL AND m.sender = ? AND m.summary LIKE ?")
+          .get(addr(mainHolder), SYSTEM_SENDER, `${said}%`)) continue;
+        this.systemMessage(rp, addr(mainHolder), "status", `${said} (from ${this.senderTitle(sender)}: ${oneLine(summary, 120)}). As main here: claim_role ${rrole} if it is yours, or tell your human which session should.`, "", "low");
+      }
+    }
     const holderText = (r: string) => {
       const h = this.roleHolder(r)!;
       return `${this.labelFor(h, human, r.slice(5).split("/")[0] !== input.project)}, ${this.whereabouts(h)}`;

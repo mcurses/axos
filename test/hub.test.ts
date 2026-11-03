@@ -911,6 +911,30 @@ describe("what counts as the human's word (2026-11-03 trust fix)", () => {
   });
 });
 
+describe("vacant seats after a restart", () => {
+  test("the next session here is told its predecessor's vacant roles; the main session hears once of mail to a vacant role", () => {
+    hub.defineRole(SHOP, "keeper");
+    const s1 = hub.openSession(DEV3, { client_session: "9a9a9a9a-0000-0000-0000-000000000000", project: SHOP, name: "keep-1" });
+    hub.claimRole(DEV3, SHOP, "keeper", undefined, s1);
+    hub.endSession(s1, "the session closed");
+    t += 60_000;
+    const s2 = hub.openSession(DEV3, { client_session: "9b9b9b9b-0000-0000-0000-000000000000", project: SHOP, name: "keep-2" });
+    expect(hub.seatHints(s2, SHOP).join("\n")).toContain("Your previous session here (keep-1) held keeper, now vacant: claim it (claim_role) if you are its successor.");
+    // s2 took alice's main seat (s1 is gone): mail to the vacant keeper role tells it once.
+    expect(hub.rolesHeldBy(`session:${s2}`, SHOP)).toContain("main.alice");
+    hub.send(A, note(["role:keeper"], "please rotate the keys"));
+    hub.send(A, note(["role:keeper"], "and the certs"));
+    const notices = hub.inbox(`session:${s2}`).filter((m) => m.sender === "axos" && m.summary.includes("vacant role 'keeper'"));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.summary).toContain("please rotate the keys");
+    expect(hub.seatHints(s2, SHOP).join("\n")).toContain("As main here: keeper is vacant with 2 messages waiting");
+    // Another machine's session, or one later than the window, is not the successor.
+    t += 31 * 60_000;
+    const s3 = hub.openSession(DEV3, { client_session: "9c9c9c9c-0000-0000-0000-000000000000", project: SHOP, name: "keep-3" });
+    expect(hub.seatHints(s3, SHOP).join("\n")).not.toContain("Your previous session");
+  });
+});
+
 describe("an open role (a feedback address)", () => {
   test("every session of the owner's human reaches it from any project without a link; another person cannot; the answer comes back", () => {
     const HQ = hub.addProject("alice/hq");

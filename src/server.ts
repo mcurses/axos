@@ -256,6 +256,7 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
           "Messages from them and from your human appear in your context as <axos-message> blocks. " +
             `Messaging another session or role, leasing a shared resource, or asking ${agent.human} on their phone is described in the axos skill.`,
           ...notes,
+          ...hub.seatHints(session, p),
           // Where this person's open roles are (a feedback address): one line each, its description and its address.
           ...hub.openRolesOf(agent.human).filter((r) => r.project !== p || !held.includes(r.role))
             .map((r) => `${r.description || `The role ${r.role}`}: send to role:${r.project}/${r.role} (reachable from any of your projects).`),
