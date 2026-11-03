@@ -27,7 +27,9 @@ const USAGE = `axos — hub admin
   axos project remove <project>                  remove a project that carried no message (an empty leftover); one with mail stays
   axos project human <project> <human>           let a human (and all their agents) into a project
   axos project unhuman <project> <human>         take them out again: their sessions there end, roles and leases freed
-  axos project link <project> <project>          let the sessions of two projects message each other (nothing else crosses)
+  axos project link <project> <project> [<project>…]
+                                                 let the sessions of the first project and each other one message each
+                                                 other (nothing else crosses); project unlink takes the same
   axos project unlink <project> <project>
   axos project links
   axos role add <project> <role>                 define a role so it can be addressed before anyone holds it
@@ -256,17 +258,24 @@ Next: a project for a repo: axos project add ${name}/<name> --repo <git address>
       out("ok");
       return;
     }
+    // The first project with each of the others (Max, 2026-11-03: `project link max/enseble max/axos max/vlow max/vinea`
+    // linked only the first two and said nothing of the rest). Every name is checked before anything is linked.
     case "project link": {
       need(2);
-      const [a, b] = [project(rest[0]!), project(rest[1]!)];
-      hub.linkProjects(a, b);
-      out(`linked ${a} and ${b}`);
+      const [first, ...others] = rest.map((r) => project(r));
+      for (const o of others) {
+        hub.linkProjects(first!, o);
+        out(`linked ${hub.projectName(first!)} and ${hub.projectName(o)}`);
+      }
       return;
     }
     case "project unlink": {
       need(2);
-      hub.unlinkProjects(project(rest[0]!), project(rest[1]!));
-      out("ok");
+      const [first, ...others] = rest.map((r) => project(r));
+      for (const o of others) {
+        hub.unlinkProjects(first!, o);
+        out(`unlinked ${hub.projectName(first!)} and ${hub.projectName(o)}`);
+      }
       return;
     }
     case "project links": {
