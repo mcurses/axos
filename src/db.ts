@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS roles (
   holder        TEXT,                          -- a session key '<agent id>#<session>' or, from clients without sessions, an agent id
   since         INTEGER,
   expires_at    INTEGER,                       -- unused since 0.17.0 (roles no longer lapse); kept for old rows
+  quiet         INTEGER DEFAULT 0,             -- never shown to the main session while vacant (a role whose work must not reach a chat session)
   open          INTEGER DEFAULT 0,             -- any session of the project owner's human may send to it from any project (a feedback address)
   PRIMARY KEY (project, role)
 );
@@ -345,6 +346,7 @@ function migrate(db: Database): void {
   column("login_links", "read_only", "INTEGER NOT NULL DEFAULT 0");
   column("asks", "action_json", "TEXT");
   column("roles", "open", "INTEGER DEFAULT 0");
+  column("roles", "quiet", "INTEGER DEFAULT 0");
   // 0.24.26: the one main seat per project of 0.24.24 becomes one per person (main.<human>); a held one goes to its
   // holder's person, its mail with it; a vacant one goes (the next session of each person takes theirs).
   const hasRoles = !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roles'").get();

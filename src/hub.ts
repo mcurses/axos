@@ -1919,7 +1919,7 @@ export class Hub {
       if (held.length) out.push(`Your previous session here (${prev.name ?? prev.key}) held ${held.join(", ")}, now vacant: claim ${held.length === 1 ? "it" : "them"} (claim_role) if you are its successor.`);
     }
     if (this.rolesHeldBy(`session:${session}`, project).includes(mainRole(this.humanOfHolder(session) ?? ""))) {
-      const waiting = this.roles(project).filter((r) => !r.holder && !isMainRole(r.role)).map((r) => ({ role: r.role, n: this.roleUnread(project, r.role) })).filter((r) => r.n > 0);
+      const waiting = this.roles(project).filter((r) => !r.holder && !isMainRole(r.role) && !this.roleQuiet(project, r.role)).map((r) => ({ role: r.role, n: this.roleUnread(project, r.role) })).filter((r) => r.n > 0);
       if (waiting.length) out.push(`As main here: ${waiting.map((r) => `${r.role} is vacant with ${r.n} message${r.n === 1 ? "" : "s"} waiting`).join("; ")}. Claim a role if it is yours, or tell your human which session should.`);
     }
     return out;
@@ -1941,6 +1941,18 @@ export class Hub {
     const r = this.db.query("UPDATE roles SET open = ? WHERE project = ? AND role = ?").run(open ? 1 : 0, project, role);
     if (!r.changes) throw new AxosError(`no role '${role}' in '${project}'`);
     this.event(`human:${human}`, open ? "role.opened" : "role.closed", project, { role });
+  }
+
+  roleQuiet(project: string, role: string): boolean {
+    return !!(this.db.query("SELECT quiet FROM roles WHERE project = ? AND role = ?").get(project, role) as { quiet: number | null } | null)?.quiet;
+  }
+
+  // A quiet role's vacant mail is never shown to a main session (a seat that works from a file queue: a chat session
+  // reading its mail would be tempted to run the commands itself).
+  setRoleQuiet(project: string, role: string, quiet: boolean): void {
+    const r = this.db.query("UPDATE roles SET quiet = ? WHERE project = ? AND role = ?").run(quiet ? 1 : 0, project, role);
+    if (!r.changes) throw new AxosError(`no role '${role}' in '${project}'`);
+    this.event("axos", quiet ? "role.quieted" : "role.unquieted", project, { role });
   }
 
   // A human's open roles, for the start line of every session of theirs: where feedback and the like go.
@@ -2334,19 +2346,22 @@ export class Hub {
       }
     }
     const vacant = (r: string) => (r.startsWith("role:") && !this.roleHolder(r)) || r.startsWith("next:");
-    // Mail to a vacant role: each person's main session that is online in that project hears of it once per role (until
-    // it acks the notice), so a seat left empty by a restart does not hold mail unseen (the suite owner, 2708).
+    // Mail to a vacant role reaches each person's main session online in that project as a notice of its own: who sent
+    // it, its summary and the start of its body, marked as the role's. The message stays in the role's mailbox for
+    // whoever claims the role; main cannot ack it away or answer as the role (it does not hold it). Quiet roles are
+    // skipped. (The suite owner 2708; a coordinator's answer 2716: "as long as it is marked as the role's".)
     for (const r of recipients.keys()) {
       if (!r.startsWith("role:") || this.roleHolder(r)) continue;
       const [rp, rrole] = r.slice(5).split("/", 2) as [string, string];
-      if (isMainRole(rrole)) continue;
+      if (isMainRole(rrole) || this.roleQuiet(rp, rrole)) continue;
       for (const h of this.projectHumans(rp)) {
         const mainHolder = this.roleHolder(`role:${rp}/${mainRole(h)}`);
         if (!mainHolder || !this.isOnline(mainHolder) || addr(mainHolder) === sender) continue;
-        const said = `A message for the vacant role '${rrole}' waits in its mailbox`;
-        if (this.db.query("SELECT 1 FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.recipient = ? AND d.acked_at IS NULL AND m.sender = ? AND m.summary LIKE ?")
-          .get(addr(mainHolder), SYSTEM_SENDER, `${said}%`)) continue;
-        this.systemMessage(rp, addr(mainHolder), "status", `${said} (from ${this.senderTitle(sender)}: ${oneLine(summary, 120)}). As main here: claim_role ${rrole} if it is yours, or tell your human which session should.`, "", "low");
+        const excerpt = body ? `\n\n${body.length > 1200 ? `${body.slice(0, 1200)}…` : body}` : "";
+        this.systemMessage(rp, addr(mainHolder), "status",
+          oneLine(`For the vacant role '${rrole}', from ${this.senderTitle(sender)}: ${summary}`, 300),
+          `This message waits in the mailbox of the role '${rrole}', which nobody holds. You see it as this project's main session. ` +
+          `It is the role's, not yours: do not answer it as the role. Claim it (claim_role ${rrole}) if the work is yours, or tell your human which session should.${excerpt}`, "low");
       }
     }
     const holderText = (r: string) => {

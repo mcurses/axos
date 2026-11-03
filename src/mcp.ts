@@ -297,12 +297,14 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   server.registerTool("define_role", {
     description: "Create a role in the project (or update its description): a job one session does at a time, e.g. reviewer, deployer, coordinator.",
     inputSchema: strict({ project: projectArg, role: z.string(), description: z.string().describe("One sentence: what the holder does"),
+      quiet: z.boolean().optional().describe("true: while vacant, this role's mail is never shown to the project's main session (a role whose work must not reach a chat session)"),
       open: z.boolean().optional().describe("Only the project's owner: true lets every session of theirs send to this role from any of their projects, without a link (a feedback address); the description is shown to those sessions at start. false closes it.") }),
-  }, tool(({ project: p, role, description, open }) => {
+  }, tool(({ project: p, role, description, open, quiet }) => {
     const pr = project(p);
     if (!hub.isMember(agent.id, pr)) throw new AxosError(`you are not in project '${pr}'`);
     hub.defineRole(pr, role, description);
     if (open !== undefined) hub.setRoleOpen(agent.human, pr, role, open);
+    if (quiet !== undefined) hub.setRoleQuiet(pr, role, quiet);
     return `Role ${role} in ${pr}: ${description}${open === true ? ". Open: every session of yours reaches it from any project." : open === false ? ". Closed to sessions outside the project." : ""}`;
   }));
 

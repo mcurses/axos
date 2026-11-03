@@ -34,6 +34,7 @@ const USAGE = `axos — hub admin
   axos project links
   axos role add <project> <role>                 define a role so it can be addressed before anyone holds it
   axos role open <project> <role> [--off]        open a role to every session of the owner's person, from any project
+  axos role quiet <project> <role> [--off]       a quiet role's vacant mail is never shown to a main session
   axos agent add <human> <name> <project,...>    add an agent; prints its token
   axos agent join <human>/<name> <project>       add an agent to a project
   axos agent token <human>/<name>                new token (old one stops working)
@@ -299,6 +300,13 @@ Next: a project for a repo: axos project add ${name}/<name> --repo <git address>
       const p = project(rest[0]!);
       hub.setRoleOpen(hub.projectOwner(p)!, p, rest[1]!, !rest.includes("--off"));
       out(`${rest.includes("--off") ? "closed" : "opened"} role ${rest[1]} in ${hub.projectName(p)}${rest.includes("--off") ? "" : ": every session of its owner reaches it from any of their projects"}`);
+      return;
+    }
+    case "role quiet": {
+      need(2);
+      const p = project(rest[0]!);
+      hub.setRoleQuiet(p, rest[1]!, !rest.includes("--off"));
+      out(`role ${rest[1]} in ${hub.projectName(p)} is ${rest.includes("--off") ? "no longer quiet" : "quiet: its vacant mail is never shown to a main session"}`);
       return;
     }
     case "agent add": {

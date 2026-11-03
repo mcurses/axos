@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.31`, protocol `1`.
+Current numbers: hub release `0.24.32`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -590,8 +590,11 @@ the page: `POST /ui/api/project/new {"name","brief"}` (the folder is linked afte
 with the agent's token makes a project for its human (`axos use --new`); **Vacant seats.** A session starting in a project is told, as a hint and never a claim, which roles its predecessor
 (the same machine's last session in the project, ended within 30 minutes) held that are still vacant; a session
 holding its main seat is told which vacant roles have mail waiting. When a message goes to a vacant role, each person's
-main session that is online in that project gets one low-priority notice from `axos` (until it acks it): which role,
-from whom, and to claim it if it is theirs. The message itself stays in the role's mailbox for whoever claims it.
+main session that is online in that project gets it as a low-priority notice of its own from `axos`: the role, the
+sender, the summary and the start of the body, marked as the role's ("do not answer it as the role; claim it if the
+work is yours"). The message itself stays in the role's mailbox for whoever claims it; main cannot ack it away or
+speak as the role. A role marked quiet (`define_role … quiet: true`, or `axos role quiet <project> <role>` on the
+server) is never shown to main.
 
 **Open roles.** The project's owner may open a role with `define_role(…, open: true)`: every session of that owner's
 person may then send to `role:<project>/<role>` from any of their projects, linked or not (a feedback address).

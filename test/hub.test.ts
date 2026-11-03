@@ -922,11 +922,20 @@ describe("vacant seats after a restart", () => {
     expect(hub.seatHints(s2, SHOP).join("\n")).toContain("Your previous session here (keep-1) held keeper, now vacant: claim it (claim_role) if you are its successor.");
     // s2 took alice's main seat (s1 is gone): mail to the vacant keeper role tells it once.
     expect(hub.rolesHeldBy(`session:${s2}`, SHOP)).toContain("main.alice");
-    hub.send(A, note(["role:keeper"], "please rotate the keys"));
+    hub.send(A, { ...note(["role:keeper"], "please rotate the keys"), body: "WORD: rotate both, today" });
     hub.send(A, note(["role:keeper"], "and the certs"));
-    const notices = hub.inbox(`session:${s2}`).filter((m) => m.sender === "axos" && m.summary.includes("vacant role 'keeper'"));
-    expect(notices).toHaveLength(1);
-    expect(notices[0]!.summary).toContain("please rotate the keys");
+    // Each message as a notice of main's own, marked as the role's; the message stays in the role's mailbox.
+    const notices = hub.inbox(`session:${s2}`).filter((m) => m.sender === "axos" && m.summary.includes("For the vacant role 'keeper'"));
+    expect(notices.map((m) => m.summary)).toEqual([expect.stringContaining("please rotate the keys"), expect.stringContaining("and the certs")]);
+    expect(notices[0]!.body).toContain("do not answer it as the role");
+    expect(notices[0]!.body).toContain("WORD: rotate both, today");
+    hub.ack(`session:${s2}`, notices.map((m) => m.id));
+    expect(hub.roleUnread(SHOP, "keeper")).toBe(2);
+    // A quiet role is never shown to main.
+    hub.defineRole(SHOP, "elevated");
+    hub.setRoleQuiet(SHOP, "elevated", true);
+    hub.send(A, note(["role:elevated"], "run the installer"));
+    expect(hub.inbox(`session:${s2}`).some((m) => m.summary.includes("run the installer"))).toBe(false);
     expect(hub.seatHints(s2, SHOP).join("\n")).toContain("As main here: keeper is vacant with 2 messages waiting");
     // Another machine's session, or one later than the window, is not the successor.
     t += 31 * 60_000;
