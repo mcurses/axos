@@ -1,6 +1,6 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { openDb } from "./db.ts";
-import { AxosError, Hub, iso, MAX_IMAGE, type AgentRow, type InboxItem } from "./hub.ts";
+import { AxosError, Hub, mainRole, iso, MAX_IMAGE, type AgentRow, type InboxItem } from "./hub.ts";
 import { buildMcpServer, type Connection } from "./mcp.ts";
 import { ntfyNotifier } from "./notify.ts";
 import { webPushSender } from "./webpush.ts";
@@ -256,14 +256,18 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
           "Messages from them and from your human appear in your context as <axos-message> blocks. " +
             `Messaging another session or role, leasing a shared resource, or asking ${agent.human} on their phone is described in the axos skill.`,
           ...notes,
+          // The main seat's duty (Max, 2026-11-03, through the suite owner 2667).
+          held.includes(mainRole(agent.human))
+            ? "As this project's main session, keep its meum workspace's name, icon and colour current: check them now and after a project change, and set them with `meum workspace rename|icon|color` when they are wrong or missing (if meum runs here)."
+            : "",
           outdated(),
         ].filter(Boolean);
         const msgs = pending();
-        return json({ context: show([lines.join("\n"), msgs].filter(Boolean).join("\n\n")) });
+        return json({ context: show([lines.join("\n"), msgs].filter(Boolean).join("\n\n")), labels: hub.tabLabels(session, p) });
       }
       case "check": {
         const notes = conn.project ? syncRoles(conn.project) : [];
-        return json({ context: show([outdated(), notes.join("\n"), pending()].filter(Boolean).join("\n\n")) });
+        return json({ context: show([outdated(), notes.join("\n"), pending()].filter(Boolean).join("\n\n")), ...(conn.project ? { labels: hub.tabLabels(session, conn.project) } : {}) });
       }
       case "end":
         hub.endSession(session, "the session closed");

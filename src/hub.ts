@@ -225,7 +225,8 @@ export const UNUSED_MACHINE_MS = 14 * 86_400_000;
 const TAKEOVER_NO_PAUSE_MS = 3_600_000;
 // A holder on another machine counts as away (taken over without asking the human) only after this much silence.
 const CROSS_MACHINE_AWAY_MS = 3_600_000;
-const MAIN_DESCRIPTION = "main session here: calls to the whole project reach this person here; their first session holds it, claim_role main moves it";
+const MAIN_DESCRIPTION = "main session here: calls to the whole project reach this person here; their first session holds it, claim_role main moves it. " +
+  "As main, keep the project's meum workspace's name, icon and colour current: check them at start and after a project change, and set them with meum workspace rename|icon|color when they are wrong or missing";
 
 // Types that call for someone to act: sent to the project address and fanned out to several, they have one taker.
 export const ONE_TAKER_TYPES: readonly string[] = ["ask", "request", "review", "handoff"];
@@ -1492,7 +1493,8 @@ export class Hub {
     const human = this.humanOfHolder(key)!;
     const role = mainRole(human);
     const row = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(s.project, role) as { holder: string | null } | null;
-    if (!row) this.defineRole(s.project, role, `${human}'s ${MAIN_DESCRIPTION}`, true);
+    // Defined, or its description brought up to date (it carries the main session's duties).
+    this.defineRole(s.project, role, `${human}'s ${MAIN_DESCRIPTION}`, true);
     const prev = row?.holder ?? null;
     if (prev === key) return;
     if (prev) {
@@ -1892,6 +1894,14 @@ export class Hub {
         "The role's mailbox, leases and open questions stay with the role.", "high");
     }
     this.emit(addr(action.to), { kind: "role" });
+  }
+
+  // The labels a session's terminal tab shows (meum's tab labels, written by the plugin): the roles it holds here, its
+  // own main seat as "main" and first, at most four, each at most 24 characters.
+  tabLabels(session: string, project: string): string[] {
+    const own = mainRole(this.humanOfHolder(session) ?? "");
+    const roles = this.rolesHeldBy(`session:${session}`, project).map((r) => (r === own ? MAIN_ROLE : r));
+    return [...roles.filter((r) => r === MAIN_ROLE), ...roles.filter((r) => r !== MAIN_ROLE)].slice(0, 4).map((r) => r.slice(0, 24));
   }
 
   roleUnread(project: string, role: string): number {

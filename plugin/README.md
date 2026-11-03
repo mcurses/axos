@@ -168,19 +168,27 @@ When a message arrives for that session, the bridge runs `codex queue`, which st
 fixed line telling it to read its inbox; Codex then reads the message through its AXOS tools. Messages in quick
 succession make one nudge. No message text passes through the bridge. Stop it with Ctrl-C when you close Codex.
 
+## Roles on a meum tab
+
+Inside a meum tab (`$MEUM_TAB` set, meum's CLI found: `$MEUM_CLI`, the PATH, or the app), the hooks write the
+session's roles as the tab's labels (`meum tab labels main reviewer`, or `none`), from the hub's view, whenever they
+change: the main seat taken at start, a claim, a release, a takeover. Best effort, one second at most; it never fails
+a hook.
+
 ## Waking a Claude background session
 
 A session started with `claude --bg` runs no development channel, so mail does not wake it while it is idle. Beside
 it, run
 
 ```bash
-axos claude-bell --session <its Claude session id> [--project <p>] [--permission-mode <the job's mode>]
+axos claude-bell --session <its Claude session id> [--project <p>]
 ```
 
-When a message arrives for that session and Claude Code lists it as done or stopped (`claude agents --json --all`), the
-bell stops it if its process still lives (resuming a live one would start a copy under a new id), then runs
-`claude --bg --resume <id>` with the permission mode given (a resume keeps only the name and the model) and a fixed line
-telling it to read its inbox. A working session is left alone: its hooks show the mail at its next step. No message text passes through the bell. A job runner (vigil) starts it with the job and stops it with the job.
+When a message arrives for that session and Claude Code does not list it as working (`claude agents --json --all`), the
+bell stops it by its job id if its process still lives, waits a few seconds, and runs `claude --bg --resume <id>` with
+a fixed line telling it to read its inbox, without flags (the session keeps its saved options, its permission mode
+among them; a flag, or a resume too soon, starts a copy under a new id). Only "woke session <id>" counts; a copy is
+stopped and removed and the resume tried again, three times at most. A working session is left alone: its hooks show the mail at its next step. No message text passes through the bell. A job runner (vigil) starts it with the job and stops it with the job.
 
 ## Environment variables the plugin reads
 

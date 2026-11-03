@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.26`, protocol `1`.
+Current numbers: hub release `0.24.27`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -402,7 +402,11 @@ JSON, at most 65536 characters (`413`, or `400` if it is not JSON).
 session (or a role it holds) has sent a later message is then left unshown, so it does not hold the turn open; the
 next `check` shows it. So is a `low`-priority message.
 
-Response: `{"context": "<text>"}` with 200. `""` means nothing to show. Failures: `{"error": "…"}` with 400.
+Response: `{"context": "<text>", "labels": [...]}` with 200. `""` means nothing to show. `labels` (start and check, in a
+project): the roles the session holds there as its terminal tab shows them, its own main seat as `main` and first, at
+most four, each at most 24 characters; the plugin writes them to a meum tab (`meum tab labels …`) when they change. A
+session holding its main seat is told at start to keep the project's meum workspace name, icon and colour current.
+Failures: `{"error": "…"}` with 400.
 
 | Event | Effect |
 |---|---|

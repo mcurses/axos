@@ -966,30 +966,34 @@ test("axos claude-bell: mail to an idle background session resumes it once with 
   writeFileSync(st, `{"id":"c1c1c1c1","sessionId":"${sid}","status":"idle","state":"done","pid":4242}`);
   writeFileSync(join(dir, "claude"), `#!/bin/sh
 if [ "$1" = agents ]; then printf '[%s]' "$(cat ${st})"; exit 0; fi
-if [ "$1" = stop ]; then [ "$2" = c1c1c1c1 ] || exit 1; echo stop >> "${join(dir, "stops")}"; printf '{"id":"c1c1c1c1","sessionId":"${sid}","state":"done"}' > ${st}; exit 0; fi
+if [ "$1" = stop ]; then [ "$2" = c1c1c1c1 ] || [ "$2" = copy0001 ] || exit 1; echo "stop $2" >> "${join(dir, "stops")}"; [ "$2" = c1c1c1c1 ] && printf '{"id":"c1c1c1c1","sessionId":"${sid}","state":"done"}' > ${st}; exit 0; fi
+if [ "$1" = rm ]; then echo "rm $2" >> "${join(dir, "stops")}"; exit 0; fi
 printf '%s\\n' "$@" >> "${join(dir, "calls")}"
-echo woke
+# The first resume starts a copy (as the real one does when too early); the next wakes the session itself.
+if [ ! -f "${join(dir, "copied")}" ]; then touch "${join(dir, "copied")}"; echo "note: session c1c1c1c1 is already running in the background, so this started a copy as copy0001."; exit 0; fi
+echo "note: woke session c1c1c1c1 with its saved options (-n, --model)"
 `, { mode: 0o755 });
   const calls = () => existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8").split("--bg\n").filter(Boolean) : [];
-  const stops = () => existsSync(join(dir, "stops")) ? readFileSync(join(dir, "stops"), "utf8").split("\n").filter(Boolean).length : 0;
-  const bell = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), "claude-bell", "--session", sid, "--project", "alice/shop", "--permission-mode", "auto", "--claude", join(dir, "claude")],
-    { cwd: dir, env: { ...process.env, AXOS_CONFIG: join(dir, "config.json") }, stdout: "pipe", stderr: "pipe" });
+  const stops = () => existsSync(join(dir, "stops")) ? readFileSync(join(dir, "stops"), "utf8").split("\n").filter(Boolean) : [];
+  const bell = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), "claude-bell", "--session", sid, "--project", "alice/shop", "--claude", join(dir, "claude")],
+    { cwd: dir, env: { ...process.env, AXOS_CONFIG: join(dir, "config.json"), AXOS_BELL_SETTLE_MS: "200" }, stdout: "pipe", stderr: "pipe" });
   const until = async (ok: () => Promise<boolean> | boolean) => { for (let i = 0; i < 100 && !(await ok()); i++) await Bun.sleep(100); };
   try {
     await until(async () => /bg-job.*wakes on messages/.test((await call(dev1, "presence", { project: "alice/shop" })).text));
     await call(dev1, "send", { project: "alice/shop", to: "session:bg-job", type: "request", summary: "Rerun the nightly check." });
-    await until(() => calls().length > 0);
+    await until(() => calls().length > 1);
     await Bun.sleep(2500);
-    expect(calls()).toHaveLength(1);
-    // Idle but alive: stopped first (a resume would start a copy), then resumed with the job's permission mode.
-    expect(stops()).toBe(1);
-    expect(calls()[0]).toStartWith(`--resume\n${sid}\n--permission-mode\nauto\nAXOS: a new message is waiting for you.`);
-    expect(calls()[0]).not.toContain("nightly"); // no message text passes through the bell
+    // Idle but alive: stopped by its job id; the first resume made a copy, which was stopped and removed; the second
+    // woke the session itself. No flags on the resume.
+    expect(stops()).toEqual(["stop c1c1c1c1", "stop copy0001", "rm copy0001"]);
+    expect(calls()).toHaveLength(2);
+    for (const c of calls()) expect(c).toStartWith(`--resume\n${sid}\nAXOS: a new message is waiting for you.`);
+    expect(calls()[1]).not.toContain("nightly"); // no message text passes through the bell
     // Working (even with status idle): left alone; its hooks show the mail at its next step.
     writeFileSync(st, `{"id":"c1c1c1c1","sessionId":"${sid}","status":"idle","state":"working","pid":4243}`);
     await call(dev1, "send", { project: "alice/shop", to: "session:bg-job", type: "note", summary: "Another." });
     await Bun.sleep(3000);
-    expect(calls()).toHaveLength(1);
+    expect(calls()).toHaveLength(2);
     expect((await call(bg, "inbox")).text).toContain("Rerun the nightly check.");
   } finally {
     bell.kill();
@@ -1798,3 +1802,44 @@ test("the machine's command: bare axos in words, project and machine commands, a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("meum tab labels: the hook writes the session's roles (main first, as 'main') when they change, from the hub's view; the main session is told its workspace duty", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "axos-labels-"));
+  try {
+    writeFileSync(join(dir, "token"), `${tokens.dev3}\n`);
+    const work = join(dir, "work");
+    mkdirSync(work);
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ url: base, token_file: join(dir, "token"), folders: [{ path: work, project: "alice/shop" }] }));
+    writeFileSync(join(dir, "meum"), `#!/bin/sh\nprintf '%s ' "$@" >> "${join(dir, "calls")}"\necho >> "${join(dir, "calls")}"\n`, { mode: 0o755 });
+    const calls = () => existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8").split("\n").filter(Boolean) : [];
+    const sid = "1abe1abe-1111-2222-3333-444444444444";
+    const hook = async (kind: string) => {
+      const p = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), "hook", kind], {
+        cwd: work, stdin: new Blob([JSON.stringify({ session_id: sid, cwd: work })]), stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, AXOS_CONFIG: join(dir, "config.json"), MEUM_TAB: "tab-1", MEUM_CLI: join(dir, "meum"), CLAUDE_CONFIG_DIR: dir, CLAUDE_PLUGIN_DATA: dir },
+      });
+      const out = await new Response(p.stdout).text();
+      await p.exited;
+      return out;
+    };
+    // Other tests' sessions may hold alice's main seat: free it, so this session takes it at start.
+    (hub as unknown as { db: { query(s: string): { run(...a: unknown[]): unknown } } }).db.query("UPDATE roles SET holder = NULL WHERE project = ? AND role = 'main.alice'").run(SHOP);
+    const start = await hook("start");
+    const key = `${ids.dev3}#${sid.replace(/-/g, "").slice(0, 8)}`;
+    expect(hub.rolesHeldBy(`session:${key}`, SHOP)).toContain("main.alice");
+    expect(start).toContain("keep its meum workspace's name, icon and colour current");
+    expect(calls()).toEqual(["tab labels main "]);
+    await hook("prompt");
+    expect(calls()).toHaveLength(1); // unchanged: not written again
+    hub.defineRole(SHOP, "labeller");
+    hub.claimRole(ids.dev3!, SHOP, "labeller", undefined, key);
+    await hook("prompt");
+    expect(calls().at(-1)).toBe("tab labels main labeller ");
+    // A release shows at the next hook. (A released main seat is vacant, so this session takes it back at once.)
+    hub.releaseRole(ids.dev3!, SHOP, "labeller", key);
+    await hook("prompt");
+    expect(calls().at(-1)).toBe("tab labels main ");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 20_000);

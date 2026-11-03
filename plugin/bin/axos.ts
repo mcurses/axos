@@ -313,7 +313,7 @@ function headers(id: Identity): Record<string, string> {
   return h;
 }
 
-async function hookCall(id: Identity, event: string, stop = false): Promise<{ context?: string; error?: string }> {
+async function hookCall(id: Identity, event: string, stop = false): Promise<{ context?: string; error?: string; labels?: string[] }> {
   const res = await fetch(`${id.c.url.replace(/\/$/, "")}/api/hook`, {
     method: "POST",
     headers: { ...headers(id), "Content-Type": "application/json" },
@@ -321,7 +321,7 @@ async function hookCall(id: Identity, event: string, stop = false): Promise<{ co
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   if (res.status === 401) return { error: "token" };
-  return (await res.json()) as { context?: string; error?: string };
+  return (await res.json()) as { context?: string; error?: string; labels?: string[] };
 }
 
 // ---------------------------------------------------------------- hooks
@@ -441,6 +441,25 @@ export function headless(args: string | null): boolean {
   return args !== null && /(^|\s)(-p|--print)(\s|$)/.test(args);
 }
 
+// meum's tab labels (`meum tab labels <a> <b>… | none`): best effort, a one-second budget, never failing the hook.
+// Only inside a meum tab ($MEUM_TAB) with meum's CLI present. Returns what is now written (the old list when it failed).
+async function meumLabels(labels: string[], last: string[] | undefined): Promise<string[] | undefined> {
+  if (!process.env.MEUM_TAB) return last;
+  const want = labels.filter((l) => typeof l === "string" && l).slice(0, 4).map((l) => l.slice(0, 24));
+  if (last && last.length === want.length && last.every((l, i) => l === want[i])) return last;
+  if (!last && !want.length) return last; // nothing written yet, nothing to clear
+  const cli = process.env.MEUM_CLI ?? Bun.which("meum") ??
+    ["/Applications/meum.app/Contents/Resources/bin/meum", `${HOME}/Applications/meum.app/Contents/Resources/bin/meum`].find((p) => existsSync(p));
+  if (!cli) return last;
+  try {
+    const p = Bun.spawn([cli, "tab", "labels", ...(want.length ? want : ["none"])], { stdout: "ignore", stderr: "ignore" });
+    const timer = setTimeout(() => p.kill(), 1000);
+    const code = await p.exited;
+    clearTimeout(timer);
+    return code === 0 ? want : last;
+  } catch { return last; }
+}
+
 const WAKEUP_OFF = "Idle wake-up is off for this session: Claude Code was started without " +
   "`--dangerously-load-development-channels plugin:axos@axos`, so a message reaches it only with the next prompt or tool call. " +
   "Tell your user if they expect messages while you are idle.";
@@ -474,7 +493,7 @@ async function hook(kind: string): Promise<void> {
   // Not configured, a quiet role, or a folder outside every project: no cost. A folder outside every project whose
   // session has sent through AXOS (to a person, through the project the two share) reads its own mailbox from then on.
   if (!id || id.quiet || (!id.project && !usedAxos(id.sessionId))) return;
-  const state = readJson<{ last_check?: number; unreachable?: boolean }>(stateFile(id.sessionId)) ?? {};
+  const state = readJson<{ last_check?: number; unreachable?: boolean; labels?: string[] }>(stateFile(id.sessionId)) ?? {};
   if (kind === "tool") {
     const every = (id.c.check_every_s ?? 30) * 1000;
     if (state.last_check && Date.now() - state.last_check < every) return;
@@ -486,6 +505,8 @@ async function hook(kind: string): Promise<void> {
     // A refused token is not an outage: say it at session start, where a person can act on it.
     if (r.error === "token") context = kind === "start" ? `The AXOS hub (${id.c.url}) refused this machine's token: it was revoked or is wrong. AXOS is off until a person fixes it.` : "";
     else context = r.context ?? "";
+    // The session's roles on its meum tab, from the hub's view, written only when they change (the suite owner, 2667).
+    if (Array.isArray(r.labels) && kind !== "end") state.labels = await meumLabels(r.labels, state.labels);
     if (state.unreachable && kind !== "end") context = ["AXOS hub is reachable again.", context].filter(Boolean).join("\n\n");
     state.unreachable = false;
   } catch {
@@ -994,8 +1015,9 @@ async function claudeBell(args: string[]): Promise<void> {
     args.splice(i, 2);
     return v;
   };
-  const session = opt("--session"), projectArg = opt("--project"), claude = opt("--claude") ?? "claude", mode = opt("--permission-mode");
-  if (!session || args.length) throw new Error("usage: axos claude-bell --session <the Claude session id> [--project <p>] [--permission-mode <mode>] [--claude <path>]");
+  const session = opt("--session"), projectArg = opt("--project"), claude = opt("--claude") ?? "claude";
+  const settle = Number(process.env.AXOS_BELL_SETTLE_MS ?? 5000);
+  if (!session || args.length) throw new Error("usage: axos claude-bell --session <the Claude session id> [--project <p>] [--claude <path>]");
   if (!/^[A-Za-z0-9-]{8,80}$/.test(session)) throw new Error("--session must be the Claude session id (8-80 letters, digits or '-')");
   const c = config();
   const t = c && token(c);
@@ -1016,10 +1038,22 @@ async function claudeBell(args: string[]): Promise<void> {
       for (let i = 0; i < 60 && (await claudeState(claude, session)).alive; i++) await Bun.sleep(500);
       if ((await claudeState(claude, session)).alive) return log(`${new Date().toISOString()} could not stop it to wake it; the message waits`);
     }
-    const r = Bun.spawn([claude, "--bg", "--resume", session, ...(mode ? ["--permission-mode", mode] : []), CLAUDE_NUDGE], { stdout: "pipe", stderr: "pipe" });
-    const code = await r.exited;
-    const out = (code === 0 ? await new Response(r.stdout).text() : await new Response(r.stderr).text()).trim().split("\n").at(-1);
-    log(`${new Date().toISOString()} ${code === 0 ? "resumed" : `claude --bg --resume failed (${code})`}: ${out}`);
+    // No flags: a background session keeps its saved options, and any flag (or a resume too soon after the stop)
+    // starts a copy under a new id (vigil's runs, 2669). Success is "woke session <id>"; a copy is stopped, removed
+    // and the resume tried again, three times at most.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await Bun.sleep(settle);
+      const r = Bun.spawn([claude, "--bg", "--resume", session, CLAUDE_NUDGE], { stdout: "pipe", stderr: "pipe" });
+      const code = await r.exited;
+      const out = `${await new Response(r.stdout).text()}\n${await new Response(r.stderr).text()}`;
+      if (code === 0 && /woke session/i.test(out)) return log(`${new Date().toISOString()} woke it`);
+      const copy = /started a copy as ([A-Za-z0-9-]+)/.exec(out)?.[1];
+      if (!copy) return log(`${new Date().toISOString()} claude --bg --resume failed (${code}): ${out.trim().split("\n").at(-1)}`);
+      await Bun.spawn([claude, "stop", copy], { stdout: "ignore", stderr: "ignore" }).exited;
+      await Bun.spawn([claude, "rm", copy], { stdout: "ignore", stderr: "ignore" }).exited;
+      log(`${new Date().toISOString()} the resume started a copy (${copy}); removed it, trying again`);
+    }
+    log(`${new Date().toISOString()} could not wake it as itself; the message waits`);
   }, (e) => log(`${new Date().toISOString()} resume failed: ${e.message}`)), true);
 }
 
