@@ -325,7 +325,7 @@ async function handleMe(hub: Hub, req: Request, agent: AgentRow): Promise<Respon
   if (req.method === "GET") {
     const projects = hub.projectsOfHuman(human).filter((p) => !hub.isPair(p) || hub.projectHumans(p).length > 1).map((p) => ({
       name: hub.projectName(p), owner: hub.projectOwner(p), pair: hub.isPair(p), people: hub.projectHumans(p),
-      links: hub.linkedProjects(p).map((q) => hub.projectName(q)), sessions: hub.presence(p).filter((x) => x.online).length,
+      links: hub.linkedProjects(p).map((q) => hub.projectName(q)), sessions: hub.presence(p).filter((x) => x.online && x.address.startsWith("session:")).length,
     }));
     const pending = hub.pendingFor(human).map((r) => ({ ...r, project: hub.projectName(r.project) }));
     return json(JSON.parse(hub.display(JSON.stringify({

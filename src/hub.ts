@@ -879,7 +879,9 @@ export class Hub {
       name: a.name, created_at: a.created_at, last_seen: a.last_seen,
       unread: this.unreadCount(`agent:${a.id}`) + (this.db.query("SELECT key FROM sessions WHERE agent_id = ? AND ended_at IS NULL").all(a.id) as { key: string }[])
         .reduce((n, x) => n + this.unreadCount(`session:${x.key}`), 0),
-      sessions: (this.db.query("SELECT COUNT(*) AS n FROM sessions WHERE agent_id = ? AND ended_at IS NULL AND kind = 'session'").get(a.id) as { n: number }).n,
+      // Running now: not ended, and seen within the online window (a session that crashed stays open for days).
+      sessions: (this.db.query("SELECT key FROM sessions WHERE agent_id = ? AND ended_at IS NULL AND kind = 'session'").all(a.id) as { key: string }[])
+        .filter((x) => this.isOnline(x.key)).length,
     }));
   }
 
