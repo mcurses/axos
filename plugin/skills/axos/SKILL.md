@@ -42,9 +42,11 @@ README), as itself or with `--as <role>` for a role you hold.
   get something done, so when it cannot wait, also tell someone who is there, or ask your human.
 - `session:<name>`: one particular session.
 - `project`: every session of the project seen in the last 7 days (away ones too) and its members' agents without
-  one. Each receiver gets it as its own and does not see who else did, so an ask or request to `project` gets several
-  takers or none. Use it for news everyone must know (a freeze, a release, a broken main); for "one of you do X"
-  address a role (`define_role` one if the project has none) or one session. A reply with `re` goes to the sender,
+  one. A note or status reaches each of them. An ask, request, review or handoff to `project` has one taker
+  (`takers="one"` in the frame): the first receiver to answer it, or ack it `done` or `forwarded`, takes it, and the
+  others' copies are withdrawn with a line saying who took it. So when you get one: answer or ack it done only if you
+  take it on; ack it plainly (or `noted`) if it is not for you. For a taker you choose, address a role (`define_role`
+  one if the project has none) or one session. A reply with `re` goes to the sender,
   not to the project again, unless you also give `to`.
 - `human:<name>`: a person; it shows on their AXOS page, and reaches their phone when you are another person's
   session. From a folder that belongs to no project you can still send to a person you share a project with ("tell

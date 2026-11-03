@@ -80,6 +80,9 @@ export interface MessageRow {
   created_at: number;
   sent_by: string | null;
   quotes_human: string | null; // the human whose typed words the body holds (checked by the sender's plugin); the message stays the sender's
+  takers?: string | null; // 'one': fanned out by the project address; the first to answer or ack it done takes it
+  taken_by?: string | null;
+  taken_at?: number | null;
 }
 
 export interface InboxItem extends MessageRow {
@@ -210,6 +213,8 @@ const REF_RE = /^[A-Za-z0-9._@+-][A-Za-z0-9._@+\/-]{0,199}$/;
 const SHA_RE = /^[0-9a-f]{7,64}$/;
 
 export const SYSTEM_SENDER = "axos";
+// Types that call for someone to act: sent to the project address and fanned out to several, they have one taker.
+export const ONE_TAKER_TYPES: readonly string[] = ["ask", "request", "review", "handoff"];
 
 // A holder key is an agent id ('agt_…'), a session key ('agt_…#7b9f51e0') or a role address
 // ('role:prj_…/main-coordinator'); this is its mailbox.
@@ -1959,13 +1964,18 @@ export class Hub {
     // Written by someone other than the sender: a script, or a client without a session, speaking for a role.
     const holder = sender.startsWith("role:") ? (this.db.query("SELECT holder FROM roles WHERE project || '/' || role = ?").get(sender.slice(5)) as { holder: string | null } | null)?.holder : null;
     const sentBy = actor.kind === "agent" && sender.startsWith("role:") && holder !== (actor.session ?? actor.id) ? addr(actor.session ?? actor.id) : null;
+    // A call to a whole project (an ask, request, review or handoff that the project address fanned out to several) has
+    // one taker: the first to answer it or ack it done (Max, 2026-11-03: two meum and two vinea sessions each answered
+    // one review request; "footgun").
+    const fanned = [...recipients.values()].filter((v) => v.startsWith("project:")).length;
+    const oneTaker = fanned > 1 && ONE_TAKER_TYPES.includes(input.type);
     const priority = input.priority ?? ((input.type === "note" || input.type === "status") && (input.to ?? []).some((a) => a === "project" || a.startsWith("project:")) ? "low" : "normal");
     const id = this.db.transaction(() => {
       const res = this.db.query(
-        `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at, sent_by, quotes_human)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at, sent_by, quotes_human, takers)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(input.project, sender, human, JSON.stringify(input.to?.filter((a) => !notSent.some((x) => x.to === a)) ?? [...recipients.keys()]), input.type, summary, body, thread, re ?? null,
-        input.as_of ?? null, priority, input.dedupe_key ?? null, this.now(), sentBy, quotes);
+        input.as_of ?? null, priority, input.dedupe_key ?? null, this.now(), sentBy, quotes, oneTaker ? "one" : null);
       const mid = Number(res.lastInsertRowid);
       for (const [recipient, via] of recipients) {
         this.db.query("INSERT INTO deliveries (message_id, recipient, via) VALUES (?, ?, ?)").run(mid, recipient, via);
@@ -1975,6 +1985,13 @@ export class Hub {
     this.event(actor.kind === "agent" ? (actor.session ? `session:${actor.session}` : `agent:${actor.id}`) : sender, "message.sent", input.project,
       { id, type: input.type, to: [...recipients.keys()], ...(sender.startsWith("role:") ? { as: sender } : {}) });
 
+    // A reply to a one-taker message by one of its receivers takes it, or says who took it first.
+    const takenNote: string[] = [];
+    if (re !== undefined) {
+      const boxes = actor.kind === "agent" ? [sender, ...this.mailboxes(actor)] : [sender];
+      const t = this.take(re, boxes);
+      if (t && !t.now) takenNote.push(`Message ${re} was already taken by ${this.label(t.by)} (${when(t.at)}); your reply was sent anyway.`);
+    }
     const ev: HubEvent = { kind: "message", message_id: id, from: sender, summary, type: input.type, priority };
     for (const recipient of recipients.keys()) {
       this.emit(recipient, ev);
@@ -2014,9 +2031,8 @@ export class Hub {
     });
     // A request to a whole project reaches every receiver as its own, and nothing tells them who took it: two live
     // sessions both started on one (meum-05's report, 2026-11-02, messages 2250 and 2260). The sender is told.
-    const fanned = [...recipients.values()].filter((v) => v.startsWith("project:")).length;
-    const many = fanned > 1 && ["ask", "request", "handoff", "review"].includes(input.type)
-      ? [`Through the project address, ${fanned} receivers each got this ${input.type} as their own; none of them sees who else got it or who takes it. For one taker, address a role (define_role, then role:<role>) or one session.`]
+    const many = oneTaker
+      ? [`Through the project address, ${fanned} receivers got this ${input.type}; the first to answer it or ack it done takes it, and the others' copies are withdrawn (thread ${id} says who took it). For a taker you choose, address a role or one session.`]
       : [];
     return {
       id,
@@ -2024,8 +2040,38 @@ export class Hub {
       delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => r.startsWith("role:") ? `${r} (held by ${holderText(r)})` : r),
       waiting_for_role: [...recipients.keys()].filter(vacant),
       not_sent: notSent,
-      unattended: [...unattended, ...stale, ...scripts, ...many],
+      unattended: [...unattended, ...stale, ...scripts, ...many, ...takenNote],
     };
+  }
+
+  // One of these mailboxes takes a one-taker message it received: the others' copies leave their inboxes, and a receiver
+  // that had already been shown it hears who took it. null: not a one-taker message these mailboxes received.
+  // now: taken by this call; otherwise it was taken before (by: whom, at: when).
+  take(messageId: number, boxes: string[]): { now: boolean; by: string; at: number } | null {
+    const m = this.db.query("SELECT project, summary, takers, taken_by, taken_at FROM messages WHERE id = ?").get(messageId) as
+      { project: string; summary: string; takers: string | null; taken_by: string | null; taken_at: number | null } | null;
+    if (!m || m.takers !== "one") return null;
+    const keys = boxes.map((b) => this.boxKey(b));
+    const mine = (this.db.query("SELECT recipient FROM deliveries WHERE message_id = ?").all(messageId) as { recipient: string }[])
+      .find((d) => keys.includes(d.recipient));
+    if (!mine) return null;
+    if (m.taken_by) return { now: m.taken_by === mine.recipient, by: m.taken_by, at: m.taken_at! };
+    const t = this.now();
+    if (!this.db.query("UPDATE messages SET taken_by = ?, taken_at = ? WHERE id = ? AND taken_by IS NULL").run(mine.recipient, t, messageId).changes) {
+      const again = this.db.query("SELECT taken_by, taken_at FROM messages WHERE id = ?").get(messageId) as { taken_by: string; taken_at: number };
+      return { now: false, by: again.taken_by, at: again.taken_at };
+    }
+    const label = this.label(mine.recipient);
+    const others = this.db.query("SELECT recipient, shown_at FROM deliveries WHERE message_id = ? AND recipient != ? AND acked_at IS NULL")
+      .all(messageId, mine.recipient) as { recipient: string; shown_at: number | null }[];
+    for (const o of others) {
+      this.db.query("UPDATE deliveries SET acked_at = ?, note = ? WHERE message_id = ? AND recipient = ?").run(t, oneLine(`taken by ${label}`, MAX_ACK_NOTE), messageId, o.recipient);
+      if (o.shown_at !== null && o.recipient.startsWith("session:")) {
+        this.systemMessage(m.project, o.recipient, "status", oneLine(`${label} took message ${messageId} ("${m.summary}"); nothing to do for you.`, 300), "", "low", messageId);
+      }
+    }
+    this.event(mine.recipient, "message.taken", m.project, { id: messageId, withdrawn: others.length });
+    return { now: true, by: mine.recipient, at: t };
   }
 
   // A holder in words for a viewer: its label in the viewer's own project or for its own human; across a link another
@@ -2198,6 +2244,8 @@ export class Hub {
       else r.missing.push(id);
     }
     if (r.acked.length) this.event(this.boxKey(boxes[0]!), "message.acked", null, { ids: r.acked });
+    // Acked as done or forwarded: a one-taker message is taken by this mailbox.
+    if (outcome === "done" || outcome === "forwarded") for (const id of r.acked) this.take(id, boxes);
     return r;
   }
 

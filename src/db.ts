@@ -118,6 +118,9 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at    INTEGER NOT NULL,
   sent_by       TEXT,                          -- who wrote it when that is not the sender: a script speaking for a role
   quotes_human  TEXT,                          -- the human whose typed words the body holds, as the sender's plugin checked; the message stays the sender's
+  takers        TEXT,                          -- 'one': an ask, request, review or handoff that the project address fanned out; the first to answer or ack it done takes it
+  taken_by      TEXT,                          -- the mailbox that took it
+  taken_at      INTEGER,
   UNIQUE (sender, dedupe_key)
 );
 CREATE TABLE IF NOT EXISTS deliveries (
@@ -311,6 +314,7 @@ function migrate(db: Database): void {
   if (sessions && !/\bkind\b/.test(sessions.sql)) db.exec("ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'session'");
   if (messages && !messages.sql.includes("sent_by")) db.exec("ALTER TABLE messages ADD COLUMN sent_by TEXT");
   if (messages && !messages.sql.includes("quotes_human")) db.exec("ALTER TABLE messages ADD COLUMN quotes_human TEXT");
+  if (messages && !/\btakers\b/.test(messages.sql)) db.exec("ALTER TABLE messages ADD COLUMN takers TEXT; ALTER TABLE messages ADD COLUMN taken_by TEXT; ALTER TABLE messages ADD COLUMN taken_at INTEGER");
   if (sessions && !/\bwakes\b/.test(sessions.sql)) db.exec("ALTER TABLE sessions ADD COLUMN wakes INTEGER");
   const subscriptions = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'subscriptions'").get() as { sql: string } | null;
   if (subscriptions && !subscriptions.sql.includes("subject_filter")) db.exec("ALTER TABLE subscriptions ADD COLUMN subject_filter TEXT");

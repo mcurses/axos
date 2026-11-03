@@ -477,6 +477,35 @@ describe("sessions", () => {
     hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, coord);
   });
 
+  test("a request to the whole project has one taker: the first to answer or ack it done; the others' copies are withdrawn", () => {
+    const req = hub.send(A, { ...note(["project"], "review the design"), type: "review" });
+    expect(req.delivered_to).toEqual(expect.arrayContaining([`session:${coord}`, `session:${helper}`]));
+    expect(hub.getMessage(req.id)!.takers).toBe("one");
+    expect(req.unattended.join("\n")).toContain("the first to answer it or ack it done takes it");
+    hub.markShown([`session:${helper}`], [req.id]);
+    // The coordinator answers first: it takes it; the helper's copy leaves its inbox, and the helper (it had seen it) is told.
+    const answer = hub.send(C(), { ...note([], "looks fine"), re: req.id });
+    expect(answer.unattended.join("\n")).not.toContain("already taken");
+    expect(hub.getMessage(req.id)).toMatchObject({ taken_by: `session:${coord}` });
+    const helperBox = hub.inbox(`session:${helper}`);
+    expect(helperBox.some((m) => m.id === req.id)).toBe(false);
+    expect(helperBox.find((m) => m.sender === "axos")!.summary).toContain(`took message ${req.id} ("review the design"); nothing to do for you.`);
+    expect(hub.receipts(req.id).find((r) => r.recipient === `session:${helper}`)).toMatchObject({ note: expect.stringContaining("taken by shop-5c") });
+    // A late answer is still sent, and its sender hears who was first.
+    expect(renderMessage(hub.getMessage(req.id)!, undefined, (x) => x === `session:${coord}` ? "shop-5c" : null)).toContain('takers="one" taken-by="shop-5c"');
+    const late = hub.send(H(), { ...note([], "me too"), re: req.id });
+    expect(late.unattended.join("\n")).toContain(`Message ${req.id} was already taken by`);
+    // Acking as done takes it as well; a plain ack does not.
+    const req2 = hub.send(A, { ...note(["project"], "rotate the keys"), type: "request" });
+    hub.ack(`session:${coord}`, [req2.id]);
+    expect(hub.getMessage(req2.id)!.taken_by).toBeNull();
+    hub.ack(`session:${helper}`, [req2.id], "done");
+    expect(hub.getMessage(req2.id)!.taken_by).toBe(`session:${helper}`);
+    // A note to the project, and a request to sessions the sender named, stay one each.
+    expect(hub.getMessage(hub.send(A, note(["project"], "fyi")).id)!.takers).toBeNull();
+    expect(hub.getMessage(hub.send(A, { ...note(["session:shop-5c", "session:shop-e9"], "both of you"), type: "request" }).id)!.takers).toBeNull();
+  });
+
   test("a session key is the agent plus the first 8 of the harness session id; the label carries the name", () => {
     expect(coord).toBe(`${DEV3}#35dabd9e`);
     expect(shown(hub.label(`session:${coord}`))).toBe("shop-5c (alice/dev3#35dabd9e, dev3)");
@@ -1158,6 +1187,7 @@ INSERT INTO events (at, actor, kind, project, data_json) VALUES
       expect(db.query("SELECT key, agent_id, project, name FROM sessions").all()).toEqual([{ key: `${M}#abcd1234`, agent_id: M, project: E, name: "shop-ab" }]);
       expect(db.query("SELECT former_names FROM sessions").all()).toEqual([{ former_names: "" }]);
       expect(db.query("SELECT outcome FROM deliveries LIMIT 1").all()).toEqual([{ outcome: null }]);
+      expect(db.query("SELECT takers, taken_by, taken_at FROM messages LIMIT 1").all()).toEqual([{ takers: null, taken_by: null, taken_at: null }]);
       expect(db.query("SELECT COUNT(*) AS n FROM attachments").get()).toEqual({ n: 0 });
       expect(db.query("SELECT phone_cleared_at FROM asks").all()).toBeArray();
       expect(db.query("SELECT id, project, sender, to_json FROM messages ORDER BY id").all()).toEqual([
