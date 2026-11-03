@@ -282,9 +282,9 @@ id>"}` in `trusted.json`.
 | `axos project unlink <a> <b> [<c>…]` (short: `axos unlink`) | an owner of either side | Unlinks the first from each of the others. |
 | `axos project share <project> <person>` | the owner | Asks a person you already share a project with to join this one; they answer on their page. |
 | `axos project join <project>` | a person on the hub | Asks the project's owner to let you in; the answer is the same whether it exists or not. `axos trust` on a repo's `.axos.json` does this by itself when you are not in its project. |
-| `axos machine [list]`, `add`, `rename <name> <new>`, `revoke <name>` | the person | Your machines with last seen, sessions and unread mail; a one-time join link (7 days) for another machine of yours; renaming; the kill switch (not for the machine you are on). |
+| `axos machine [list]`, `add`, `rename <name> <new>` | the person | Your machines with last seen, sessions and unread mail; a one-time join link (7 days) for another machine of yours; renaming. Revoking one is on your page (People, Your machines). |
 | `axos person invite <name> [--project <project>]` | the hub's operator | A one-time join link for a new person, optionally into a project of yours. |
-| `axos login-link` | the person | A one-time login link and code (10 minutes) for a browser, a phone or a program such as vinea's bridge. |
+| `axos login-link` | the person | A one-time read-only login link (10 minutes) for a program such as `contrib/vinea-bridge.ts`: it only reads your page's state. A browser or phone logs in from the page (People, Add device). |
 | `axos admin <command>` | whoever can ssh to the hub's server | Runs the hub's admin command there over ssh (`admin_ssh`). |
 | `axos rename [<project>] <new name>` | the project's owner | Renames the named project, or without one the project this folder is connected to. The id, mail, roles, leases and links stay; the old name keeps resolving; the rule's `name` follows. A member who is not the owner is refused. |
 | `axos link <project>` (one name), `axos unlink` alone | – | Do nothing and say why: a link is two projects whose sessions may reach each other (`axos link <a> <b>`). Before plugin 0.20 they were the folder commands. |

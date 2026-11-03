@@ -217,6 +217,10 @@ export const SYSTEM_SENDER = "axos";
 export const MAIN_ROLE = "main";
 // A machine login not used for this long is listed as unused (health, axos machine), not as mail nobody reads.
 export const UNUSED_MACHINE_MS = 14 * 86_400_000;
+// After the human says no to a takeover, the same one is not asked again for this long.
+const TAKEOVER_NO_PAUSE_MS = 3_600_000;
+// A holder on another machine counts as away (taken over without asking the human) only after this much silence.
+const CROSS_MACHINE_AWAY_MS = 3_600_000;
 const MAIN_DESCRIPTION = "the project's main session: calls to the whole project go here; the first session holds it, claim_role main moves it";
 
 // Types that call for someone to act: sent to the project address and fanned out to several, they have one taker.
@@ -385,16 +389,18 @@ export class Hub {
   // With a code: a second credential beside the link, eight letters and digits shown beside the QR code, for a device
   // where the link cannot be opened (an installed app's login screen); each dies on its own use, both within ten
   // minutes. madeBy: the device's login, so signing that device out ends what it made.
-  createLoginLink(human: string, ttlS = 600, opts: { withCode?: boolean; madeBy?: number | null } = {}): { token: string; code: string | null; expires_at: number } {
+  // readOnly: the login it makes reads the page's state and nothing else (a program such as a board feeder).
+  createLoginLink(human: string, ttlS = 600, opts: { withCode?: boolean; madeBy?: number | null; readOnly?: boolean } = {}): { token: string; code: string | null; expires_at: number } {
     if (!this.db.query("SELECT 1 FROM humans WHERE name = ?").get(human)) throw new AxosError(`no human '${human}'`);
     const token = newSecret("axoslogin");
     const t = this.now();
-    this.db.query("INSERT INTO login_links (token_hash, human, created_at, expires_at, made_by) VALUES (?, ?, ?, ?, ?)").run(hashSecret(token), human, t, t + ttlS * 1000, opts.madeBy ?? null);
+    const ro = opts.readOnly ? 1 : 0;
+    this.db.query("INSERT INTO login_links (token_hash, human, created_at, expires_at, made_by, read_only) VALUES (?, ?, ?, ?, ?, ?)").run(hashSecret(token), human, t, t + ttlS * 1000, opts.madeBy ?? null, ro);
     let code: string | null = null;
     if (opts.withCode) {
       code = shortCode();
-      this.db.query("INSERT INTO login_links (token_hash, human, created_at, expires_at, code_hash, made_by) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(hashSecret(newSecret("axoslogin")), human, t, t + ttlS * 1000, hashSecret(code), opts.madeBy ?? null);
+      this.db.query("INSERT INTO login_links (token_hash, human, created_at, expires_at, code_hash, made_by, read_only) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(hashSecret(newSecret("axoslogin")), human, t, t + ttlS * 1000, hashSecret(code), opts.madeBy ?? null, ro);
     }
     return { token, code, expires_at: t + ttlS * 1000 };
   }
@@ -420,11 +426,11 @@ export class Hub {
       this.event("axos", "login.code_refused", null, { client: oneLine(client, 64) });
       throw new AxosError("that code is not valid now; make a new one on the other device");
     }
-    const r = this.db.query("SELECT human FROM login_links WHERE token_hash = ?").get(l.token_hash) as { human: string };
+    const r = this.db.query("SELECT human, read_only FROM login_links WHERE token_hash = ?").get(l.token_hash) as { human: string; read_only: number };
     const key = newSecret("axosui");
     this.db.transaction(() => {
       this.db.query("UPDATE login_links SET used_at = ? WHERE token_hash = ?").run(t, l.token_hash);
-      this.db.query("INSERT INTO logins (human, key_hash, label, created_at, last_seen) VALUES (?, ?, ?, ?, ?)").run(r.human, hashSecret(key), oneLine(label, 120), t, t);
+      this.db.query("INSERT INTO logins (human, key_hash, label, created_at, last_seen, read_only) VALUES (?, ?, ?, ?, ?, ?)").run(r.human, hashSecret(key), oneLine(label, 120), t, t, r.read_only ? 1 : 0);
     })();
     this.loginTries.delete(r.human);
     this.event(`human:${r.human}`, "login.added", null, { label, by: "code" });
@@ -441,7 +447,7 @@ export class Hub {
 
   // Opening the link: the device gets a key of its own (into its cookie), the link dies.
   redeemLoginLink(token: string, label = ""): { human: string; key: string } {
-    const l = this.db.query("SELECT * FROM login_links WHERE token_hash = ?").get(hashSecret(token)) as { human: string; expires_at: number; used_at: number | null } | null;
+    const l = this.db.query("SELECT * FROM login_links WHERE token_hash = ?").get(hashSecret(token)) as { human: string; expires_at: number; used_at: number | null; read_only: number } | null;
     if (!l) throw new AxosError("this login link is not valid");
     if (l.used_at) throw new AxosError("this login link was already used; make a new one on a device where you are logged in");
     if (l.expires_at < this.now()) throw new AxosError("this login link has expired; make a new one on a device where you are logged in");
@@ -449,7 +455,7 @@ export class Hub {
     const t = this.now();
     this.db.transaction(() => {
       this.db.query("UPDATE login_links SET used_at = ? WHERE token_hash = ?").run(t, hashSecret(token));
-      this.db.query("INSERT INTO logins (human, key_hash, label, created_at, last_seen) VALUES (?, ?, ?, ?, ?)").run(l.human, hashSecret(key), oneLine(label, 120), t, t);
+      this.db.query("INSERT INTO logins (human, key_hash, label, created_at, last_seen, read_only) VALUES (?, ?, ?, ?, ?, ?)").run(l.human, hashSecret(key), oneLine(label, 120), t, t, l.read_only ? 1 : 0);
     })();
     this.loginTries.delete(l.human); // a link login proves the person; a lock set by a guesser ends
     this.event(`human:${l.human}`, "login.added", null, { label });
@@ -1385,14 +1391,15 @@ export class Hub {
   }
 
   // The page key (from `axos init` or `axos human key`; login null) or a device's own login key.
-  authenticateLogin(uiKey: string): { human: string; login: number | null } | null {
+  // read_only: a program's login (createLoginLink readOnly): the page lets it read the state and nothing else.
+  authenticateLogin(uiKey: string): { human: string; login: number | null; read_only: boolean } | null {
     const hash = hashSecret(uiKey);
     const h = this.db.query("SELECT name FROM humans WHERE ui_key_hash = ?").get(hash) as { name: string } | null;
-    if (h) return { human: h.name, login: null };
-    const l = this.db.query("SELECT id, human FROM logins WHERE key_hash = ?").get(hash) as { id: number; human: string } | null;
+    if (h) return { human: h.name, login: null, read_only: false };
+    const l = this.db.query("SELECT id, human, read_only FROM logins WHERE key_hash = ?").get(hash) as { id: number; human: string; read_only: number } | null;
     if (!l) return null;
     this.db.query("UPDATE logins SET last_seen = ? WHERE id = ?").run(this.now(), l.id);
-    return { human: l.human, login: l.id };
+    return { human: l.human, login: l.id, read_only: !!l.read_only };
   }
 
   authenticateHuman(uiKey: string): string | null {
@@ -1415,6 +1422,12 @@ export class Hub {
   agentReachable(agentId: string): boolean {
     const seen = this.lastSeen(agentId);
     return seen !== null && this.now() - seen < SESSION_LIVE_MS;
+  }
+
+  private silentFor(holder: string, ms: number): boolean {
+    if (this.streams.has(holder)) return false;
+    const seen = this.lastSeen(holder);
+    return seen === null || this.now() - seen >= ms;
   }
 
   private lastSeen(holder: string): number | null {
@@ -1477,7 +1490,8 @@ export class Hub {
     const prev = row?.holder ?? null;
     if (prev === key) return;
     if (prev) {
-      const gone = (this.session(prev)?.ended_at ?? null) !== null || !this.isOnline(prev);
+      const otherMachine = prev.split("#")[0] !== key.split("#")[0];
+      const gone = (this.session(prev)?.ended_at ?? null) !== null || (!this.isOnline(prev) && (!otherMachine || this.silentFor(prev, CROSS_MACHINE_AWAY_MS)));
       if (!gone || this.humanOfHolder(prev) !== this.humanOfHolder(key)) return;
     }
     this.db.query("UPDATE roles SET holder = ?, since = ? WHERE project = ? AND role = ?").run(key, this.now(), s.project, MAIN_ROLE);
@@ -1741,7 +1755,7 @@ export class Hub {
   // A role stays with its holder until it releases it, its session ends, or another session takes it over. Taking it
   // from one's own holder that is away (a sleeping laptop, a dropped connection) needs nothing; from one that is online
   // it needs force: the human's words, logged verbatim. The displaced holder is told either way.
-  claimRole(agentId: string, project: string, role: string, force?: string, session?: string): { took_over_from: string | null } {
+  claimRole(agentId: string, project: string, role: string, force?: string, session?: string, opts: { noAsk?: boolean } = {}): { took_over_from: string | null; asked?: { ask_id: number; human: string } } {
     this.requireScope(agentId, project, session);
     checkName("role", role);
     this.sweep();
@@ -1760,9 +1774,21 @@ export class Hub {
       throw new AxosError(`role '${role}' is held by a session of ${this.humanOfHolder(prev)}; only they can release it (or it frees itself when that session ends)`);
     }
     const reason = force?.trim() || null;
-    const away = !!prev && prev !== me && !this.isOnline(prev);
-    if (prev && prev !== me && !away && !reason) {
-      throw new AxosError(`role '${role}' is held by ${this.label(prev)} (${this.whereabouts(prev)}); a takeover needs force set to the human's words authorising it`);
+    // Away from another machine means silent for an hour, not ten minutes: a quiet session is often alive (no wake
+    // channel, its human in a long pause), and a session on another machine could otherwise retry until it is
+    // "away" and take the role without the human (security re-review 2026-11-03, F4).
+    const otherMachine = !!prev && prev !== agentId && !prev.startsWith(`${agentId}#`);
+    const away = !!prev && prev !== me && !this.isOnline(prev) && (!otherMachine || this.silentFor(prev, CROSS_MACHINE_AWAY_MS));
+    if (prev && prev !== me && !away) {
+      // Nothing that arrives through a machine is the human's authority (pasted text passes as typed; 2026-11-03 trust
+      // fix). On the holder's own machine a takeover is that login's own act: force is its recorded reason. From another
+      // machine it is a question to the human, on their page and phone; it happens on their yes.
+      const sameMachine = prev === agentId || prev.startsWith(`${agentId}#`);
+      if (!sameMachine) {
+        if (opts.noAsk) throw new AxosError(`role '${role}' is held by ${this.label(prev)}, online on another machine; claim_role from a session asks your human`);
+        return { took_over_from: null, asked: this.askTakeover(agentId, project, role, prev, me, reason) };
+      }
+      if (!reason) throw new AxosError(`role '${role}' is held by ${this.label(prev)} (${this.whereabouts(prev)}); a takeover on this machine needs force: the reason, shown to the holder`);
     }
     const t = this.now();
     // A claim is a request from the claimer: it counts as being seen, like every call does on the way in.
@@ -1813,6 +1839,46 @@ export class Hub {
         "(a role taken in a repo's own role system or by a hook is not an AXOS claim unless the hook reports it)");
     }
     return `role:${project}/${role}`;
+  }
+
+  // A takeover from an online holder on another machine: the human answers on page or phone ("let it" / "no", ten
+  // minutes, default no). One open question per role and claimer.
+  private askTakeover(agentId: string, project: string, role: string, from: string, to: string, reason: string | null): { ask_id: number; human: string } {
+    const human = this.humanOfHolder(to)!;
+    const action = JSON.stringify({ kind: "takeover", project, role, from, to });
+    const open = this.db.query("SELECT id FROM asks WHERE answer IS NULL AND action_json = ?").get(action) as { id: number } | null;
+    if (open) return { ask_id: open.id, human };
+    // After a "no" (or the default), the same takeover is not asked again for an hour (security review 2026-11-03, F3).
+    // Keyed on the role and its holder, not the claimer: a fresh session per attempt is the same request (re-review N1).
+    const no = this.db.query(`SELECT answered_at FROM asks WHERE answer IS NOT NULL AND answer <> 'let it' AND answered_at > ?
+        AND json_extract(action_json, '$.kind') = 'takeover' AND json_extract(action_json, '$.project') = ? AND json_extract(action_json, '$.role') = ?
+        AND json_extract(action_json, '$.from') = ? ORDER BY answered_at DESC LIMIT 1`)
+      .get(this.now() - TAKEOVER_NO_PAUSE_MS, project, role, from) as { answered_at: number } | null;
+    if (no) throw new AxosError(`${human} said no to this takeover at ${when(no.answered_at)}; ask again after ${when(no.answered_at + TAKEOVER_NO_PAUSE_MS)}, or ask the holder to release it`);
+    const q = `${this.label(addr(to))} wants to take the role '${role}' from ${this.label(addr(from))}, which is online on another machine.` +
+      (reason ? ` Its reason: ${oneLine(reason, 200)}` : "") + " Let it?";
+    const r = this.askHuman(agentId, { project, human, question: q, options: ["let it", "no"], default_answer: "no", deadline_s: 600, session: to.includes("#") ? to : undefined });
+    this.db.query("UPDATE asks SET action_json = ? WHERE id = ?").run(JSON.stringify({ kind: "takeover", project, role, from, to }), r.ask_id);
+    this.event(addr(to), "role.takeover_asked", project, { role, from, ask: r.ask_id });
+    return { ask_id: r.ask_id, human };
+  }
+
+  // The human's yes to a takeover question: the role moves if the holder it named still holds it.
+  private takeoverOnYes(action: { project: string; role: string; from: string; to: string }, human: string): void {
+    // Only from the holder the question named (not a role released or moved since: F5), and only to a claimer still there.
+    const row = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(action.project, action.role) as { holder: string | null } | null;
+    if (!row || row.holder !== action.from) return;
+    if (action.to.includes("#") && (this.session(action.to)?.ended_at ?? null) !== null) return;
+    const toAgent = action.to.split("#")[0]!;
+    if ((this.db.query("SELECT revoked FROM agents WHERE id = ?").get(toAgent) as { revoked: number } | null)?.revoked !== 0) return;
+    const t = this.now();
+    this.db.query("UPDATE roles SET holder = ?, since = ? WHERE project = ? AND role = ?").run(action.to, t, action.project, action.role);
+    this.event(`human:${human}`, "role.taken_over", action.project, { role: action.role, from: action.from, to: action.to, by_yes: true });
+    if (row.holder) {
+      this.systemMessage(action.project, addr(row.holder), "status", `You no longer hold the role '${action.role}': ${human} let ${this.label(addr(action.to))} take it over.`,
+        "The role's mailbox, leases and open questions stay with the role.", "high");
+    }
+    this.emit(addr(action.to), { kind: "role" });
   }
 
   roleUnread(project: string, role: string): number {
@@ -2848,13 +2914,28 @@ export class Hub {
     }
     if (!answer.trim()) throw new AxosError("answer is empty");
     const t = this.now();
+    // Past its deadline the default stands, even before the sweep has written it (F5).
+    if (ask.deadline !== null && ask.deadline <= t) throw new AxosError(`ask ${askId} is past its deadline; its default${ask.default_answer ? ` (${ask.default_answer})` : ""} stands`);
     this.db.query("UPDATE asks SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(answer, `human:${human}`, t, askId);
     this.ack(`human:${human}`, [ask.message_id]);
-    const sent = this.send({ kind: "human", name: human }, {
-      project: ask.project, to: [this.liveBox(addr(ask.asker))], type: "answer",
-      summary: `${human} answered: ${answer.trim().split("\n")[0]!.slice(0, 200)}`, body: answer, re: ask.message_id, priority: "high",
-    });
+    // The answer stands even when the asker can no longer receive it (its machine revoked, it left the project): the
+    // human is not shown an error for answering (security review 2026-11-03, F5).
+    let sent: { id: number } = { id: 0 };
+    try {
+      sent = this.send({ kind: "human", name: human }, {
+        project: ask.project, to: [this.liveBox(addr(ask.asker))], type: "answer",
+        summary: `${human} answered: ${answer.trim().split("\n")[0]!.slice(0, 200)}`, body: answer, re: ask.message_id, priority: "high",
+      });
+    } catch (e) {
+      if (!(e instanceof AxosError)) throw e;
+      this.event(`human:${human}`, "ask.answer_undeliverable", ask.project, { ask: askId, reason: e.message });
+    }
     this.event(`human:${human}`, "ask.answered", ask.project, { ask: askId });
+    const action = (ask as AskRow & { action_json?: string | null }).action_json;
+    if (action && answer.trim() === "let it") {
+      const act = JSON.parse(action) as { kind: string; project: string; role: string; from: string; to: string };
+      if (act.kind === "takeover") this.takeoverOnYes(act, human);
+    }
     this.settledOnPhone(ask, `Answered: ${answer.trim().split("\n")[0]!.slice(0, 80)}`, `Sent to ${this.senderTitle(addr(ask.asker))}.`, sent.id);
     return { message_id: sent.id };
   }

@@ -254,6 +254,16 @@ test("the human page: key login, the state document, answering an ask; the app s
   expect(st.me.machines.map((m) => m.name)).toContain("spare");
   expect((await fetch(`${base}/ui/api/machine/revoke`, { method: "POST", body: JSON.stringify({ name: "spare" }), headers: { cookie, "Content-Type": "application/json" } })).status).toBe(200);
   expect(hub.authenticateAgent(spare.token)).toBeNull();
+  // A read-only login (a program's): it reads the state, marks nothing as shown, and may do nothing else.
+  const ro = await fetch(`${base}/ui/login/${hub.createLoginLink("alice", 600, { readOnly: true }).token}`, { method: "POST", redirect: "manual", headers: { "user-agent": "axos vinea-bridge" } });
+  const roCookie = ro.headers.get("set-cookie")!.split(";")[0]!;
+  const roState = await (await fetch(`${base}/ui/api/state`, { headers: { cookie: roCookie } })).json() as { inbox: { id: number }[] };
+  expect(roState.inbox.map((m) => m.id)).toContain(forPage);
+  expect(hub.receipts(forPage)[0]!.shown_at).toBeNull();
+  for (const route of ["answer", "ack", "send", "login-link", "password", "machine/revoke"]) {
+    const res = await fetch(`${base}/ui/api/${route}`, { method: "POST", body: "{}", headers: { cookie: roCookie, "Content-Type": "application/json" } });
+    expect([route, res.status]).toEqual([route, 403]);
+  }
   // Such a program logs in with a link of the person's and is listed under its own name in their logins.
   const prog = await fetch(`${base}/ui/login/${hub.createLoginLink("alice").token}`, { method: "POST", redirect: "manual", headers: { "user-agent": "vinea axos-bridge" } });
   expect(prog.status).toBe(303);
@@ -1709,8 +1719,17 @@ test("the machine's command: bare axos in words, project and machine commands, a
     const add = await run("dev1", dir, ["machine", "add"]);
     expect(add.out).toMatch(new RegExp(`axos join ${base}/join/axosinv_`));
     expect((await run("dev1", dir, ["machine"])).out).toMatch(/dev3\s+/);
-    expect((await run("dev1", dir, ["machine", "revoke", "dev1"])).err).toContain("this is the machine you are on");
-    expect((await run("dev1", dir, ["login-link"])).out).toContain(`${base}/ui/login/axoslogin_`);
+    // Revoking is the page's, and a login made from a machine only reads (security review 2026-11-03, F1 and F2).
+    expect((await run("dev1", dir, ["machine", "revoke", "dev3"])).err).toContain("revoke a machine on your page");
+    expect(hub.machinesOf("alice").map((m) => m.name)).toContain("dev3");
+    const link = (await run("dev1", dir, ["login-link"])).out;
+    expect(link).toContain("A read-only login for a program");
+    const token = /\/ui\/login\/(axoslogin_[A-Za-z0-9_-]+)/.exec(link)![1]!;
+    const { key } = hub.redeemLoginLink(token);
+    expect(hub.authenticateLogin(key)!.read_only).toBe(true);
+    const raw = await fetch(`${base}/api/me`, { method: "POST", headers: { Authorization: `Bearer ${tokens.dev1}`, "Content-Type": "application/json" }, body: JSON.stringify({ op: "login-link", read_only: false }) });
+    const viaApi = /axoslogin_[A-Za-z0-9_-]+/.exec(await raw.text())![0];
+    expect(hub.authenticateLogin(hub.redeemLoginLink(viaApi).key)!.read_only).toBe(true);
     expect((await run("dev1", dir, ["admin", "health"])).err).toContain('"admin_ssh": "<ssh host>"');
 
     // Connected by its remote on dev1: a clone on dev3 connects at its first session, and says so once.

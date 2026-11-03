@@ -305,15 +305,16 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }));
 
   server.registerTool("claim_role", {
-    description: "Take a role. While you hold it you read its mailbox and speak as it, until you release it or your session ends. A role held by another session of your human that is away (not connected) is simply taken over; one that is online needs force with the human's words.",
+    description: "Take a role. While you hold it you read its mailbox and speak as it, until you release it or your session ends. A role held by another session of your human that is away (not connected) is simply taken over. One held by an online session on this machine needs force (your reason, shown to the holder); one held by an online session on another machine becomes a question to your human (page and phone), and moves on their yes.",
     inputSchema: strict({
       project: projectArg,
       role: z.string(),
-      force: z.string().optional().describe("Only for taking over from an online holder: the human's words authorising it, quoted"),
+      force: z.string().optional().describe("Only for taking over from an online holder: the reason, recorded and shown to the holder (on another machine your human decides)"),
     }),
   }, tool(({ project: p, role, force }) => {
     const pr = project(p);
     const r = hub.claimRole(agent.id, pr, role, force, conn.session);
+    if (r.asked) return `Not yours yet: ${role} in ${pr} is held by an online session on another machine, so ${r.asked.human} decides: asked on their page and phone (question ${r.asked.ask_id}, ten minutes, default no). You hold it once they say "let it"; the answer arrives here.`;
     const tail = conn.session ? "Its mail now reaches you and you speak as the role." : `Pass as="${role}" to act as the role.`;
     return `You hold ${role} in ${pr}${r.took_over_from ? `, taken over from ${hub.label(r.took_over_from)}` : ""}. ${tail} ` +
       `Its mailbox: ${hub.mailText(`role:${pr}/${role}`)}. It stays yours until you release it or this session ends.`;

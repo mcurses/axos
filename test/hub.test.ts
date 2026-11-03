@@ -228,15 +228,17 @@ describe("roles", () => {
     expect(() => hub.send(A, note(["role:main-coordinatr"]))).toThrow(/known roles: elevated/);
   });
 
-  test("a held role refuses a second claimer; force with words takes over, the role's mail stays with the role", () => {
+  test("a held role on another machine moves only on the human's yes; the role's mail stays with the role", () => {
     hub.defineRole(SHOP, "elevated");
     hub.claimRole(DEV1, SHOP, "elevated");
     hub.touch(DEV1); // online: every request touches
     const viaRole = hub.send(B, note(["role:elevated"], "please restart the worker box"));
     const direct = hub.send(B, note(["agent:alice/dev1"], "personal note"));
-    expect(refusal(() => hub.claimRole(DEV3, SHOP, "elevated"))).toMatch(/held by alice\/dev1/);
+    // Another machine: the words are a reason, not authority; alice is asked and the role moves on her yes.
     const r = hub.claimRole(DEV3, SHOP, "elevated", "Alice 17:05: take elevated over, dev1 is stuck");
-    expect(r.took_over_from).toBe(DEV1);
+    expect(r.took_over_from).toBeNull();
+    hub.answerAsk("alice", r.asked!.ask_id, "let it");
+    expect(hub.roles(SHOP).find((x) => x.role === "elevated")!.holder).toBe(DEV3);
     expect(hub.inbox(`role:${SHOP}/elevated`).map((m) => m.id)).toEqual([viaRole.id]);
     expect(refusal(() => hub.seat(DEV1, SHOP, "elevated"))).toMatch(/alice\/dev3 does/);
     expect(hub.seat(DEV3, SHOP, "elevated")).toBe(`role:${SHOP}/elevated`);
@@ -244,7 +246,8 @@ describe("roles", () => {
     expect(old.map((m) => m.id)).toContain(direct.id);
     expect(old.map((m) => m.id)).not.toContain(viaRole.id);
     expect(old.some((m) => m.sender === "axos" && /no longer hold the role 'elevated'/.test(m.summary))).toBe(true);
-    expect(hub.events().some((e) => e.kind === "role.taken_over" && e.data_json.includes("dev1 is stuck"))).toBe(true);
+    expect(hub.events().some((e) => e.kind === "role.takeover_asked")).toBe(true);
+    expect(hub.events().some((e) => e.kind === "role.taken_over" && e.data_json.includes('"by_yes":true'))).toBe(true);
   });
 
   test("silence never frees a role: a holder quiet for days keeps it; a session-less one gone for a week loses it", () => {
@@ -258,16 +261,20 @@ describe("roles", () => {
     expect(hub.events().some((e) => e.kind === "role.released" && e.data_json.includes("gone for 7 days"))).toBe(true);
   });
 
-  test("an away holder is replaced by another of its human's sessions without force and told when back; an online one needs force", () => {
+  test("an away holder is replaced by another of its human's sessions without force and told when back; an online one asks the human", () => {
     hub.defineRole(SHOP, "elevated");
     hub.claimRole(DEV1, SHOP, "elevated");
     hub.touch(DEV1);
-    expect(refusal(() => hub.claimRole(DEV3, SHOP, "elevated"))).toMatch(/held by alice\/dev1 \(seen 0s ago\); a takeover needs force/);
+    expect(hub.claimRole(DEV3, SHOP, "elevated").asked).toBeTruthy();
     hub.streamOpened(DEV1);
     t += 11 * 60_000;
-    expect(refusal(() => hub.claimRole(DEV3, SHOP, "elevated"))).toMatch(/\(connected\)/);
+    // Connected counts as online; the first question ran out (default no), so the same takeover is not asked again for an hour.
+    expect(refusal(() => hub.claimRole(DEV3, SHOP, "elevated"))).toMatch(/alice said no to this takeover/);
     hub.streamClosed(DEV1);
     t += 11 * 60_000;
+    // Another machine: ten silent minutes are not enough (the holder may be alive and quiet); an hour is.
+    expect(refusal(() => hub.claimRole(DEV3, SHOP, "elevated"))).toMatch(/said no to this takeover/); // still asks (paused after the default no)
+    t += 50 * 60_000;
     expect(hub.claimRole(DEV3, SHOP, "elevated").took_over_from).toBe(DEV1);
     expect(hub.inbox(`agent:${DEV1}`).some((m) => /while you were away, alice\/dev3 took it/.test(shown(m.summary)))).toBe(true);
     expect(hub.events().some((e) => e.kind === "role.taken_over" && e.data_json.includes('"away":true'))).toBe(true);
@@ -443,7 +450,8 @@ describe("role mailboxes", () => {
   test("leases and questions belong to the role and pass to the next holder", () => {
     hub.lease(DEV3, { project: SHOP, resource: "slot:worker", as: "main-coordinator", ttl_s: 60 });
     const ask = hub.askHuman(DEV3, { project: SHOP, human: "alice", question: "Rehearse tonight?", options: ["yes", "no"], as: "main-coordinator" });
-    hub.claimRole(DEV1, SHOP, "main-coordinator", "Alice: dev3 is closing, dev1 takes over");
+    const take = hub.claimRole(DEV1, SHOP, "main-coordinator", "Alice: dev3 is closing, dev1 takes over");
+    hub.answerAsk("alice", take.asked!.ask_id, "let it");
     hub.answerAsk("alice", ask.ask_id, "yes");
     expect(hub.inbox(`role:${SHOP}/main-coordinator`).map((x) => x.sender)).toContain("human:alice");
     expect(hub.inbox(`agent:${DEV3}`).every((x) => x.sender === "axos")).toBe(true);
@@ -541,7 +549,7 @@ describe("sessions", () => {
   });
 
   test("the role belongs to one session: another session of the same token needs force", () => {
-    expect(refusal(() => hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper))).toMatch(/held by shop-5c \(alice\/dev3#35dabd9e, dev3\) \(seen 0s ago\); a takeover needs force/);
+    expect(refusal(() => hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper))).toMatch(/held by shop-5c \(alice\/dev3#35dabd9e, dev3\) \(seen 0s ago\); a takeover on this machine needs force/);
     expect(() => hub.send({ ...H(), as: "main-coordinator" }, note(["agent:alice/dev1"]))).toThrow(/do not hold the role/);
   });
 
@@ -853,6 +861,56 @@ describe("presence", () => {
   });
 });
 
+describe("what counts as the human's word (2026-11-03 trust fix)", () => {
+  test("a takeover from an online holder on another machine asks the human, and happens on their yes; on the same machine force is the reason", () => {
+    hub.defineRole(SHOP, "deployer");
+    const holder = hub.openSession(DEV1, { client_session: "d1d1d1d1-0000-0000-0000-000000000000", project: SHOP, name: "deploy-a" });
+    hub.claimRole(DEV1, SHOP, "deployer", undefined, holder);
+    const other = hub.openSession(DEV3, { client_session: "d3d3d3d3-0000-0000-0000-000000000000", project: SHOP, name: "deploy-b" });
+    // Another machine: words in force do not authorise it; the human is asked.
+    const r = hub.claimRole(DEV3, SHOP, "deployer", "Max said: take it", other);
+    expect(r.took_over_from).toBeNull();
+    expect(r.asked!.human).toBe("alice");
+    const ask = hub.asks({ human: "alice", open: true }).find((a) => a.id === r.asked!.ask_id)!;
+    expect(JSON.parse(ask.options_json)).toEqual(["let it", "no"]);
+    expect(ask.question).toContain("Its reason: Max said: take it");
+    expect(hub.roles(SHOP).find((x) => x.role === "deployer")!.holder).toBe(holder);
+    // Asked again: the same open question.
+    expect(hub.claimRole(DEV3, SHOP, "deployer", undefined, other).asked!.ask_id).toBe(r.asked!.ask_id);
+    // "no" leaves it; a new question, "let it", moves it, and the holder is told.
+    hub.answerAsk("alice", r.asked!.ask_id, "no");
+    expect(hub.roles(SHOP).find((x) => x.role === "deployer")!.holder).toBe(holder);
+    // After a no, the same takeover waits an hour before it is asked again (no stream of pushes).
+    expect(() => hub.claimRole(DEV3, SHOP, "deployer", undefined, other)).toThrow("alice said no to this takeover");
+    t += 61 * 60_000;
+    hub.openSession(DEV1, { client_session: "d1d1d1d1-0000-0000-0000-000000000000", project: SHOP }); // the holder, still online
+    hub.openSession(DEV3, { client_session: "d3d3d3d3-0000-0000-0000-000000000000", project: SHOP });
+    const again = hub.claimRole(DEV3, SHOP, "deployer", undefined, other);
+    // Past its deadline a yes does not count: the default stands.
+    t += 11 * 60_000;
+    expect(() => hub.answerAsk("alice", again.asked!.ask_id, "let it")).toThrow("past its deadline");
+    t -= 11 * 60_000;
+    hub.answerAsk("alice", again.asked!.ask_id, "let it");
+    expect(hub.roles(SHOP).find((x) => x.role === "deployer")!.holder).toBe(other);
+    expect(hub.inbox(`session:${holder}`).some((m) => m.sender === "axos" && m.summary.includes("alice let deploy-b"))).toBe(true);
+    // A local role system (the hook's role mirror) never asks the human: it is told the role is held elsewhere.
+    expect(() => hub.claimRole(DEV1, SHOP, "deployer", "the local role system names this session", hub.openSession(DEV1, { client_session: "d5d5d5d5-0000-0000-0000-000000000000", project: SHOP }), { noAsk: true }))
+      .toThrow(/online on another machine; claim_role from a session asks your human/);
+    // The same machine: force is the recorded reason; without it, refused.
+    const same = hub.openSession(DEV3, { client_session: "d4d4d4d4-0000-0000-0000-000000000000", project: SHOP, name: "deploy-c" });
+    expect(() => hub.claimRole(DEV3, SHOP, "deployer", undefined, same)).toThrow("a takeover on this machine needs force");
+    expect(hub.claimRole(DEV3, SHOP, "deployer", "the local role system names this session", same).took_over_from).toBe(other);
+  });
+
+  test("a read-only login made from a link only reads", () => {
+    const l = hub.createLoginLink("alice", 600, { readOnly: true });
+    const { key } = hub.redeemLoginLink(l.token, "program: x");
+    expect(hub.authenticateLogin(key)).toMatchObject({ human: "alice", read_only: true });
+    const full = hub.redeemLoginLink(hub.createLoginLink("alice").token);
+    expect(hub.authenticateLogin(full.key)!.read_only).toBe(false);
+  });
+});
+
 describe("unused machines", () => {
   test("health lists a machine unused for 14 days apart from mail nobody reads; it is not counted there", () => {
     hub.send(A, note([`agent:${SC}`], "for bob's machine", GAME));
@@ -870,17 +928,18 @@ describe("the main seat", () => {
     const b1 = hub.openSession(SC, { client_session: "b1b1b1b1-0000-0000-0000-000000000000", project: GAME, name: "g-b1" });
     const holder = () => hub.roles(GAME).find((r) => r.role === "main")!.holder;
     expect(holder()).toBe(a1);
-    // alice's first session goes away: bob's next session does not take her seat; alice's next one does.
-    t += 11 * 60_000;
+    // alice's first session goes away (an hour, since her next one is on another machine): bob's next session does
+    // not take her seat; alice's next one does.
+    t += 61 * 60_000;
     hub.openSession(SC, { client_session: "b2b2b2b2-0000-0000-0000-000000000000", project: GAME, name: "g-b2" });
     expect(holder()).toBe(a1);
     const a2 = hub.openSession(DEV3, { client_session: "a2a2a2a2-0000-0000-0000-000000000000", project: GAME, name: "g-a2" });
     expect(holder()).toBe(a2);
-    // Online, it stays: a later session of the same person does not take it by itself; claiming it needs force.
+    // Online, it stays: a later session of the same person does not take it by itself; claiming it asks the human.
     hub.openSession(DEV1, { client_session: "a3a3a3a3-0000-0000-0000-000000000000", project: GAME, name: "g-a3" });
     expect(holder()).toBe(a2);
     const a3 = hub.openSession(DEV1, { client_session: "a3a3a3a3-0000-0000-0000-000000000000", project: GAME });
-    expect(() => hub.claimRole(DEV1, GAME, "main", undefined, a3)).toThrow("a takeover needs force");
+    expect(hub.claimRole(DEV1, GAME, "main", undefined, a3).asked).toBeTruthy(); // another machine: alice is asked
     expect(b1).toBeTruthy();
   });
 });

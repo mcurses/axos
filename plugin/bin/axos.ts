@@ -1319,7 +1319,7 @@ async function adoptRemote(c: Config, cwd: string): Promise<string | null> {
 
 // Unused for 14 days or ever (the hub's UNUSED_MACHINE_MS): worth revoking.
 function unusedHint(m: { name: string; last_seen: number | null; created_at: number; this: boolean }): string {
-  return !m.this && (m.last_seen ?? m.created_at) < Date.now() - 14 * 86_400_000 ? ` · unused: axos machine revoke ${m.name}` : "";
+  return !m.this && (m.last_seen ?? m.created_at) < Date.now() - 14 * 86_400_000 ? " · unused: revoke it on your page" : "";
 }
 
 function ago(ms: number | null): string {
@@ -1393,8 +1393,8 @@ async function machineCmd(args: string[]): Promise<void> {
   }
   if (sub === "add" && rest.length === 0) return say(await mePost(c, t, { op: "machine-add" }));
   if (sub === "rename" && rest.length === 2) return say(await mePost(c, t, { op: "machine-rename", name: rest[0], to: rest[1] }));
-  if (sub === "revoke" && rest.length === 1) return say(await mePost(c, t, { op: "machine-revoke", name: rest[0] }));
-  throw new Error("usage: axos machine [list] | add | rename <name> <new name> | revoke <name>");
+  if (sub === "revoke") throw new Error("revoke a machine on your page (People, Your machines): from a machine, a session could free another machine's roles");
+  throw new Error("usage: axos machine [list] | add | rename <name> <new name>   (revoke one on your page: People, Your machines)");
 }
 
 async function personCmd(args: string[]): Promise<void> {
@@ -1405,7 +1405,10 @@ async function personCmd(args: string[]): Promise<void> {
   for (const l of await mePost(c, t, { op: "invite", person: name, project: pi === 0 ? rest[1] : undefined })) console.log(l);
 }
 
-async function loginLink(): Promise<void> {
+// A read-only login for a program (it reads the page's state, nothing else). A browser or phone logs in from the page:
+// a full login made from a machine could answer the person's questions for any session there.
+async function loginLink(args: string[]): Promise<void> {
+  if (args.some((a) => a !== "--read-only")) throw new Error("usage: axos login-link   (a read-only login for a program; a browser or phone logs in from your page)");
   const { c, t } = setUp();
   for (const l of await mePost(c, t, { op: "login-link" })) console.log(l);
 }
@@ -1530,7 +1533,7 @@ else if ((cmd === "link" || cmd === "unlink") && process.argv.length >= 5) {
 else if (cmd === "link" || cmd === "unlink") linkSaysWhich(cmd);
 else if (cmd === undefined) await status().catch((e: Error) => { console.error(e.message); process.exit(1); });
 else if (cmd === "project" || cmd === "machine" || cmd === "person" || cmd === "login-link") {
-  const f = cmd === "project" ? projectCmd : cmd === "machine" ? machineCmd : cmd === "person" ? personCmd : () => loginLink();
+  const f = cmd === "project" ? projectCmd : cmd === "machine" ? machineCmd : cmd === "person" ? personCmd : loginLink;
   await f(process.argv.slice(3)).catch((e: Error) => { console.error(e.message); process.exit(1); });
 }
 else if (cmd === "admin") {
@@ -1567,7 +1570,7 @@ else if (cmd === "trust") {
        axos use [<project>] [--new [<name>]] [--move] | use --none     this folder's project
        axos project [list] | new <name> | rename [<project>] <name> | link <a> <b>… | unlink <a> <b>… | share <project> <person> | join <project>
        axos machine [list] | add | rename <name> <new name> | revoke <name>
-       axos person invite <name> [--project <project>]     axos login-link     axos trust     axos whoami (JSON)
+       axos person invite <name> [--project <project>]     axos login-link (read-only, for a program)     axos trust     axos whoami (JSON)
        axos admin <command>       the hub's admin command on its server, over ssh (admin_ssh in the config)
        axos send --name <script> … | inbox --name <script> … | landed <remote>/<branch> | codex [<codex args>] | codex-bell --thread <id>
        short forms: axos link <a> <b>… · axos unlink <a> <b>… · axos rename [<project>] <name>`);

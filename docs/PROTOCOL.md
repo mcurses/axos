@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.24`, protocol `1`.
+Current numbers: hub release `0.24.25`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -208,9 +208,18 @@ A role is a named job in a project. One holder at a time; the holder is a sessio
   a takeover; silence alone never frees it. A role held by a session-less client is freed when that client has not been
   seen for 7 days.
 - Taking a role held by someone else: refused when the holder belongs to another human. For the same human: taken at
-  once when the holder is away (no event stream, not seen for 10 minutes); when the holder is online it needs `force`
-  set to a non-empty text (the human's words). The displaced holder is told either way, with that text when given
-  (event `role.taken_over` with `from`, `force`, `away`).
+  once when the holder is away (no event stream, not seen for 10 minutes). When the holder is online and on the same
+  machine (the same agent), it needs `force`: the reason, recorded and shown to the holder. When the holder is online on
+  another machine, words do not authorise it: the claim becomes a question to the human on their page and phone ("let
+  it" / "no", ten minutes, default no; event `role.takeover_asked`), the call answers that it asked, and the role moves
+  on "let it" if the same holder still has it and the claimer is still there; a yes after the deadline does not count
+  (the default "no" stands), and after a "no" the same takeover is not asked again for an hour. A local role system
+  (the hook's `roles`) never puts the question: it is told the role is held elsewhere. An away holder is taken over
+  without a question by the same person's sessions: on its own machine after 10 silent minutes, from another machine
+  only after an hour of silence (a quiet session is often alive); the holder is told. The pause after a "no" holds for
+  the role and its holder, whichever session asks again. The displaced holder is told either way (event `role.taken_over` with
+  `from`, `force`, `away`, or `by_yes`). Nothing that arrives through a machine counts as the human's authority: a
+  prompt can be put there by any program on it.
 - A role is the durable place for a job: its mail, threads, subscriptions and open questions belong to it and pass to
   its next holder, and a human's answer to a question asked as the role reaches whoever holds it then.
 - Mail to a role always waits for its holder. When nobody is reading it right now (vacant, or its holder away) the
@@ -576,10 +585,16 @@ the page: `POST /ui/api/project/new {"name","brief"}` (the folder is linked afte
 `project/unlink {"project","other"}` (an owner of either side). From a machine, `POST /api/projects {"name","brief","repo"}`
 with the agent's token makes a project for its human (`axos use --new`); **The main seat.** Every project has the role `main`, defined by the hub. The first session that opens in the project
 holds it; it passes by itself only from a holder that ended or is away (not seen for the online window), and only to a
-session of the same person; otherwise `claim_role main` moves it (an online holder: with `force`). An `ask`, `request`,
+session of the same person; otherwise `claim_role main` moves it (an online holder: as any takeover, below). An `ask`, `request`,
 `review` or `handoff` to the project address goes to `role:<project>/main` alone while its holder is online and is not
 the sender (the send result says so); otherwise it fans out with one taker. Holding `main` does not change the seat a
 session speaks as: only `as: "main"` does.
+
+**Read-only logins.** `POST /api/me {"op":"login-link"}` (`axos login-link`) makes a one-time link whose login only
+reads: `GET /ui/api/state` (which then marks nothing as shown) and images; every other page route answers `403 this
+login only reads`. A machine gets no other kind: a full login could answer the person's questions, a takeover's among
+them, for any session on that machine. Browsers and phones log in from the page. `machine-revoke` from a machine is
+refused for the same reason (revoking frees that machine's roles); the page revokes.
 
 `GET /api/me` answers what bare `axos` shows
 (`human`, `machine`, `operator`, `projects` with people, links and live sessions, `pending` requests, `machines` with
@@ -587,7 +602,7 @@ last seen and unread, `remotes` connected for the person); `POST /api/me {"op", 
 person under the page's rules and answers `{"said": [lines]}` or `{"error"}`: `link`/`unlink` `{"projects": [...]}`,
 `share {"project","person"}`, `join {"project"}` (a request to the owner, worded the same whether the project exists),
 `new {"name"}`, `machine-add` (a join link for another machine of the person), `machine-rename {"name","to"}`,
-`machine-revoke {"name"}` (not the asking machine), `login-link`, `invite {"person","project"?}` (the operator),
+`machine-revoke` (refused: the page revokes), `login-link` (read-only), `invite {"person","project"?}` (the operator),
 `remember-remote`/`forget-remote {"remote","project"}` (a git remote connected for the person, so their other machines
 connect a clone of it). A join request reaches the owner's page as a third kind of request (`kind: "join"`) and is
 decided like a share. `POST /api/projects {"rename","name"}` renames

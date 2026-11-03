@@ -217,7 +217,9 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
       try {
         hub.defineRole(p, r.role, r.description);
         const held = hub.roles(p).find((x) => x.role === r.role)?.holder;
-        if (held !== session) hub.claimRole(agent.id, p, r.role, r.reason ?? "the project's local role system names this session", session);
+        // A local role system never puts a takeover question to the human (security review 2026-11-03, F3): a role
+        // held online on another machine is left there, with a note.
+        if (held !== session) hub.claimRole(agent.id, p, r.role, r.reason ?? "the project's local role system names this session", session, { noAsk: true });
       } catch (e) {
         notes.push(`could not take role ${r.role}: ${(e as Error).message}`);
       }
@@ -362,10 +364,15 @@ async function handleMe(hub: Hub, req: Request, agent: AgentRow): Promise<Respon
         return json({ said: [`On the other machine, within 7 days: axos join ${base}/join/${inv.code}`], link: `${base}/join/${inv.code}` });
       }
       case "machine-rename": hub.renameMachine(human, str("name"), str("to").toLowerCase()); return json({ said: [`Renamed machine ${str("name")} to ${str("to").toLowerCase()}.`] });
-      case "machine-revoke": hub.revokeMachine(human, str("name"), agent.id); return json({ said: [`Revoked ${str("name")}: its login stopped working, its sessions ended, its roles and leases are free.`] });
+      // Revoking frees the machine's roles: from another machine that would skip the human's yes on a takeover
+      // (security review 2026-11-03, F2). It is the page's, where the human is.
+      case "machine-revoke": return json({ error: `revoke ${str("name") || "a machine"} on your page (People, Your machines): from a machine, a session could free another machine's roles` }, 400);
       case "login-link": {
-        const l = hub.createLoginLink(human, 600, { withCode: true });
-        return json({ said: [`Open within 10 minutes, once: ${base}/ui/login/${l.token}`, `or type the code ${l.code!.slice(0, 4)}-${l.code!.slice(4)} on the page's login.`], link: `${base}/ui/login/${l.token}` });
+        // From a machine only a read-only login: a full one could answer the human's questions (a takeover's among
+        // them) for any session on the machine (security review 2026-11-03, F1). A browser or phone logs in from the page.
+        const l = hub.createLoginLink(human, 600, { readOnly: true });
+        return json({ said: [`A read-only login for a program (it reads your page's state, nothing else), within 10 minutes, once: ${base}/ui/login/${l.token}`,
+          "A browser or phone logs in from your page (People, Add device), not from here."], link: `${base}/ui/login/${l.token}` });
       }
       case "invite": {
         const name = str("person").toLowerCase();

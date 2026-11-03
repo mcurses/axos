@@ -140,7 +140,7 @@ Next: a project for a repo: axos project add ${name}/<name> --repo <git address>
     ];
     lines.push(nobody.length ? `Nobody reading (${nobody.length}):` : "Nobody reading: nothing.", ...nobody.map((x) => `  - ${x}`));
     if (h.unused_machines.length) {
-      lines.push(`Machines nobody has used for 14 days or ever (${h.unused_machines.length}; their owner revokes them with axos machine revoke <name>): ` +
+      lines.push(`Machines nobody has used for 14 days or ever (${h.unused_machines.length}; their owner revokes them on the page, or the admin with axos agent revoke <human>/<name>): ` +
         h.unused_machines.map((m) => `${m.human}/${m.name} (${m.last_seen === null ? "never used" : `last ${iso(m.last_seen)}`}${m.unread ? `, ${m.unread} unread` : ""})`).join("; ") + ".");
     }
     lines.push(`Phone: ${h.pushes.sent} push(es) sent, ${h.pushes.failed} failed. Expired unread in the window: ${h.expired_since}.`);

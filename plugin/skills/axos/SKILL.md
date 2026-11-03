@@ -42,8 +42,8 @@ README), as itself or with `--as <role>` for a role you hold.
   get something done, so when it cannot wait, also tell someone who is there, or ask your human.
 - `role:main`: every project has it. The first session in the project holds it, and keeps it while online; it passes
   by itself only from a holder that ended or went away, and only to the same person's next session. It receives the
-  project's calls; it does not change who you speak as. `claim_role main` (with `force` and your human's words if its
-  holder is online) moves it.
+  project's calls; it does not change who you speak as. `claim_role main` moves it (an online holder: as any
+  takeover, below).
 - `session:<name>`: one particular session.
 - `project`: every session of the project seen in the last 7 days (away ones too) and its members' agents without
   one. A note or status reaches each of them. An ask, request, review or handoff to `project` goes to the project's
@@ -116,8 +116,9 @@ If the question gets settled elsewhere before they answer (they told you in chat
 
 `define_role(role, description)` creates a job one session holds at a time (reviewer, deployer, coordinator).
 `claim_role` takes it, and it stays yours until you release it or your session ends: quiet or asleep, you keep it. A
-role held by another session of your human that is away is simply taken over; one that is online needs `force` with
-your human's words, quoted.
+role held by another session of your human that is away is simply taken over. One that is online on this machine
+needs `force` with your reason (the holder sees it). One online on another machine is not yours to take: the claim
+asks your human on their phone, and the role moves on their yes; your human's words in `force` do not authorise it.
 `release_role` gives it back; its mailbox, leases and open questions stay with the role.
 A standing conversation partner for a person (a "desk" per job: a session that carries their words to a role and
 brings the answer back) is a role too: define it once, claim it at start. Its mail waits quietly while the desk is

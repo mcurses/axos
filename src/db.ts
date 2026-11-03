@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS logins (
   key_hash      TEXT NOT NULL UNIQUE,
   label         TEXT NOT NULL DEFAULT '',
   created_at    INTEGER NOT NULL,
-  last_seen     INTEGER
+  last_seen     INTEGER,
+  read_only     INTEGER NOT NULL DEFAULT 0     -- a program's login: it reads the page's state and nothing else
 );
 CREATE TABLE IF NOT EXISTS login_links (     -- one-time, short-lived: opening one logs that device in
   token_hash    TEXT PRIMARY KEY,
@@ -34,7 +35,8 @@ CREATE TABLE IF NOT EXISTS login_links (     -- one-time, short-lived: opening o
   expires_at    INTEGER NOT NULL,
   used_at       INTEGER,
   code_hash     TEXT,                          -- a short code typed on the other device (its own credential, beside the link)
-  made_by       INTEGER                        -- the login (device) it was made on; signing that device out ends it
+  made_by       INTEGER,                       -- the login (device) it was made on; signing that device out ends it
+  read_only     INTEGER NOT NULL DEFAULT 0     -- the login it makes only reads
 );
 CREATE INDEX IF NOT EXISTS login_links_code ON login_links (code_hash);
 -- Projects and agents are known by ids that never change; names are labels. A project's name is '<owner>/<slug>',
@@ -177,7 +179,8 @@ CREATE TABLE IF NOT EXISTS asks (
   seen_at       INTEGER,                       -- first shown on the asked human's page
   remind_at     INTEGER,                       -- when to push it once more if still open
   reminded_at   INTEGER,
-  stale_at      INTEGER                        -- no deadline and no answer for days: the asker was told
+  stale_at      INTEGER,                       -- no deadline and no answer for days: the asker was told
+  action_json   TEXT                           -- what the hub does on a yes: {"kind":"takeover",project,role,from,to}
 );
 CREATE TABLE IF NOT EXISTS attachments (     -- images shown with a question on the human's page; kept 30 days
   id            INTEGER PRIMARY KEY,
@@ -337,6 +340,9 @@ function migrate(db: Database): void {
     if (t && !t.sql.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
   };
   column("humans", "operator", "INTEGER NOT NULL DEFAULT 0");
+  column("logins", "read_only", "INTEGER NOT NULL DEFAULT 0");
+  column("login_links", "read_only", "INTEGER NOT NULL DEFAULT 0");
+  column("asks", "action_json", "TEXT");
   column("projects", "pair", "INTEGER NOT NULL DEFAULT 0");
   column("invites", "invited_by", "TEXT");
   column("invites", "new_human", "INTEGER");

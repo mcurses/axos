@@ -137,9 +137,11 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
 
   if (url.pathname.startsWith("/ui/api/")) {
     if (!human) return json({ error: "not logged in: open the page link with your key once (/ui?key=…, from axos human key)" }, 401);
+    // A read-only login (a program's) reads the state, and never marks anything as shown; everything else is refused.
+    if (auth!.read_only && !(req.method === "GET" && url.pathname === "/ui/api/state")) return json({ error: "this login only reads" }, 403);
     // peek=1: a program reading for the person (a board that mirrors the inbox) marks nothing as shown or seen; only a
     // screen the person looks at does.
-    if (req.method === "GET" && url.pathname === "/ui/api/state") return json(hub.display(JSON.stringify(state(hub, human, url.searchParams.get("peek") !== "1")), { human }));
+    if (req.method === "GET" && url.pathname === "/ui/api/state") return json(hub.display(JSON.stringify(state(hub, human, url.searchParams.get("peek") !== "1" && !auth!.read_only)), { human }));
     if (req.method !== "POST") return json({ error: "not found" }, 404);
     // SameSite=Strict already keeps other sites out; JSON only and the Origin check are further locks.
     if (!sameOrigin(req)) return json({ error: "bad origin" }, 403);

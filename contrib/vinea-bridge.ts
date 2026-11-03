@@ -7,7 +7,7 @@
 // /ui/api/state?peek=1, which marks nothing as shown) and writes vinea widgets with a vinea agent token. Answers stay
 // on the AXOS page and phone (vinea holds none); every link goes to the AXOS page (https).
 //
-//   bun contrib/vinea-bridge.ts login <link>   once: a link from `axos login-link` (or the page's "Add device")
+//   bun contrib/vinea-bridge.ts login <link>   once: a link from `axos login-link` (it can then only read)
 //   bun contrib/vinea-bridge.ts [--once]       fill the widgets every 20 s (or once)
 // vinea servers: VINEA_URL and VINEA_TOKEN, else the vinea CLI's ~/.config/vinea/config.json ("servers").
 
