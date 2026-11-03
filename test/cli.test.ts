@@ -32,3 +32,21 @@ test("project link with several projects links the first with each; a wrong name
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("role open: the owner's sessions reach it from any project; --off closes it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "axos-cli-"));
+  const db = join(dir, "axos.db");
+  try {
+    const hub = new Hub(openDb(db), { sweep: false });
+    hub.addHuman("ana");
+    const p = hub.addProject("ana/hq");
+    hub.defineRole(p, "owner", "feedback");
+    expect(cli(db, "role", "open", "ana/hq", "owner").out).toContain("opened role owner in ana/hq");
+    expect(hub.openRolesOf("ana").map((r) => r.role)).toEqual(["owner"]);
+    expect(cli(db, "role", "open", "ana/hq", "owner", "--off").out).toContain("closed role owner");
+    expect(hub.openRolesOf("ana")).toEqual([]);
+    expect(cli(db, "role", "open", "ana/hq", "nope").err).toContain("no role 'nope'");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
