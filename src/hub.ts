@@ -1478,12 +1478,16 @@ export class Hub {
     const t = this.now();
     const prev = this.db.query("SELECT key, ended_at, name, former_names FROM sessions WHERE key = ?").get(key) as
       { key: string; ended_at: number | null; name: string | null; former_names: string } | null;
-    // A name is one session's in its project: a new session never takes the name of another that is still open there;
-    // it gets four more characters of its own key (stable, so it keeps that name while the other lives).
+    // A name is one present session's in its project: a session never takes the name of another that is open and not
+    // dormant there; it gets four more characters of its own key, and gets the plain name back once it is free. A session
+    // that already has the name keeps it (an established name is never taken away by a newcomer or a dormant twin).
     const longer = name && `${name}-${key.slice(key.indexOf("#") + 1, key.indexOf("#") + 5)}`;
-    if (name && project && (prev?.name === longer || (this.db.query(
-      "SELECT 1 FROM sessions WHERE project = ? AND name = ? AND key <> ? AND ended_at IS NULL AND kind = 'session' AND last_seen > ?",
-    ).get(project, name, key, t - SESSION_LIVE_MS)))) name = longer;
+    if (name && project && !(prev && prev.ended_at === null && prev.name === name)) {
+      const taken = (this.db.query(
+        "SELECT key, last_seen FROM sessions WHERE project = ? AND name = ? AND key <> ? AND ended_at IS NULL AND kind = 'session' AND last_seen > ?",
+      ).all(project, name, key, t - SESSION_LIVE_MS) as { key: string; last_seen: number }[]).some((x) => !this.dormant(x));
+      if (taken) name = longer;
+    }
     // A renamed session keeps answering to its last few names, so an address handed out before a restart still works.
     if (prev?.name && name && prev.name !== name) {
       const former = [...prev.former_names.split("\n").filter((n) => n && n !== name && n !== prev.name), prev.name].slice(-5).join("\n");
@@ -2108,6 +2112,11 @@ export class Hub {
           .get(project, ref, senderHuman);
         if (own.length) hit = own;
         else if (ownEver) throw new AxosError(`your session '${ref}' is not live in '${project}'`);
+      }
+      // A name shared with dormant sessions means the present one (names are unique among present sessions).
+      if (hit.length > 1 && !hit.some((x) => x.key === ref)) {
+        const present = hit.filter((x) => !this.dormant(x));
+        if (present.length) hit = present;
       }
       if (hit.length === 1) return [{ recipient: `session:${hit[0]!.key}`, via: `session:${hit[0]!.key}` }];
       if (hit.length > 1) throw new AxosError(`'${ref}' names ${hit.length} sessions; use the key: ${hit.map((x) => x.key).join(", ")}`);

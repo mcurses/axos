@@ -553,10 +553,22 @@ describe("sessions", () => {
     expect(hub.session(twin)!.name).toBe("shop-5c-c0ff");
     expect(hub.session(coord)!.name).toBe("shop-5c");
     expect(hub.send(A, note(["session:shop-5c"])).delivered_to).toEqual([`session:${coord}`]);
-    // Its next hook sends the plain name again; it stays the longer one while it lives.
+    // The established one keeps its name at its next hook; the newcomer keeps the longer one while the other is present.
+    hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-5c" });
+    hub.openSession(DEV3, { client_session: "c0ffee00-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-5c" });
+    expect([hub.session(coord)!.name, hub.session(twin)!.name]).toEqual(["shop-5c", "shop-5c-c0ff"]);
+    // Once the other has ended, the plain name comes back; the longer one still answers as a former name.
     hub.endSession(coord, "test");
     hub.openSession(DEV3, { client_session: "c0ffee00-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-5c" });
-    expect(hub.session(twin)!.name).toBe("shop-5c-c0ff");
+    expect(hub.session(twin)!.name).toBe("shop-5c");
+    expect(hub.send(A, note(["session:shop-5c-c0ff"])).delivered_to).toEqual([`session:${twin}`]);
+  });
+
+  test("a dormant session's name does not push a present one aside", () => {
+    t += 25 * 3_600_000; // coord and helper go dormant (no streams in this test)
+    const fresh = hub.openSession(DEV3, { client_session: "beef0000-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-e9" });
+    expect(hub.session(fresh)!.name).toBe("shop-e9");
+    expect(hub.send(A, note(["session:shop-e9"])).delivered_to).toEqual([`session:${fresh}`]);
   });
 
   test("the profile shows in a label only when the machine runs more than one, and says that it is the profile", () => {
