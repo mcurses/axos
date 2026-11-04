@@ -141,6 +141,10 @@ Next: a project for a repo: axos project add ${name}/<name> --repo <git address>
       ...h.unread_humans.map((u) => `${u.human} has ${u.n} high-priority message(s) unhandled on the page for over a day`),
     ];
     lines.push(nobody.length ? `Nobody reading (${nobody.length}):` : "Nobody reading: nothing.", ...nobody.map((x) => `  - ${x}`));
+    if (h.dormant_sessions.length) {
+      lines.push(`Dormant sessions with mail (${h.dormant_sessions.length}; no sign for a day, most likely closed without ending; they end after 7 days and their mail expires): ` +
+        h.dormant_sessions.map((s) => `${s.label} ${s.n}`).join("; ") + ".");
+    }
     if (h.unused_machines.length) {
       lines.push(`Machines nobody has used for 14 days or ever (${h.unused_machines.length}; their owner revokes them on the page, or the admin with axos agent revoke <human>/<name>): ` +
         h.unused_machines.map((m) => `${m.human}/${m.name} (${m.last_seen === null ? "never used" : `last ${iso(m.last_seen)}`}${m.unread ? `, ${m.unread} unread` : ""})`).join("; ") + ".");

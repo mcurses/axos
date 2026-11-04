@@ -29,10 +29,10 @@ function ProjectNode({ data }: NodeProps<FlowNode<ProjectData>>) {
         <span className="map-project-symbol"><FolderGit2Icon /></span>
         <div className="min-w-0"><p className="eyebrow truncate">{data.owner ?? "Shared project"}</p><h3 title={data.id} className="truncate text-base font-semibold">{data.id.split("/").slice(-1)[0]}</h3></div>
       </div>
-      <div className="map-project-activity"><Dot on={live > 0} /><span>{live ? `${live} agent${live === 1 ? "" : "s"} online` : "No agents online"}</span>{data.roles.length > 0 && <span className="ml-auto text-muted-foreground">{data.roles.filter((r) => r.holder).length} roles held</span>}</div>
+      <div className="map-project-activity"><Dot on={live > 0} /><span>{live ? `${live} session${live === 1 ? "" : "s"} online` : "No sessions online"}</span>{data.roles.length > 0 && <span className="ml-auto text-muted-foreground">{data.roles.filter((r) => r.holder).length} roles held</span>}</div>
       <div className="map-project-sessions">
         {sessions.map((s) => <div key={s.label} className="flex min-w-0 items-center justify-between gap-3"><span title={s.label} className="truncate">{splitLabel(s.label).name}</span><span className="shrink-0 text-[10px] text-muted-foreground">{s.online ? "Online" : "Away"}</span></div>)}
-        {data.sessions.length > 3 && <p className="text-muted-foreground">+{data.sessions.length - 3} more agents</p>}
+        {data.sessions.length > 3 && <p className="text-muted-foreground">+{data.sessions.length - 3} more sessions</p>}
         {!data.sessions.length && <p className="text-muted-foreground">Ready for your first agent.</p>}
       </div>
       <div className="map-project-people"><span className="eyebrow">Humans</span><span title={data.humans.join(", ")} className="truncate">{data.humans.includes(data.me) ? "You" : ""}{others.length ? `${data.humans.includes(data.me) ? " + " : ""}${others.length === 1 ? others[0] : `${others.length} others`}` : ""}</span></div>

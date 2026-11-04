@@ -73,13 +73,13 @@ export function People({ state, onChange }: { state: State; onChange: () => void
       </section>
 
       {(state.me.machines?.length ?? 0) > 0 && <section className="settings-section">
-        <div className="section-intro"><h3>Your machines</h3><p>Computers where your agents run, each with its own AXOS login. Revoke one you no longer use: its login stops at once.</p></div>
+        <div className="section-intro"><h3>Your machines</h3><p>Computers where your sessions run, each with its own AXOS login. Revoke one you no longer use: its login stops at once.</p></div>
         <div>
           <ul className="divide-y divide-border">{state.me.machines!.map((m) => {
             const unused = (m.last_seen ?? m.created_at) < state.now - 14 * 86_400_000;
             return <li key={m.name} className="entity-row">
               <span className="entity-icon"><LaptopIcon /></span>
-              <div className="min-w-0 flex-1"><h4 className="font-medium">{m.name}</h4><p className="supporting-text">{m.last_seen ? `Seen ${ago(m.last_seen, state.now)}` : "Never used"}{m.sessions > 0 && <><span className="mx-2 opacity-50">·</span>{m.sessions} session{m.sessions === 1 ? "" : "s"} now</>}{m.unread > 0 && <><span className="mx-2 opacity-50">·</span>{m.unread} unread</>}{unused && <><span className="mx-2 opacity-50">·</span>unused</>}</p></div>
+              <div className="min-w-0 flex-1"><h4 className="font-medium">{m.name}</h4><p className="supporting-text">{m.last_seen ? `Seen ${ago(m.last_seen, state.now)}` : "Never used"}{m.sessions > 0 && <><span className="mx-2 opacity-50">·</span>{m.sessions} session{m.sessions === 1 ? "" : "s"} now</>}{unused && <><span className="mx-2 opacity-50">·</span>unused</>}</p></div>
               {revoking === m.name
                 ? <><Button variant="destructive" size="sm" disabled={busy} onClick={() => run(async () => { await post("machine/revoke", { name: m.name }); setRevoking(null); })}>Revoke {m.name}</Button><Button variant="ghost" size="sm" onClick={() => setRevoking(null)}>Keep</Button></>
                 : <Button variant="ghost" disabled={busy} onClick={() => setRevoking(m.name)}>Revoke…</Button>}

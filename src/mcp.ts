@@ -239,12 +239,12 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }));
 
   server.registerTool("inbox", {
-    description: "Read your messages: to this session, to roles it holds, and to your agent. Unread first, oldest first. Ack the ones you have handled.",
+    description: "Read your messages: to this session, to roles it holds, and to your machine (a mailbox the sessions on this machine share, called agent in addresses). Unread first, oldest first. Ack the ones you have handled.",
     inputSchema: strict({
       project: z.string().optional().describe("Only this project"),
       unread_only: z.boolean().optional().describe("Default true; false shows recent history, newest first"),
       limit: z.number().int().min(1).max(100).optional(),
-      only: z.enum(["roles", "session", "agent"]).optional().describe("Only one kind of mailbox: the roles you hold, this session's own, or your agent's shared one"),
+      only: z.enum(["roles", "session", "agent"]).optional().describe("Only one kind of mailbox: the roles you hold, this session's own, or your machine's shared one ('agent')"),
       as: asArg,
     }),
   }, tool(({ project: name, unread_only, limit, only, as }) => {
@@ -381,7 +381,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const ls = hub.leases(project(p));
     const lines = ls.live.map((l) => `- ${l.resource}: ${hub.label(l.holder)} (${l.mode}) until ${when(l.expires_at)}${l.note ? ` — ${l.note}` : ""}`);
     lines.push(...ls.waiting.map((w) => `- waiting for ${w.resource}: ${hub.label(w.agent_id)} (${w.mode})`));
-    return lines.join("\n") || "No leases.";
+    return lines.join("\n") || "No leases. A lease marks a shared thing (a version number, a deploy, a file) as yours for a while, so others wait instead of colliding (the lease tool, e.g. resource version:parser).";
   }));
 
   server.registerTool("subscribe", {
@@ -429,7 +429,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     return hub.subscriptions(project(p)).map((s) =>
       `- ${s.id}: ${hub.label(s.subscriber)} waits for ${s.sha ? s.sha.slice(0, 10) : "every landing"} on ${s.remote ? `${s.remote}/` : ""}${s.branch}` +
       `${s.repo ? ` (${s.repo})` : ""}${s.subject_filter ? ` with "${s.subject_filter}" in the subject` : ""} until ${when(s.expires_at)}${s.note ? ` — ${s.note}` : ""}`,
-    ).join("\n") || "No open subscriptions.";
+    ).join("\n") || "No open subscriptions. subscribe tells you when a commit or branch lands (a landing script reports it with axos landed), instead of polling.";
   }));
 
   server.registerTool("ask_human", {
@@ -498,7 +498,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }, tool(({ project: p }) => {
     const now = hub.now();
     return hub.presence(project(p)).map((a) =>
-      `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "away"}${a.wake === "wakes" ? " (wakes on messages)" : a.wake === "no" ? " (listening, but does not wake on messages)" : a.wake === "unknown" ? " (listening; whether it wakes is not known)" : ""}, seen ${ago(a.last_seen, now)}, ${a.unread ? `${a.unread} to handle (${a.unseen} not read yet)` : "nothing to handle"}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`,
+      `- ${a.address.startsWith("agent:") ? "machine " : ""}${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "away"}${a.wake === "wakes" ? " (wakes on messages)" : a.wake === "no" ? " (listening, but does not wake on messages)" : a.wake === "unknown" ? " (listening; whether it wakes is not known)" : ""}, seen ${ago(a.last_seen, now)}, ${a.unread ? `${a.unread} to handle (${a.unseen} not read yet)` : "nothing to handle"}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`,
     ).join("\n") || "Nobody is live.";
   }));
 

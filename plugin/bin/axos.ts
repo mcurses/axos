@@ -503,7 +503,7 @@ async function hook(kind: string): Promise<void> {
   try {
     const r = await hookCall(id, kind === "end" ? "end" : kind === "start" ? "start" : "check", kind === "stop");
     // A refused token is not an outage: say it at session start, where a person can act on it.
-    if (r.error === "token") context = kind === "start" ? `The AXOS hub (${id.c.url}) refused this machine's token: it was revoked or is wrong. AXOS is off until a person fixes it.` : "";
+    if (r.error === "token") context = kind === "start" ? `The AXOS hub (${id.c.url}) refused this machine's token: it was revoked or is wrong. AXOS is off here until your user asks the person who runs the hub for a new invite link and runs axos join --force <link>.` : "";
     else context = r.context ?? "";
     // The session's roles on its meum tab, from the hub's view, written only when they change (the suite owner, 2667).
     if (Array.isArray(r.labels) && kind !== "end") state.labels = await meumLabels(r.labels, state.labels);
@@ -511,7 +511,7 @@ async function hook(kind: string): Promise<void> {
     state.unreachable = false;
   } catch {
     // Say it once, not on every prompt.
-    if (!state.unreachable && kind !== "end") context = `AXOS hub (${id.c.url}) is unreachable; messages from other sessions will not arrive until it is back.`;
+    if (!state.unreachable && kind !== "end") context = `AXOS hub (${id.c.url}) is unreachable; messages wait on the hub and arrive when it is back. To see whether it is up, open ${id.c.url} in a browser.`;
     state.unreachable = true;
   }
   if (kind === "start" && context && !state.unreachable && wakeupOff() === true) context = `${context}\n${WAKEUP_OFF}`;
@@ -719,7 +719,7 @@ async function mcp(): Promise<void> {
       }
       const id = currentIdentity();
       if (!id) {
-        if (msg.id !== undefined) write({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: `AXOS is not configured: ${CONFIG_PATH} or the token is missing` } });
+        if (msg.id !== undefined) write({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: `AXOS is not set up on this machine (${CONFIG_PATH} or the token is missing): your user runs axos join <invite link>; the person who runs the hub makes the link` } });
         continue;
       }
       if (id.quiet) {
@@ -756,7 +756,7 @@ async function confirm(question: string): Promise<boolean> {
 
 async function trust(): Promise<void> {
   const c = config();
-  if (!c) throw new Error(`AXOS is not configured: no ${CONFIG_PATH}`);
+  if (!c) throw new Error(NOT_SET_UP);
   const repo = repoFile(c, process.cwd());
   if (!repo) return console.log(`No usable .axos.json for ${hostOf(c.url)} at or above this folder.`);
   if (trusted(repo.dir, repo.ref)) return console.log(`${repo.dir}/.axos.json is already trusted.`);
@@ -858,7 +858,7 @@ async function landed(args: string[]): Promise<void> {
 
   const c = config();
   const t = c && token(c);
-  if (!c || !t) throw new Error(`AXOS is not configured: ${CONFIG_PATH} or the token is missing`);
+  if (!c || !t) throw new Error(NOT_SET_UP);
   const project = projectArg ?? projectOf(c, process.cwd()).project;
   if (!project) throw new Error("this folder belongs to no AXOS project (or its .axos.json is not trusted yet); say --project <p>");
   const res = await fetch(`${c.url.replace(/\/$/, "")}/api/landed`, {
@@ -867,7 +867,7 @@ async function landed(args: string[]): Promise<void> {
     body: JSON.stringify({ project, repo, remote, branch, head, commits, subject }),
     signal: AbortSignal.timeout(10_000),
   });
-  if (res.status === 401) throw new Error("the hub refused this machine's token");
+  if (res.status === 401) throw new Error(TOKEN_REFUSED);
   const r = (await res.json().catch(() => ({ error: `the hub answered ${res.status}` }))) as { error?: string; project?: string; commits?: number; told?: number };
   if (r.error) throw new Error(r.error);
   console.log(`Reported to ${r.project}: ${head.slice(0, 10)} on ${where} (${repo}), ${r.commits} commit(s); ${r.told} subscription(s) told.`);
@@ -897,7 +897,7 @@ function scriptHub(name: string | undefined, projectArg: string | undefined) {
   if (!name) throw new Error("say which script this is: --name <name> (lowercase letters, digits, . _ -); replies to it wait under that name");
   const c = config();
   const t = c && token(c);
-  if (!c || !t) throw new Error(`AXOS is not configured: ${CONFIG_PATH} or the token is missing`);
+  if (!c || !t) throw new Error(NOT_SET_UP);
   const project = projectArg ?? projectOf(c, process.cwd()).project;
   if (!project) throw new Error("this folder belongs to no AXOS project (or its .axos.json is not trusted yet); say --project <p>");
   const url = c.url.replace(/\/$/, "");
@@ -908,7 +908,7 @@ function scriptHub(name: string | undefined, projectArg: string | undefined) {
       headers: { ...h, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }),
     });
-    if (res.status === 401) throw new Error("the hub refused this machine's token");
+    if (res.status === 401) throw new Error(TOKEN_REFUSED);
     if (!res.ok) throw new Error((await res.text()).trim() || `the hub answered ${res.status}`);
     const r = (await res.json()) as { result?: { content?: { text?: string }[]; isError?: boolean }; error?: { message: string } };
     if (r.error) throw new Error(r.error.message);
@@ -941,7 +941,7 @@ async function inboxCmd(args: string[]): Promise<void> {
   const hub = scriptHub(name, project);
   const q = new URLSearchParams({ ...(as ? { as } : {}), ...(all ? { all: "1" } : {}), ...(limit ? { limit } : {}) });
   const res = await fetch(`${hub.url}/api/inbox?${q}`, { headers: hub.h, signal: AbortSignal.timeout(15_000) });
-  if (res.status === 401) throw new Error("the hub refused this machine's token");
+  if (res.status === 401) throw new Error(TOKEN_REFUSED);
   const doc = (await res.json().catch(() => ({ error: `the hub answered ${res.status}` }))) as
     { error?: string; unread: number; messages: { id: number; from: string; from_name: string | null; sent_by: string | null; type: string; summary: string; body: string; re: number | null; sent: string; acked: boolean }[] };
   if (doc.error) throw new Error(doc.error);
@@ -981,7 +981,7 @@ async function codexBell(args: string[]): Promise<void> {
   if (session !== undefined && !/^[A-Za-z0-9-]{8,80}$/.test(session)) throw new Error("--session must be 8-80 letters, digits or '-', as Codex sends it");
   const c = config();
   const t = c && token(c);
-  if (!c || !t) throw new Error(`AXOS is not configured: ${CONFIG_PATH} or the token is missing`);
+  if (!c || !t) throw new Error(NOT_SET_UP);
   const project = projectArg ?? projectOf(c, process.cwd()).project;
   if (!project) throw new Error("this folder belongs to no AXOS project; run it in the repo Codex works in, or say --project <p>");
   const h: Record<string, string> = { Authorization: `Bearer ${t}`, "x-axos-profile": encodeURIComponent(profile()), "x-axos-project": encodeURIComponent(project) };
@@ -1021,7 +1021,7 @@ async function claudeBell(args: string[]): Promise<void> {
   if (!/^[A-Za-z0-9-]{8,80}$/.test(session)) throw new Error("--session must be the Claude session id (8-80 letters, digits or '-')");
   const c = config();
   const t = c && token(c);
-  if (!c || !t) throw new Error(`AXOS is not configured: ${CONFIG_PATH} or the token is missing`);
+  if (!c || !t) throw new Error(NOT_SET_UP);
   const project = projectArg ?? projectOf(c, process.cwd()).project;
   if (!project) throw new Error("this folder belongs to no AXOS project; run it in the session's folder, or say --project <p>");
   const h: Record<string, string> = { Authorization: `Bearer ${t}`, "x-axos-profile": encodeURIComponent(profile()), "x-axos-project": encodeURIComponent(project), "x-axos-session": session };
@@ -1100,7 +1100,7 @@ const CODEX_MAP = join(dirname(CONFIG_PATH), "codex-sessions.json"); // { "<code
 async function codexLaunch(args: string[]): Promise<number> {
   const c = config();
   const t = c && token(c);
-  if (!c || !t) throw new Error(`AXOS is not configured: ${CONFIG_PATH} or the token is missing`);
+  if (!c || !t) throw new Error(NOT_SET_UP);
   const cwd = realpathSync(process.cwd());
   const project = projectOf(c, cwd).project;
   if (!project) throw new Error("this folder belongs to no AXOS project (axos use <project> connects it)");
@@ -1192,7 +1192,7 @@ async function resolveProject(c: Config, t: string, ref: string): Promise<{ id: 
   const res = await fetch(`${c.url.replace(/\/$/, "")}/api/whoami?project=${encodeURIComponent(ref)}`, {
     headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(10_000),
   });
-  if (res.status === 401) throw new Error("the hub refused this machine's token");
+  if (res.status === 401) throw new Error(TOKEN_REFUSED);
   const r = (await res.json().catch(() => null)) as { error?: string; project?: { id: string; name: string }; projects?: { name: string }[] } | null;
   if (!r) return { id: ref }; // an older hub
   if (r.error || !r.project) {
@@ -1375,7 +1375,7 @@ interface Me {
 
 async function meGet(c: Config, t: string, here?: string | null): Promise<Me> {
   const res = await fetch(`${c.url.replace(/\/$/, "")}/api/me${here ? `?here=${encodeURIComponent(here)}` : ""}`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(10_000) });
-  if (res.status === 401) throw new Error("the hub refused this machine's token");
+  if (res.status === 401) throw new Error(TOKEN_REFUSED);
   const r = (await res.json().catch(() => null)) as (Me & { error?: string }) | null;
   if (!r || r.error) throw new Error(r?.error ?? `the hub answered ${res.status} (older than 0.24.22?)`);
   return r;
@@ -1423,15 +1423,19 @@ function ago(ms: number | null): string {
   return m < 2 ? "online" : m < 120 ? `seen ${m} min ago` : m < 48 * 60 ? `seen ${Math.round(m / 60)} h ago` : `not seen for ${Math.round(m / 1440)} days`;
 }
 
+const TOKEN_REFUSED = "the hub refused this machine's token (revoked or wrong): ask the person who runs your hub for a new invite link, then axos join --force <link>";
+const NOT_SET_UP = `AXOS is not set up on this machine (${CONFIG_PATH} or the token is missing): axos join <invite link>; the person who runs your hub makes the link`;
+
 // Bare `axos`: where am I, in words.
 async function status(): Promise<void> {
   const c = config();
-  if (!c) return console.log("AXOS is not set up on this machine. With an invite link: axos join <link>.");
+  if (!c) return console.log("AXOS is not set up on this machine. With an invite link: axos join <link>. The person who runs your hub makes one on their page (People, Invite).");
   const t = token(c);
   if (!t) return console.log(`AXOS: ${c.url}, but this machine has no token (${tokenPath(c)}). axos join <link> sets it up.`);
   const here = projectOf(c, process.cwd());
   const me = await meGet(c, t, here.project);
   const lines = [`AXOS at ${c.url}: you are ${me.human}, on machine ${me.machine}${me.operator ? " (you run this hub: axos person invite adds people)" : ""}.`];
+  lines.push(`Your page: ${c.url.replace(/\/$/, "")}/ui (questions for you, people, sending, phone notifications; on a new device log in with your password or a code from a device already logged in).`);
   const rule = here.rule;
   lines.push(here.project
     ? `This folder: ${here.rule?.name ?? me.here ?? me.projects.find((p) => p.name === here.project)?.name ?? here.project} (${rule?.remote ? `every checkout of ${rule.remote}` : rule?.path ? `folder rule ${rule.path}` : "the repo's .axos.json"}).`
@@ -1450,7 +1454,6 @@ async function status(): Promise<void> {
   for (const m of me.machines) {
     const bits = [m.this ? "this one" : ago(m.last_seen)];
     if (m.sessions) bits.push(`${m.sessions} session${m.sessions === 1 ? "" : "s"}`);
-    if (m.unread) bits.push(`${m.unread} unread`);
     lines.push(`  ${m.name.padEnd(24)} ${bits.join(" · ")}${unusedHint(m)}`);
   }
   if (me.pending.length) lines.push("", `Waiting for your answer on your page: ${me.pending.map((r) => `${r.from} ${r.kind === "join" ? "wants to join" : r.kind === "share" ? "shares" : "wants to link"} ${r.project}`).join("; ")}.`);
@@ -1482,7 +1485,7 @@ async function machineCmd(args: string[]): Promise<void> {
   const say = (lines: string[]) => { for (const l of lines) console.log(l); };
   if (!sub || sub === "list") {
     for (const m of (await meGet(c, t)).machines) {
-      console.log(`${m.name.padEnd(24)} ${m.this ? "this one" : ago(m.last_seen)}${m.sessions ? ` · ${m.sessions} session${m.sessions === 1 ? "" : "s"}` : ""}${m.unread ? ` · ${m.unread} unread` : ""}${unusedHint(m)}`);
+      console.log(`${m.name.padEnd(24)} ${m.this ? "this one" : ago(m.last_seen)}${m.sessions ? ` · ${m.sessions} session${m.sessions === 1 ? "" : "s"}` : ""}${unusedHint(m)}`);
     }
     return;
   }
@@ -1547,7 +1550,7 @@ async function rename(args: string[]): Promise<void> {
 
 async function unlink(): Promise<void> {
   const c = config();
-  if (!c) throw new Error(`AXOS is not configured: no ${CONFIG_PATH}`);
+  if (!c) throw new Error(NOT_SET_UP);
   const cwd = process.cwd();
   const git = gitRemotes(cwd);
   const keys = new Set(git?.remotes.map((r) => r.key));
@@ -1590,11 +1593,84 @@ async function whoami(): Promise<void> {
   }, null, 2));
 }
 
+// ---------------------------------------------------------------- help
+
+// `axos <command> --help` (or `axos help <command>`): what the command does and the noun behind it, in a few lines.
+// The words people meet: a machine is one computer with its own token; a session is one running Claude Code or Codex
+// window on it; a project is what sessions talk in; a role is a mailbox one session holds at a time.
+const HELP: Record<string, string> = {
+  "": `axos
+  Says where you are: the hub, you, your page's address, this folder's project, your projects and your machines.`,
+  join: `axos join <invite link> [--name <this machine>] [--force]
+  Sets this machine up: a machine is one computer of yours with its own token, and every Claude Code or Codex window on it
+  is a session. The invite link comes from the person who runs your hub (their page, People, Invite). --force replaces
+  a token that was revoked.`,
+  use: `axos use [<project>] [--new [<name>]] [--remote <name>] [--here] [--move] | axos use --none
+  Connects this folder to a project, so every session started here joins it. A project is what sessions talk in: its
+  sessions see each other, message each other and share its roles. Without a name it says where the folder belongs now;
+  --new makes a project; --none disconnects. Connected by the repo's remote, every clone on every machine of yours connects.`,
+  project: `axos project [list] | new <name> | rename [<project>] <new name> | link <a> <b>… | unlink <a> <b>… | share <project> <person> | join <project>
+  Your projects. A link lets two projects' sessions reach each other: your own are linked at once, another person's
+  project only when they accept on their page. share adds a person to a project you own; join asks its owner to let you in.`,
+  machine: `axos machine [list] | add | rename <name> <new name>
+  Your machines: computers with a token of yours. add prints a link that sets up another one. Revoking one is done on
+  your page (People, Your machines), where you see which is which.`,
+  person: `axos person invite <name> [--project <project>]
+  Invites someone to the hub (its operator only): prints a link for them, valid 7 days. With --project they join that project.`,
+  "login-link": `axos login-link
+  A read-only login for a program (a dashboard, a widget): it can read your page's state and never answer or send.
+  A browser or phone logs in from your page instead.`,
+  trust: `axos trust
+  Accepts this repo's committed .axos.json, which names the project the folder belongs to. Asked once per file.`,
+  whoami: `axos whoami
+  What this folder and this session look like to AXOS, as JSON: hub, person, machine, project and by which rule.`,
+  rename: `axos rename <new name> | axos rename <owner>/<name> <new name>
+  Renames this folder's project, or a named one of yours. The old name keeps working.`,
+  link: `axos link <a> <b>…
+  Links your own projects so their sessions may reach each other (the same as axos project link). Which project a folder
+  belongs to is axos use, not link.`,
+  unlink: `axos unlink <a> <b>…
+  Undoes axos link.`,
+  admin: `axos admin <command>
+  Runs the hub's own admin command on its server over ssh (admin_ssh in ~/.config/axos/config.json). axos admin help lists it.`,
+  send: `axos send --name <script> (--to <address>[,…] | --re <id>) --summary <s> [--body <text>|-] [--type <t>] [--priority low|normal|high] [--as <role>] [--project <p>] [--dedupe <key>] [--deliver-at <time>]
+  For scripts (a timer, a CI step): sends as a named script of this machine, whose replies wait for axos inbox.
+  A person sends from their page (Send). Addresses: role:<role>, session:<name>, human:<name>, project.
+  A role is a mailbox one session holds at a time; it outlives the session, so mail to it waits for the next holder.`,
+  inbox: `axos inbox --name <script> [--as <role>] [--json] [--all] [--ack] [--limit <n>] [--project <p>]
+  For scripts: reads the replies to a script's messages. A person reads their mail on their page.`,
+  landed: `axos landed <remote>/<branch> [<commit>] [--since <old head>] [--repo <name>] [--subject <s>] [--project <p>]
+  For a landing script: tells AXOS what it put on a branch, so sessions that subscribed to a commit or the branch hear it.`,
+  "claude-bell": `axos claude-bell --session <Claude session id> [--project <p>]
+  Wakes a Claude Code session started with claude --bg when mail comes for it (it has no other way to hear it while idle).`,
+  "codex-bell": `axos codex-bell --thread <Codex session> [--session <id>] [--project <p>]
+  Wakes an idle Codex started by hand when mail comes for it. axos codex does this for you.`,
+};
+
+// Words people try that are not commands, answered with where the thing is.
+const NEAREST: Record<string, string> = {
+  status: "Bare axos says where you are.",
+  role: "A role is a mailbox one session holds at a time (maintainer, reviewer…); it outlives the session, so mail to it waits for the next holder. Sessions take roles with their claim_role tool; your page lists them on each project's card.",
+  page: "Your page is the hub's address followed by /ui; bare axos prints it.",
+  ask: "Questions from sessions to you arrive on your page and phone; answer them there.",
+  phone: "Your phone: open your page on it, then Notifications, turn on.",
+  agents: "Bare axos lists your projects with their sessions now; your page's Map shows who is where.",
+};
+NEAREST.roles = NEAREST.role!; NEAREST.asks = NEAREST.ask!; NEAREST.sessions = NEAREST.agents!; NEAREST.who = NEAREST.agents!;
+
 // ---------------------------------------------------------------- main
 
 // Run as a program; imported (by a test) it only offers its functions.
 if (import.meta.main) {
 const [cmd, arg] = process.argv.slice(2);
+const wantsHelp = cmd !== undefined && cmd !== "codex" && cmd !== "hook" && cmd !== "mcp" && process.argv.slice(3).some((a) => a === "--help" || a === "-h");
+if (wantsHelp || (cmd === "help" && arg)) {
+  const which = cmd === "help" ? arg! : cmd!;
+  const text = HELP[which] ?? (which === "status" ? HELP[""] : undefined);
+  if (!text) { console.error(`axos has no command '${which}'. axos help lists them.`); process.exit(2); }
+  console.log(text);
+  process.exit(0);
+}
 if (cmd === "mcp") await mcp();
 else if (cmd === "hook" && arg) await hook(arg).catch(() => {});
 else if (cmd === "whoami") await whoami();
@@ -1665,6 +1741,7 @@ else if (cmd === "trust") {
   });
 } else {
   const unknown = !!cmd && cmd !== "help" && cmd !== "--help";
+  if (unknown && NEAREST[cmd!]) { console.error(`axos has no command '${cmd}'. ${NEAREST[cmd!]}`); process.exit(2); }
   if (unknown) console.error(`axos has no command '${cmd}'.`);
   console.error(`usage: axos                      where you are: hub, you, this folder's project, your projects and machines
        axos join <invite link>    set this machine up
@@ -1674,7 +1751,8 @@ else if (cmd === "trust") {
        axos person invite <name> [--project <project>]     axos login-link (read-only, for a program)     axos trust     axos whoami (JSON)
        axos admin <command>       the hub's admin command on its server, over ssh (admin_ssh in the config)
        axos send --name <script> … | inbox --name <script> … | landed <remote>/<branch> | codex [<codex args>] | codex-bell --thread <id> | claude-bell --session <id>
-       short forms: axos link <a> <b>… · axos unlink <a> <b>… · axos rename [<project>] <name>`);
+       short forms: axos link <a> <b>… · axos unlink <a> <b>… · axos rename [<project>] <name>
+       axos <command> --help says what a command does; axos send and inbox are for scripts, a person uses the page.`);
   process.exit(unknown ? 2 : 0);
 }
 }

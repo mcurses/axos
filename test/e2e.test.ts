@@ -319,7 +319,7 @@ test("the plugin's hooks: start orients in a few lines, check shows new messages
     (await (await fetch(`${base}/api/hook`, { method: "POST", headers: headers(sid, name), body: JSON.stringify(body) })).json()) as { context: string };
   const sid = "aaaaaaaa-1111-2222-3333-444444444444";
   const start = await hook(sid, "shop-zz", { event: "start", roles: [{ role: "frontend-coordinator", reason: "roles/claims names this session", description: "runs the frontend lane" }] });
-  expect(start.context).toContain("shop-zz (alice/dev3#aaaaaaaa, dev3) in project alice/shop, holding the role frontend-coordinator");
+  expect(start.context).toContain("shop-zz (alice/dev3#aaaaaaaa) in project alice/shop, holding the role frontend-coordinator");
   expect(start.context.split("\n\n")[0]!.split("\n").length).toBe(2); // the orientation; waiting messages follow it
   expect((await hook(sid, "shop-zz", { event: "check" })).context).toBe("");
 
@@ -902,7 +902,7 @@ test("a landing script reports with axos landed; the subscribed session gets one
     const inbox = (await call(c, "inbox")).text;
     expect(inbox).toContain(`Landed: ${feat.slice(0, 10)} is on gitlab/staging (shop): "Merge pull request 547"`);
     expect(inbox).toContain("Your note: remove worktree review-547");
-    expect((await call(c, "subscriptions")).text).toBe("No open subscriptions.");
+    expect((await call(c, "subscriptions")).text).toStartWith("No open subscriptions.");
     expect((await call(c, "subscribe", { branch: "staging", sha: feat })).text).toMatch(/^Already landed: /);
   } finally {
     await c.close();
@@ -1763,6 +1763,15 @@ test("the machine's command: bare axos in words, project and machine commands, a
     expect(status.out).toContain("This folder belongs to no project");
     expect(status.out).toMatch(/alice\/shop\s/);
     expect(status.out).toMatch(/dev1\s+this one/);
+    // The page's address, help per command, and the words people try answered with where the thing is (discoverability, 2026-11-04).
+    expect(status.out).toContain(`Your page: ${base}/ui`);
+    expect(status.out).not.toContain("unread");
+    const sendHelp = await run("dev1", dir, ["send", "--help"]);
+    expect([sendHelp.code, sendHelp.out]).toEqual([0, expect.stringContaining("For scripts")]);
+    expect((await run("dev1", dir, ["help", "use"])).out).toContain("A project is what sessions talk in");
+    const role = await run("dev1", dir, ["role"]);
+    expect([role.code, role.err]).toEqual([2, expect.stringContaining("A role is a mailbox one session holds at a time")]);
+    expect((await run("dev1", dir, ["status"])).err).toContain("Bare axos says where you are.");
     // A folder tied to a project by its id alone (as a repo's .axos.json does) is shown by the project's name.
     const byId = join(realpathSync(dir), "by-id");
     mkdirSync(byId);

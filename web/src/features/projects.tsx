@@ -115,13 +115,15 @@ export function ProjectCard({ p, now, me, people = [], operator = false, onChang
           </ul>
         </section>
         <section>
-          <h3 className="mb-2 font-medium text-muted-foreground text-xs uppercase tracking-wide">Roles</h3>
+          <h3 className="mb-1 font-medium text-muted-foreground text-xs uppercase tracking-wide">Roles</h3>
+          <p className="mb-2 text-muted-foreground text-xs">A role is a mailbox one session holds at a time; mail to it waits for the next holder.</p>
           <ul className="flex flex-col gap-1.5 text-sm">
             {p.roles.map((r) => (
-              <li key={r.role} title={r.description}>
+              <li key={r.role}>
                 <span className="font-medium">{r.role}</span>{" "}
                 <span className="text-muted-foreground">{r.holder ? splitLabel(r.holder).name : "vacant"}</span>
                 {r.unread > 0 && <Badge variant="secondary" className="ml-1 h-4 px-1 text-[10px]">{r.unread} to handle{r.unseen ? `, ${r.unseen} not read` : ""}</Badge>}
+                {r.description && <p className="text-muted-foreground text-xs">{r.description}</p>}
               </li>
             ))}
             {!p.roles.length && <li className="text-muted-foreground">None.</li>}

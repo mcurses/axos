@@ -247,6 +247,10 @@ export function holderOf(address: string): string {
 // A session that is not heard from (a laptop asleep, a project left for the weekend) stays live, with its roles, this
 // long; then it ends. A connected session is heard from every heartbeat.
 const SESSION_LIVE_MS = 7 * 86_400_000;
+// A session with no open stream and no sign for a day is dormant: most often a window that crashed or was closed without
+// its end hook. It still receives its mail and keeps its roles until the 7-day sweep ends it; it is only no longer listed
+// as present (presence, health). The discoverability critic and health, 2026-11-04.
+const SESSION_DORMANT_MS = 86_400_000;
 
 export function hashSecret(s: string): string {
   return createHash("sha256").update(s).digest("hex");
@@ -1430,6 +1434,11 @@ export class Hub {
     return seen !== null && this.now() - seen < this.onlineWindowMs;
   }
 
+  // A session silent for a day with no open stream (see SESSION_DORMANT_MS).
+  dormant(s: { key: string; last_seen: number }): boolean {
+    return !this.streams.has(s.key) && this.now() - s.last_seen > SESSION_DORMANT_MS;
+  }
+
   // An agent without a session counts as reachable while it has connected within the liveness window.
   agentReachable(agentId: string): boolean {
     const seen = this.lastSeen(agentId);
@@ -1464,11 +1473,17 @@ export class Hub {
     if (!/^[A-Za-z0-9-]{8,80}$/.test(cs)) throw new AxosError("session id must be 8-80 letters, digits or '-'");
     const key = `${agentId}#${cs.replace(/-/g, "").slice(0, 8).toLowerCase()}`;
     const project = s.project && this.isMember(agentId, s.project) ? s.project : null;
-    const name = s.name ? oneLine(s.name, 48) || null : null;
+    let name = s.name ? oneLine(s.name, 48) || null : null;
     const profile = s.profile ? oneLine(s.profile, 32) || null : null;
     const t = this.now();
     const prev = this.db.query("SELECT key, ended_at, name, former_names FROM sessions WHERE key = ?").get(key) as
       { key: string; ended_at: number | null; name: string | null; former_names: string } | null;
+    // A name is one session's in its project: a new session never takes the name of another that is still open there;
+    // it gets four more characters of its own key (stable, so it keeps that name while the other lives).
+    const longer = name && `${name}-${key.slice(key.indexOf("#") + 1, key.indexOf("#") + 5)}`;
+    if (name && project && (prev?.name === longer || (this.db.query(
+      "SELECT 1 FROM sessions WHERE project = ? AND name = ? AND key <> ? AND ended_at IS NULL AND kind = 'session' AND last_seen > ?",
+    ).get(project, name, key, t - SESSION_LIVE_MS)))) name = longer;
     // A renamed session keeps answering to its last few names, so an address handed out before a restart still works.
     if (prev?.name && name && prev.name !== name) {
       const former = [...prev.former_names.split("\n").filter((n) => n && n !== name && n !== prev.name), prev.name].slice(-5).join("\n");
@@ -1584,7 +1599,13 @@ export class Hub {
     const key = holderOf(holder);
     if (!key.includes("#")) return key;
     const s = this.session(key);
-    return s?.name ? `${s.name} (${key}${s.profile ? `, ${s.profile}` : ""})` : key;
+    if (!s?.name) return key;
+    // The Claude profile only tells sessions apart when the machine runs more than one; then it says what it is, so it is
+    // never read as the main seat (the discoverability critic, 2026-11-04).
+    const several = s.profile && (this.db.query(
+      "SELECT COUNT(DISTINCT profile) AS n FROM sessions WHERE agent_id = ? AND profile IS NOT NULL AND ended_at IS NULL AND last_seen > ?",
+    ).get(s.agent_id, this.now() - SESSION_LIVE_MS) as { n: number }).n > 1;
+    return `${s.name} (${key}${several ? `, profile ${s.profile}` : ""})`;
   }
 
   // wakes: whether the client says its host wakes on a ring (a Claude Code session with the channel, a Codex bridge);
@@ -1624,7 +1645,7 @@ export class Hub {
     const t = this.now();
     const rolesOf = (holder: string) =>
       (this.db.query("SELECT role FROM roles WHERE project = ? AND holder = ?").all(project, holder) as { role: string }[]).map((x) => x.role);
-    const sessions = this.liveSessions(project).map((s) => {
+    const sessions = this.liveSessions(project).filter((s) => !this.dormant(s) || rolesOf(s.key).length).map((s) => {
       const agent = this.db.query("SELECT human FROM agents WHERE id = ?").get(s.agent_id) as { human: string };
       return {
         id: s.key, address: `session:${s.key}`, name: s.name, profile: s.profile, human: agent.human, last_seen: s.last_seen as number | null,
@@ -3336,11 +3357,14 @@ export class Hub {
       `SELECT COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d JOIN messages m ON m.id = d.message_id
         WHERE d.acked_at IS NULL AND d.recipient LIKE ?`, `${kind}:%`) }));
     // Live sessions that have had mail they were not shown for over an hour: the hooks or the channel are not reaching them.
-    const stuck_sessions = all<{ key: string; name: string | null; project: string; wakes: number | null; n: number; oldest: number }>(
-      `SELECT s.key, s.name, s.project, s.wakes, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d
+    const stuck_all = all<{ key: string; name: string | null; project: string; wakes: number | null; last_seen: number; n: number; oldest: number }>(
+      `SELECT s.key, s.name, s.project, s.wakes, s.last_seen, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d
          JOIN messages m ON m.id = d.message_id JOIN sessions s ON 'session:' || s.key = d.recipient
         WHERE d.acked_at IS NULL AND d.shown_at IS NULL AND s.ended_at IS NULL AND m.created_at < ? GROUP BY s.key ORDER BY oldest`, t - 3_600_000)
       .map((s) => ({ ...s, label: this.label(`session:${s.key}`) }));
+    // Dormant sessions with mail are apart: a window that is gone, not a delivery that failed (it ends after 7 days).
+    const stuck_sessions = stuck_all.filter((s) => !this.dormant(s));
+    const dormant_sessions = stuck_all.filter((s) => this.dormant(s));
     // Agents' mailboxes with mail and no reader lately (the mail expires after a week). A machine nobody has used for 14
     // days (or ever) is listed apart: its mail is not a delivery the product failed, it is a login to clean up.
     const unread_agents_all = all<{ id: string; human: string; name: string; last_seen: number | null; created_at: number; n: number; oldest: number }>(
@@ -3369,12 +3393,13 @@ export class Hub {
     return {
       version: VERSION, now: t, since,
       messages: one<{ n: number }>("SELECT COUNT(*) AS n FROM messages WHERE created_at >= ?", since).n,
-      delivered, open, stuck_sessions, unread_agents, unused_machines, unread_roles, unread_humans,
+      delivered, open, stuck_sessions, dormant_sessions, unread_agents, unused_machines, unread_roles, unread_humans,
       pushes: { sent: count("push.sent"), failed: count("push.failed") },
       expired_since: count("delivery.expired") ? one<{ n: number }>("SELECT COALESCE(SUM(json_extract(data_json, '$.n')), 0) AS n FROM events WHERE kind = 'delivery.expired' AND at >= ?", since).n : 0,
       new: { humans: names("human.added", "name").length ? names("human.added", "name") : all<{ actor: string }>("SELECT actor FROM events WHERE kind = 'human.added' AND at >= ?", since).map((e) => e.actor.replace(/^human:/, "")),
              projects: [...names("project.added", "project"), ...names("project.created", "project")], agents: names("agent.added", "label") },
-      live_sessions: one<{ n: number }>("SELECT COUNT(*) AS n FROM sessions WHERE ended_at IS NULL AND kind = 'session' AND last_seen > ?", t - SESSION_LIVE_MS).n,
+      live_sessions: all<{ key: string; last_seen: number }>("SELECT key, last_seen FROM sessions WHERE ended_at IS NULL AND kind = 'session' AND last_seen > ?", t - SESSION_LIVE_MS)
+        .filter((x) => !this.dormant(x)).length,
       // Every held seat and whether its holder is reachable now: the owner's tick does not start when the owner's seat is held by a live session.
       seats: all<{ project: string; role: string; holder: string }>("SELECT project, role, holder FROM roles WHERE holder IS NOT NULL ORDER BY project, role")
         .map((r) => ({ ...r, label: this.label(r.holder), online: this.isOnline(r.holder) })),

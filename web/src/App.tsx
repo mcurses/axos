@@ -117,9 +117,9 @@ function Login() {
   const submit = (e: React.FormEvent) => { e.preventDefault(); void send("/ui/login", { name, password }); };
   return (
     <main className="mx-auto max-w-md px-4 py-12 sm:py-20">
-      <header className="mb-8 flex flex-col items-center gap-3 text-center"><img src={axosIcon} alt="" className="axos-mark size-20" /><h1 className="font-semibold text-2xl tracking-[0.18em]">AXOS</h1><p className="text-sm text-muted-foreground">Your humans, projects and agents.</p></header>
+      <header className="mb-8 flex flex-col items-center gap-3 text-center"><img src={axosIcon} alt="" className="axos-mark size-20" /><h1 className="font-semibold text-2xl tracking-[0.18em]">AXOS</h1><p className="text-sm text-muted-foreground">Your people, projects and sessions.</p></header>
       <div className="axos-login rounded-2xl border bg-card p-5 sm:p-6">
-      <h2 className="mb-4 text-lg font-medium">Welcome back</h2>
+      <h2 className="mb-4 text-lg font-medium">Log in</h2>
       <form className="flex flex-col gap-2" onSubmit={submit}>
         <label htmlFor="username" className="text-sm font-medium">Name</label>
         <Input id="username" name="username" autoComplete="username" placeholder="your name" value={name} onChange={(e) => setName(e.target.value)} />
@@ -136,6 +136,7 @@ function Login() {
           <Button variant="outline" type="submit">Use code</Button>
         </div>
       </form>
+      <p className="mt-5 border-t pt-4 text-muted-foreground text-sm">No password and no device logged in? Ask the person who runs this hub for a new login link.</p>
       </div>
     </main>
   );

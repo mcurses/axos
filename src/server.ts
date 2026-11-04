@@ -262,7 +262,8 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
             .map((r) => `${r.description || `The role ${r.role}`}: send to role:${r.project}/${r.role} (reachable from any of your projects).`),
           // The main seat's duty (Max, 2026-11-03, through the suite owner 2667).
           held.includes(mainRole(agent.human))
-            ? "As this project's main session, keep its meum workspace's name, icon and colour current: check them now and after a project change, and set them with `meum workspace rename|icon|color` when they are wrong or missing; you may also give the workspace up to four labels of your own with `meum workspace labels` (what the project is doing now), never the sessions' roles (if meum runs here)."
+            ? `You hold this project's main seat (${mainRole(agent.human)}): calls for ${agent.human} in this project (role:main) come to this session. ` +
+              "As this project's main session, keep its meum workspace's name, icon and colour current: check them now and after a project change, and set them with `meum workspace rename|icon|color` when they are wrong or missing; you may also give the workspace up to four labels of your own with `meum workspace labels` (what the project is doing now), never the sessions' roles (if meum runs here)."
             : "",
           outdated(),
         ].filter(Boolean);

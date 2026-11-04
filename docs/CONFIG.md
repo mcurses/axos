@@ -179,7 +179,7 @@ A text file with the token on one line. Which file is read, first match wins:
 3. `token_file`
 4. `~/.config/axos/token`
 
-`~` is expanded. Without a readable, non-empty token, AXOS is off and the MCP server answers "AXOS is not configured".
+`~` is expanded. Without a readable, non-empty token, AXOS is off and the MCP server answers "AXOS is not set up on this machine" and names `axos join <invite link>`.
 `axos join` writes the token to the same place, with mode 0600, and never prints it. A hub that refuses the token (revoked
 or wrong) is reported to the session once, at start.
 

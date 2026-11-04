@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.35`, protocol `1`.
+Current numbers: hub release `0.24.36`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -74,8 +74,8 @@ not decode is `400`.
 |---|---|
 | `x-axos-session` | The client's session id, 8 to 80 characters of `A-Za-z0-9-`. Anything else is `400 session id must be 8-80 letters, digits or '-'`. Creates the session on first sight, revives an ended one, refreshes it on every request. |
 | `x-axos-project` | The project of the client's working folder, as an id, `<owner>/<slug>` or a slug. Resolved among the agent's projects. An unknown or ambiguous value is ignored without an error. |
-| `x-axos-name` | The session's display name. Control characters and `<` `>` are removed; at most 48 characters. |
-| `x-axos-profile` | A label for the account or profile on that machine. Same cleaning; at most 32 characters. |
+| `x-axos-name` | The session's display name. Control characters and `<` `>` are removed; at most 48 characters. A name another open session of the project already has gets `-` and four characters of this session's key (`shop-5c-c0ff`), kept while the session lives. |
+| `x-axos-profile` | A label for the account or profile on that machine. Same cleaning; at most 32 characters. Shown in a session's label (`shop-5c (alice/mac#35dabd9e, profile work)`) only while the machine has open sessions under more than one profile. |
 | `x-axos-client` | The client and its version, e.g. `plugin/0.15.1`. A session whose plugin is older than the hub is told so once per release in a hook's context (never at a stop). |
 | `x-axos-script` | Instead of `x-axos-session`: a named script of the agent (1-32 of `a-z0-9._-`), see Scripts. Needs `x-axos-project`. |
 
@@ -310,7 +310,10 @@ Invites) or by the admin (`axos project link`). Linked projects can message each
 live sessions; nothing else crosses (briefs, leases, presence).
 
 A session is live when it has not ended and was seen in the last 7 days. A session (or any holder of a role) is online
-when it has an open event stream or was seen in the last 10 minutes; otherwise it is away.
+when it has an open event stream or was seen in the last 10 minutes; otherwise it is away. A live session with no open
+stream and no sign for a day is dormant (most often a window closed without its end hook): it keeps its mail, its roles
+and its name until the 7-day end, but `presence` leaves it out unless it holds a role, and `axos health` lists it apart
+(`dormant_sessions`) instead of under "nobody reading".
 
 ## Delivery
 

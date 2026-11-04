@@ -527,7 +527,7 @@ describe("sessions", () => {
 
   test("a session key is the agent plus the first 8 of the harness session id; the label carries the name", () => {
     expect(coord).toBe(`${DEV3}#35dabd9e`);
-    expect(shown(hub.label(`session:${coord}`))).toBe("shop-5c (alice/dev3#35dabd9e, dev3)");
+    expect(shown(hub.label(`session:${coord}`))).toBe("shop-5c (alice/dev3#35dabd9e)");
   });
 
   test("a session is addressed by its name, its key as people see it, or its stored key", () => {
@@ -539,7 +539,7 @@ describe("sessions", () => {
   test("a session renamed by a restart still answers to its last names", () => {
     hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-77" });
     expect(hub.send(A, note(["session:shop-5c"])).delivered_to).toEqual([`session:${coord}`]);
-    expect(shown(hub.label(`session:${coord}`))).toBe("shop-77 (alice/dev3#35dabd9e, dev3)");
+    expect(shown(hub.label(`session:${coord}`))).toBe("shop-77 (alice/dev3#35dabd9e)");
     for (const n of ["a1", "a2", "a3", "a4", "a5", "a6"]) hub.openSession(DEV3, { client_session: "35dabd9e-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: n });
     expect(hub.session(coord)!.former_names.split("\n")).toEqual(["a1", "a2", "a3", "a4", "a5"]);
     expect(() => hub.send(A, note(["session:shop-5c"]))).toThrow(/no live session 'shop-5c'/);
@@ -548,8 +548,35 @@ describe("sessions", () => {
     expect(hub.send(A, note(["session:a1"])).delivered_to).toEqual([`session:${helper}`]);
   });
 
+  test("a name is one open session's: a newcomer with the same name gets four more characters of its key, and keeps them", () => {
+    const twin = hub.openSession(DEV3, { client_session: "c0ffee00-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-5c" });
+    expect(hub.session(twin)!.name).toBe("shop-5c-c0ff");
+    expect(hub.session(coord)!.name).toBe("shop-5c");
+    expect(hub.send(A, note(["session:shop-5c"])).delivered_to).toEqual([`session:${coord}`]);
+    // Its next hook sends the plain name again; it stays the longer one while it lives.
+    hub.endSession(coord, "test");
+    hub.openSession(DEV3, { client_session: "c0ffee00-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-5c" });
+    expect(hub.session(twin)!.name).toBe("shop-5c-c0ff");
+  });
+
+  test("the profile shows in a label only when the machine runs more than one, and says that it is the profile", () => {
+    expect(shown(hub.label(`session:${coord}`))).toBe("shop-5c (alice/dev3#35dabd9e)");
+    hub.openSession(DEV3, { client_session: "d00d0000-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-w", profile: "work" });
+    expect(shown(hub.label(`session:${coord}`))).toBe("shop-5c (alice/dev3#35dabd9e, profile dev3)");
+  });
+
+  test("a session silent for a day with no stream is dormant: gone from presence unless it holds a role, still reachable by name", () => {
+    t += 25 * 3_600_000;
+    const fresh = hub.openSession(DEV3, { client_session: "f4e5h000-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "shop-f" });
+    const listed = hub.presence(SHOP).map((p) => p.address);
+    expect(listed).toContain(`session:${fresh}`);
+    expect(listed).toContain(`session:${coord}`); // holds main-coordinator
+    expect(listed).not.toContain(`session:${helper}`);
+    expect(hub.send(A, note(["session:shop-e9"])).delivered_to).toEqual([`session:${helper}`]);
+  });
+
   test("the role belongs to one session: another session of the same token needs force", () => {
-    expect(refusal(() => hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper))).toMatch(/held by shop-5c \(alice\/dev3#35dabd9e, dev3\) \(seen 0s ago\); a takeover on this machine needs force/);
+    expect(refusal(() => hub.claimRole(DEV3, SHOP, "main-coordinator", undefined, helper))).toMatch(/held by shop-5c \(alice\/dev3#35dabd9e\) \(seen 0s ago\); a takeover on this machine needs force/);
     expect(() => hub.send({ ...H(), as: "main-coordinator" }, note(["agent:alice/dev1"]))).toThrow(/do not hold the role/);
   });
 
@@ -688,8 +715,8 @@ describe("sessions", () => {
     const r = hub.send(H(), note(["role:main-coordinator"], "go"));
     expect(r.delivered_to[0]).toMatch(/away, seen 11m ago\)$/);
     expect(hub.inbox(`role:${SHOP}/main-coordinator`).map((m) => m.id)).toContain(r.id);
-    expect(shown(r.unattended[0]!)).toMatch(/^role:alice\/shop\/main-coordinator is held by shop-5c \(alice\/dev3#35dabd9e, dev3\) \(away, seen 11m ago\): the message waits there\. In the room: nobody else\.$/);
-    expect(shown(hub.send(A, note(["role:main-coordinator"], "go")).unattended[0]!)).toMatch(/In the room: shop-e9 \(alice\/dev3#7b9f51e0, dev3\) \(no role; away, seen 11m ago\)\.$/);
+    expect(shown(r.unattended[0]!)).toMatch(/^role:alice\/shop\/main-coordinator is held by shop-5c \(alice\/dev3#35dabd9e\) \(away, seen 11m ago\): the message waits there\. In the room: nobody else\.$/);
+    expect(shown(hub.send(A, note(["role:main-coordinator"], "go")).unattended[0]!)).toMatch(/In the room: shop-e9 \(alice\/dev3#7b9f51e0\) \(no role; away, seen 11m ago\)\.$/);
   });
 
   test("a human's answer and a deadline default reach the agent when the asking session has ended", () => {
