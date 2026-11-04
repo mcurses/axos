@@ -338,8 +338,12 @@ async function handleMe(hub: Hub, req: Request, agent: AgentRow): Promise<Respon
       links: hub.linkedProjects(p).map((q) => hub.projectName(q)), sessions: hub.presence(p).filter((x) => x.online && x.address.startsWith("session:")).length,
     }));
     const pending = hub.pendingFor(human).map((r) => ({ ...r, project: hub.projectName(r.project) }));
+    // ?here=<id or name>: the folder's project as its name, for a member only (a stranger's id stays unknown).
+    const ref = new URL(req.url).searchParams.get("here");
+    const herePrj = ref ? hub.projectId(ref, hub.projectsOfHuman(human)) : null;
+    const here = herePrj && hub.humanInProject(human, herePrj) ? hub.projectName(herePrj) : null;
     return json(JSON.parse(hub.display(JSON.stringify({
-      human, machine: agent.name, operator: hub.isOperator(human), projects, pending,
+      human, machine: agent.name, operator: hub.isOperator(human), projects, pending, here,
       machines: hub.machinesOf(human).map((m) => ({ ...m, this: m.name === agent.name })),
       remotes: hub.remotesOf(human).map((r) => ({ remote: r.remote, project: hub.projectName(r.project) })),
     }), { agent: agent.id })));

@@ -1366,15 +1366,15 @@ async function use(args: string[]): Promise<void> {
 // (research/2026-11-03-command-design.md): the hub's /api/me does them as this machine's person, under the page's rules.
 
 interface Me {
-  human: string; machine: string; operator: boolean;
+  human: string; machine: string; operator: boolean; here?: string | null;
   projects: { name: string; owner: string; pair: boolean; people: string[]; links: string[]; sessions: number }[];
   pending: { id: number; kind: string; from: string; project: string }[];
   machines: { name: string; created_at: number; last_seen: number | null; unread: number; sessions: number; this: boolean }[];
   remotes: { remote: string; project: string }[];
 }
 
-async function meGet(c: Config, t: string): Promise<Me> {
-  const res = await fetch(`${c.url.replace(/\/$/, "")}/api/me`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(10_000) });
+async function meGet(c: Config, t: string, here?: string | null): Promise<Me> {
+  const res = await fetch(`${c.url.replace(/\/$/, "")}/api/me${here ? `?here=${encodeURIComponent(here)}` : ""}`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(10_000) });
   if (res.status === 401) throw new Error("the hub refused this machine's token");
   const r = (await res.json().catch(() => null)) as (Me & { error?: string }) | null;
   if (!r || r.error) throw new Error(r?.error ?? `the hub answered ${res.status} (older than 0.24.22?)`);
@@ -1429,12 +1429,12 @@ async function status(): Promise<void> {
   if (!c) return console.log("AXOS is not set up on this machine. With an invite link: axos join <link>.");
   const t = token(c);
   if (!t) return console.log(`AXOS: ${c.url}, but this machine has no token (${tokenPath(c)}). axos join <link> sets it up.`);
-  const me = await meGet(c, t);
-  const lines = [`AXOS at ${c.url}: you are ${me.human}, on machine ${me.machine}${me.operator ? " (you run this hub: axos person invite adds people)" : ""}.`];
   const here = projectOf(c, process.cwd());
+  const me = await meGet(c, t, here.project);
+  const lines = [`AXOS at ${c.url}: you are ${me.human}, on machine ${me.machine}${me.operator ? " (you run this hub: axos person invite adds people)" : ""}.`];
   const rule = here.rule;
   lines.push(here.project
-    ? `This folder: ${here.rule?.name ?? me.projects.find((p) => p.name === here.project)?.name ?? here.project} (${rule?.remote ? `every checkout of ${rule.remote}` : rule?.path ? `folder rule ${rule.path}` : "the repo's .axos.json"}).`
+    ? `This folder: ${here.rule?.name ?? me.here ?? me.projects.find((p) => p.name === here.project)?.name ?? here.project} (${rule?.remote ? `every checkout of ${rule.remote}` : rule?.path ? `folder rule ${rule.path}` : "the repo's .axos.json"}).`
     : here.untrusted ? `This folder: its .axos.json names ${here.untrusted.file.project ?? here.untrusted.file.id}, not trusted yet (axos trust).`
     : "This folder belongs to no project (axos use <owner>/<name> connects it; axos use --new makes one).");
   const own = me.projects.filter((p) => !p.pair);

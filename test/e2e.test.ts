@@ -1763,6 +1763,21 @@ test("the machine's command: bare axos in words, project and machine commands, a
     expect(status.out).toContain("This folder belongs to no project");
     expect(status.out).toMatch(/alice\/shop\s/);
     expect(status.out).toMatch(/dev1\s+this one/);
+    // A folder tied to a project by its id alone (as a repo's .axos.json does) is shown by the project's name.
+    const byId = join(realpathSync(dir), "by-id");
+    mkdirSync(byId);
+    writeFileSync(join(dir, "dev1", "config.json"), JSON.stringify({ url: base, token_file: join(dir, "dev1", "token"), folders: [{ path: byId, project: SHOP }] }));
+    const idLine = (await run("dev1", byId, [])).out;
+    expect(idLine).toContain("This folder: alice/shop");
+    expect(idLine).not.toContain(SHOP);
+    // An outsider learns nothing: a project the person is not in gets no name back, by id or by name.
+    hub.addHuman("zed");
+    const secret = hub.addProject("zed/secret-plan");
+    for (const ref of [secret, "zed/secret-plan"]) {
+      const asked = await (await fetch(`${base}/api/me?here=${encodeURIComponent(ref)}`, { headers: { Authorization: `Bearer ${tokens.dev1}` } })).json() as { here: string | null };
+      expect(asked.here).toBeNull();
+    }
+    writeFileSync(join(dir, "dev1", "config.json"), JSON.stringify({ url: base, token_file: join(dir, "dev1", "token") }));
 
     expect((await run("dev1", dir, ["project", "new", "kit"])).out).toContain("Project alice/kit made.");
     expect((await run("dev1", dir, ["link", "alice/shop", "alice/kit"])).out).toContain("Linked alice/shop and alice/kit");
