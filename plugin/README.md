@@ -175,6 +175,16 @@ session's roles as the tab's labels (`meum tab labels main reviewer`, or `none`)
 change: the main seat taken at start, a claim, a release, a takeover. Best effort, one second at most; it never fails
 a hook.
 
+## The hub's board in vinea
+
+For the hub's operator: `axos board connect` shows the hub's health on a vinea board (whether
+messages reach a reader, sessions present per machine, roles with mail and nobody reading, open questions). It applies
+the plugin's `board.json` with the `vinea` command to `<you>/<hub>/axos` (or `--board <owner>/<project>/<board>`),
+pushes the numbers once, and records the board in the config; `axos board feed` pushes once more, `axos board
+disconnect` stops the feed (the board stays in vinea). A process that runs anyway feeds it every few minutes (the
+repo's `contrib/vinea-bridge.ts` does); widgets turn grey when the feed stops. AXOS only runs `vinea`: vinea's address
+and token stay in vinea's config.
+
 ## Waking a Claude background session
 
 A session started with `claude --bg` runs no development channel, so mail does not wake it while it is idle. Beside
@@ -199,6 +209,7 @@ stopped and removed and the resume tried again, three times at most. A working s
 | `AXOS_SESSION_ID`, `AXOS_SESSION_NAME`, `AXOS_PROJECT_DIR` | `mcp`, `send`, `inbox` | The session's identity when no Claude Code hook supplied it (Codex and scripts); `axos codex` sets them. Claude Code's own `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR` are used when present. |
 | `AXOS_CLIENT` | `mcp` | `codex` when `axos codex` started the proxy: the launcher holds the bell, the proxy does not. |
 | `AXOS_CODEX` | `codex` | The Codex executable; default `codex`. |
+| `AXOS_VINEA` | `board` | The vinea command for the hub's board; default `vinea` on the PATH. |
 | `AXOS_WAKES` | `mcp` | `1` or `0`: tell the hub whether this host wakes on messages, instead of detecting it from the `claude` command line. |
 | `AXOS_BELL_SETTLE_MS` | `mcp` | How long the bell waits for a burst of messages to settle before ringing; default 1500. |
 | `AXOS_NO_PROMPT_LOG`, `AXOS_OWNER_TICK` | `hook prompt` | Set in headless runs: no prompt is recorded, so nothing fed to the run can be quoted as a person's words. |

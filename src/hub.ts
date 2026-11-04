@@ -3415,6 +3415,31 @@ export class Hub {
     };
   }
 
+  // The hub's health board (Max, 2026-11-04, through the suite owner): the numbers the daily round reads, for the
+  // operator only. Delivery per mailbox kind since `since`, present sessions per machine, vacant or away roles with
+  // waiting mail, open questions to people and their age, open invites. Names as people read them.
+  boardHealth(since: number) {
+    const h = this.health(since);
+    const t = this.now();
+    const machines = (this.db.query("SELECT id, human, name FROM agents WHERE revoked = 0 ORDER BY human, name").all() as { id: string; human: string; name: string }[])
+      .map((a) => ({
+        machine: `${a.human}/${a.name}`,
+        sessions: (this.db.query("SELECT key FROM sessions WHERE agent_id = ? AND ended_at IS NULL AND kind = 'session'").all(a.id) as { key: string }[])
+          .filter((x) => this.isOnline(x.key)).length,
+      })).filter((m) => m.sessions > 0);
+    const asks = this.db.query("SELECT a.human, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM asks a JOIN messages m ON m.id = a.message_id WHERE a.answer IS NULL GROUP BY a.human ORDER BY n DESC")
+      .all() as { human: string; n: number; oldest: number }[];
+    const invites = (this.db.query("SELECT COUNT(*) AS n FROM invites WHERE used_at IS NULL AND expires_at > ?").get(t) as { n: number }).n;
+    return {
+      version: h.version, now: t, since, messages: h.messages, live_sessions: h.live_sessions,
+      delivered: h.delivered.map((d) => ({ kind: d.kind, n: d.n, shown: d.shown, within_10m: d.within_10m, handled: d.handled, expired: d.expired })),
+      nobody_reading: h.stuck_sessions.length + h.unread_agents.length + h.unread_roles.length + h.unread_humans.length,
+      dormant_sessions: h.dormant_sessions.length,
+      roles_waiting: h.unread_roles.map((r) => ({ role: `${this.projectName(r.project)}/${r.role}`, n: r.n, oldest: r.oldest, state: r.state })),
+      machines, asks, invites, pushes: h.pushes,
+    };
+  }
+
   // ---------------------------------------------------------------- audit
 
   event(actor: string, kind: string, project: string | null, data: Record<string, unknown>): void {

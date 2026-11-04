@@ -9,11 +9,13 @@
 //
 //   bun contrib/vinea-bridge.ts login <link>   once: a link from `axos login-link` (it can then only read)
 //   bun contrib/vinea-bridge.ts [--once]       fill the widgets every 20 s (or once)
+// While running it also feeds the hub's health board when one is connected (axos board connect), on its schedule.
 // vinea servers: VINEA_URL and VINEA_TOKEN, else the vinea CLI's ~/.config/vinea/config.json ("servers").
 
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
+import { boardFeed, boardSettings } from "../plugin/bin/axos.ts";
 
 const LOGIN_PATH = () => process.env.AXOS_VINEA_LOGIN ?? `${homedir()}/.config/axos/vinea-bridge.json`;
 const POLL_MS = 20_000;
@@ -168,8 +170,15 @@ if (import.meta.main) {
       const n = await pass();
       console.log(`${n} widget${n === 1 ? "" : "s"} written`);
     } else if (cmd === undefined) {
+      let boardAt = 0;
       for (;;) {
         try { await pass(); } catch (e) { console.error(`${new Date().toISOString()} ${(e as Error).message}`); }
+        // The hub's health board (axos board connect), fed from this loop: the bridge is the process that runs anyway.
+        const board = boardSettings();
+        if (board && Date.now() - boardAt >= board.every_s * 1000) {
+          boardAt = Date.now();
+          try { await boardFeed(); } catch (e) { console.error(`${new Date().toISOString()} board ${board.id}: ${(e as Error).message}`); }
+        }
         await Bun.sleep(POLL_MS);
       }
     } else throw new Error("usage: bun contrib/vinea-bridge.ts [login <link> | --once]");

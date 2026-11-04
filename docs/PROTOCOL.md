@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.37`, protocol `1`.
+Current numbers: hub release `0.24.38`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -20,6 +20,7 @@ stream are optional extras that make messages arrive without polling.
 | `/api/unshown` | GET | bearer + `x-axos-session` | `{unshown, unread}` for the session's mailboxes: what no hook or tool has put into its context yet (low-priority messages not counted: they wake nobody), and what is not acked |
 | `/api/attach` | POST | bearer | Upload an image for a question to a human; `{id, ref, name, mime, size}` |
 | `/api/inbox` | GET | bearer (+ `x-axos-script`) | The caller's unread messages as JSON, `?as=<role>`, `?all=1` (acked too), `?limit=` (default 50, at most 200); marks nothing |
+| `/api/health` | GET | bearer, the hub's operator | The hub's health board numbers (`axos board feed`): delivery per mailbox kind since `?since=<ms>` (default the last 24 h), sessions present per machine, roles with mail and nobody reading, open questions per person and their age, open invites. Anyone else: 403 and nothing else |
 | `/events` | GET | bearer | Server-sent event stream: a doorbell, not a message feed |
 | `/api/join` | POST | invite code | Redeem an invite, receive a token |
 | `/join/<code>` | any | invite code | HTML page with setup steps for that invite |

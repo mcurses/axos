@@ -604,7 +604,7 @@ export function makeFetch(hub: Hub) {
     }
     const join = /^\/join\/(axosinv_[A-Za-z0-9_-]+)$/.exec(path);
     if (join) return handleJoinPage(hub, url, join[1]!);
-    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/me" || path === "/api/projects" || path === "/api/unshown" || path === "/api/attach" || path === "/api/inbox") {
+    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/me" || path === "/api/projects" || path === "/api/unshown" || path === "/api/attach" || path === "/api/inbox" || path === "/api/health") {
       const token = bearer(req);
       const agent = token ? hub.authenticateAgent(token) : null;
       if (!agent) return unauthorized();
@@ -620,6 +620,12 @@ export function makeFetch(hub: Hub) {
       if (path === "/api/landed") return handleLanded(hub, req, agent, conn);
       if (path === "/api/whoami") return handleWhoami(hub, req, url, agent);
       if (path === "/api/me") return handleMe(hub, req, agent);
+      // The hub's health board (axos board feed): the operator's only; everyone else learns nothing from it.
+      if (path === "/api/health") {
+        if (!hub.isOperator(agent.human)) return json({ error: "the hub's health is its operator's" }, 403);
+        const since = Number(url.searchParams.get("since")) || hub.now() - 86_400_000;
+        return json(JSON.parse(hub.display(JSON.stringify(hub.boardHealth(since)), { agent: agent.id })));
+      }
       // `axos use --new`: a project for this agent's human, made from the machine, then linked there.
       if (path === "/api/projects") {
         if (req.method !== "POST") return new Response("method not allowed\n", { status: 405 });

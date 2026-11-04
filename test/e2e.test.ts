@@ -1867,3 +1867,53 @@ test("meum tab labels: the hook writes the session's roles (main first, as 'main
     rmSync(dir, { recursive: true, force: true });
   }
 }, 20_000);
+
+test("the hub's health board: the operator's route, axos board connect and feed through the vinea command only", async () => {
+  // Someone who is not the operator learns nothing from the route.
+  hub.addHuman("olga");
+  const olga = hub.addAgent("olga", "laptop", []);
+  hub.setOperator("alice", false);
+  const refused = await fetch(`${base}/api/health`, { headers: { Authorization: `Bearer ${olga.token}` } });
+  expect(refused.status).toBe(403);
+  expect(await refused.text()).not.toContain("delivered");
+  expect((await fetch(`${base}/api/health`, { headers: { Authorization: `Bearer ${tokens.dev1}` } })).status).toBe(403);
+  hub.setOperator("alice", true);
+  const h = await (await fetch(`${base}/api/health`, { headers: { Authorization: `Bearer ${tokens.dev1}` } })).json() as { delivered: unknown[]; machines: unknown[]; asks: unknown[]; invites: number };
+  expect(Array.isArray(h.delivered) && Array.isArray(h.machines) && Array.isArray(h.asks) && typeof h.invites === "number").toBe(true);
+
+  // connect and feed run `vinea` (a stand-in records its arguments and input) and never read vinea's config.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "axos-board-")));
+  try {
+    mkdirSync(join(dir, "m"));
+    writeFileSync(join(dir, "m", "token"), `${tokens.dev1}\n`);
+    writeFileSync(join(dir, "m", "config.json"), JSON.stringify({ url: base, token_file: join(dir, "m", "token") }));
+    const fake = join(dir, "vinea");
+    writeFileSync(fake, `#!/bin/sh\necho "$@" >> ${dir}/calls\nif [ "$1" = apply ]; then cp "$2" ${dir}/applied.json; echo "applied 1 board"; else cat >> ${dir}/pushed; echo >> ${dir}/pushed; fi\n`, { mode: 0o755 });
+    const env: Record<string, string | undefined> = { ...process.env, AXOS_CONFIG: join(dir, "m", "config.json"), AXOS_VINEA: fake };
+    delete env.CLAUDE_CODE_SESSION_ID;
+    const run = async (args: string[]) => {
+      const p = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), ...args], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
+      return { out: await new Response(p.stdout).text(), err: await new Response(p.stderr).text(), code: await p.exited };
+    };
+    const con = await run(["board", "connect", "--board", "alice/hub/axos", "--every", "5"]);
+    expect([con.code, con.err]).toEqual([0, ""]);
+    expect(con.out).toContain("connected: alice/hub/axos");
+    const applied = JSON.parse(readFileSync(join(dir, "applied.json"), "utf8")) as { project: string; board: string; widgets: { key: string; ttl_s: number }[] };
+    expect([applied.project, applied.board]).toEqual(["alice/hub", "axos"]);
+    expect(applied.widgets.every((w) => w.ttl_s === 660)).toBe(true);
+    const calls = readFileSync(join(dir, "calls"), "utf8");
+    expect(calls).toContain("--no-prune");
+    for (const k of ["summary", "attention", "machines", "delivery", "roles", "asks"]) expect(calls).toContain(`push alice/hub/axos ${k} --type`);
+    expect((await run(["board"])).out).toContain("alice/hub/axos");
+    expect((await run(["board", "disconnect"])).out).toContain("stays in vinea");
+    expect((await run(["board", "feed"])).err).toContain("no board connected");
+    // Not the operator: connect refuses before anything reaches vinea.
+    hub.setOperator("alice", false);
+    rmSync(join(dir, "calls"));
+    expect((await run(["board", "connect"])).err).toContain("the hub's health board is its operator's");
+    expect(existsSync(join(dir, "calls"))).toBe(false);
+  } finally {
+    hub.setOperator("alice", true);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30_000);

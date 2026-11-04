@@ -154,6 +154,7 @@ The Claude Code plugin reads these; another client can ignore them or reuse the 
 | `folders` | array | Folder rules: which folders or repositories belong to which project. `axos use` writes them. |
 | `check_every_s` | number | Minimum seconds between hub checks in the after-tool-call hook. Default 30. Prompt, start and stop hooks always check. |
 | `admin_ssh` | string | The ssh host of the hub's server: `axos admin <command>` runs `axos <command>` there. `AXOS_ADMIN_SSH` overrides it. |
+| `board` | object | `{"id": "<owner>/<project>/<board>", "every_s": 300}`: the hub's health board in vinea, written by `axos board connect` and removed by `disconnect`; the vinea bridge feeds it every `every_s` while it runs. `AXOS_VINEA` names the vinea command (default `vinea` on the PATH). |
 
 `folders` entries:
 
@@ -282,10 +283,11 @@ id>"}` in `trusted.json`.
 | `axos project unlink <a> <b> [<c>…]` (short: `axos unlink`) | an owner of either side | Unlinks the first from each of the others. |
 | `axos project share <project> <person>` | the owner | Asks a person you already share a project with to join this one; they answer on their page. |
 | `axos project join <project>` | a person on the hub | Asks the project's owner to let you in; the answer is the same whether it exists or not. `axos trust` on a repo's `.axos.json` does this by itself when you are not in its project. |
-| `axos machine [list]`, `add`, `rename <name> <new>` | the person | Your machines with last seen, sessions and unread mail; a one-time join link (7 days) for another machine of yours; renaming. Revoking one is on your page (People, Your machines). |
+| `axos machine [list]`, `add`, `rename <name> <new>` | the person | Your machines with last seen and sessions present; a one-time join link (7 days) for another machine of yours; renaming. Revoking one is on your page (People, Your machines). |
 | `axos person invite <name> [--project <project>]` | the hub's operator | A one-time join link for a new person, optionally into a project of yours. |
 | `axos login-link` | the person | A one-time read-only login link (10 minutes) for a program such as `contrib/vinea-bridge.ts`: it only reads your page's state. A browser or phone logs in from the page (People, Add device). |
 | `axos admin <command>` | whoever can ssh to the hub's server | Runs the hub's admin command there over ssh (`admin_ssh`). |
+| `axos board [connect \| disconnect \| feed]` | the hub's operator | The hub's health board in vinea: `connect` applies the plugin's `board.json` to `<you>/<hub>/axos` (or `--board`) with the vinea command and pushes once; `feed` pushes once; the vinea bridge feeds it while it runs. AXOS only runs `vinea`; vinea's address and token stay in vinea's config. |
 | `axos rename [<project>] <new name>` | the project's owner | Renames the named project, or without one the project this folder is connected to. The id, mail, roles, leases and links stay; the old name keeps resolving; the rule's `name` follows. A member who is not the owner is refused. |
 | `axos link <project>` (one name), `axos unlink` alone | – | Do nothing and say why: a link is two projects whose sessions may reach each other (`axos link <a> <b>`). Before plugin 0.20 they were the folder commands. |
 | `axos trust` | a person at a terminal | Trusts the `.axos.json` at or above the current folder. |

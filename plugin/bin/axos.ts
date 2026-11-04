@@ -54,6 +54,7 @@ interface Config {
   folders?: FolderRule[];
   check_every_s?: number; // how often PostToolUse looks for new messages during a long turn
   admin_ssh?: string; // the ssh host of the hub's server: `axos admin …` runs `axos …` there (the hub's admin command)
+  board?: { id: string; every_s: number }; // the hub's health board in vinea (axos board connect), fed every every_s
 }
 
 const HOME = homedir();
@@ -1593,6 +1594,154 @@ async function whoami(): Promise<void> {
   }, null, 2));
 }
 
+// ---------------------------------------------------------------- the hub's board in vinea
+
+// The hub's health board (the suite's rule: a tool's dashboard is a vinea board the tool ships). `axos board connect`
+// applies plugin/board.json to <you>/<hub>/axos with the vinea command; `axos board feed` pushes the numbers once, from
+// the hub's /api/health (the operator's only); a running process of yours (the vinea bridge) calls the same feed every
+// few minutes. vinea's address and token stay in vinea's config: AXOS only runs `vinea`.
+
+const BOARD_DEFINITION = join(dirname(import.meta.path), "..", "board.json");
+const BOARD_EVERY_S = 300;
+
+function vineaRun(args: string[], stdin = ""): string {
+  const bin = process.env.AXOS_VINEA ?? "vinea";
+  let r: ReturnType<typeof Bun.spawnSync>;
+  try {
+    r = Bun.spawnSync([bin, ...args], { stdin: new Blob([stdin]), stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+  } catch {
+    throw new Error("the vinea command is not on PATH: install vinea and set it up (vinea --help), then retry");
+  }
+  if (r.exitCode !== 0) {
+    const why = (r.stderr?.toString().trim() || r.stdout?.toString().trim() || "").split("\n").pop();
+    throw new Error(`vinea ${args[0]} failed: ${why || `exit ${r.exitCode}`}`);
+  }
+  return r.stdout?.toString() ?? "";
+}
+
+// The hub's short name: the label after a leading "axos." (axos.example.net -> example), else the first label.
+export function hubShortName(url: string): string {
+  const labels = new URL(url).hostname.split(".");
+  return (labels[0] === "axos" && labels.length > 2 ? labels[1] : labels[0]) || "hub";
+}
+
+interface BoardHealth {
+  version: string; now: number; since: number; messages: number; live_sessions: number;
+  delivered: { kind: string; n: number; shown: number; within_10m: number; handled: number; expired: number }[];
+  nobody_reading: number; dormant_sessions: number;
+  roles_waiting: { role: string; n: number; oldest: number; state: string }[];
+  machines: { machine: string; sessions: number }[];
+  asks: { human: string; n: number; oldest: number }[];
+  invites: number;
+  pushes: { sent: number; failed: number };
+}
+
+// {key: [component, props]} for the board, from the hub's health numbers.
+export function boardWidgets(h: BoardHealth): Record<string, [string, unknown]> {
+  const pct = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 100);
+  const age = (ms: number) => { const m = Math.round((h.now - ms) / 60_000); return m < 120 ? `${m} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} days`; };
+  const roles = h.delivered.find((d) => d.kind === "role");
+  const rolePct = roles ? pct(roles.shown, roles.n) : 100;
+  const asked = h.asks.reduce((n, a) => n + a.n, 0);
+  const bad = h.pushes.failed > 0 || rolePct < 90;
+  const warn = h.nobody_reading > 0 || h.roles_waiting.length > 0;
+  const summary = {
+    status: bad ? (rolePct < 90 ? `roles ${rolePct} % shown` : "push failed") : warn ? `${h.nobody_reading} unread` : "all reached",
+    state: bad ? "bad" : warn ? "warn" : "ok",
+    line: `hub ${h.version}: ${h.messages} messages in 24 h; ${h.machines.reduce((n, m) => n + m.sessions, 0)} sessions present, ${h.live_sessions} active in the last day`.slice(0, 120),
+    figures: [
+      { label: "messages", value: h.messages },
+      { label: "roles shown", value: `${rolePct} %`, tone: rolePct < 90 ? "bad" : "muted" },
+      { label: "nobody reading", value: h.nobody_reading, tone: h.nobody_reading ? "warn" : "muted" },
+      { label: "questions open", value: asked, tone: asked ? "info" : "muted" },
+    ],
+  };
+  const items: { label: string; state: string; detail?: string }[] = [];
+  for (const r of h.roles_waiting) items.push({ label: `role ${r.role}: ${r.n} waiting`, state: "warn", detail: `${r.state}, oldest ${age(r.oldest)}`.slice(0, 160) });
+  if (h.nobody_reading > h.roles_waiting.length) items.push({ label: `${h.nobody_reading - h.roles_waiting.length} other mailbox(es) with mail nobody reads`, state: "warn", detail: "axos admin health lists them" });
+  if (h.pushes.failed) items.push({ label: `${h.pushes.failed} phone push(es) failed`, state: "bad" });
+  if (h.dormant_sessions) items.push({ label: `${h.dormant_sessions} dormant session(s) with mail`, state: "muted", detail: "no sign for a day; they end after 7 days" });
+  if (!items.length) items.push({ label: "nothing needs a look", state: "ok" });
+  const delivery = {
+    columns: [{ key: "kind", label: "Mailbox" }, { key: "n", label: "Delivered" }, { key: "shown", label: "Shown" }, { key: "fast", label: "Within 10 min" }, { key: "handled", label: "Handled" }, { key: "expired", label: "Expired" }],
+    rows: h.delivered.map((d) => ({ kind: ({ role: "roles", session: "sessions", agent: "machines", human: "people" } as Record<string, string>)[d.kind] ?? d.kind, n: d.n, shown: `${pct(d.shown, d.n)} %`, fast: `${pct(d.within_10m, d.n)} %`, handled: d.handled, expired: d.expired })),
+    empty: "no messages in the last 24 h",
+  };
+  const machines = {
+    columns: [{ key: "machine", label: "Machine" }, { key: "sessions", label: "Sessions" }],
+    rows: h.machines.map((m) => ({ machine: m.machine, sessions: m.sessions })),
+    empty: "no session present",
+  };
+  const rolesTable = {
+    columns: [{ key: "role", label: "Role" }, { key: "n", label: "Waiting" }, { key: "oldest", label: "Oldest" }, { key: "state", label: "Holder" }],
+    rows: h.roles_waiting.map((r) => ({ role: r.role, n: r.n, oldest: age(r.oldest), state: r.state })),
+    empty: "every role with mail has a reader",
+  };
+  const asks = {
+    columns: [{ key: "human", label: "Person" }, { key: "n", label: "Open" }, { key: "oldest", label: "Oldest" }],
+    rows: h.asks.map((a) => ({ human: a.human, n: a.n, oldest: age(a.oldest) })),
+    empty: `no open questions; ${h.invites} invite(s) open`,
+  };
+  return { summary: ["Summary", summary], attention: ["Status", { items: items.slice(0, 50) }], machines: ["Table", machines], delivery: ["Table", delivery], roles: ["Table", rolesTable], asks: ["Table", asks] };
+}
+
+// The connected board, if any (the vinea bridge feeds it on this schedule).
+export function boardSettings(): { id: string; every_s: number } | null {
+  return config()?.board ?? null;
+}
+
+// One push of every widget; the board id from the config (axos board connect).
+export async function boardFeed(): Promise<string[]> {
+  const { c, t } = setUp();
+  if (!c.board) throw new Error("no board connected: axos board connect");
+  const res = await fetch(`${c.url.replace(/\/$/, "")}/api/health`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(15_000) });
+  if (res.status === 401) throw new Error(TOKEN_REFUSED);
+  const h = (await res.json().catch(() => null)) as (BoardHealth & { error?: string }) | null;
+  if (!h || h.error) throw new Error(h?.error ?? `the hub answered ${res.status}`);
+  const done: string[] = [];
+  for (const [key, [type, props]] of Object.entries(boardWidgets(h))) {
+    vineaRun(["push", c.board.id, key, "--type", type], JSON.stringify(props));
+    done.push(key);
+  }
+  return done;
+}
+
+async function boardCmd(args: string[]): Promise<void> {
+  const [sub, ...rest] = args;
+  const c = config();
+  if (!sub) {
+    if (!c?.board) return console.log("No board connected. axos board connect shows the hub's health in vinea (the operator's).");
+    return console.log(`The hub's board: ${c.board.id} (vinea://board/${c.board.id}), fed every ${Math.round(c.board.every_s / 60)} min by the vinea bridge, or by hand with axos board feed.`);
+  }
+  if (sub === "feed") return console.log(`pushed ${(await boardFeed()).join(", ")} to ${config()!.board!.id}`);
+  if (sub === "disconnect") {
+    if (!c?.board) return console.log("not connected");
+    const id = c.board.id;
+    delete c.board;
+    writeConfig(c);
+    return console.log(`disconnected: the feed stops; the board ${id} stays in vinea until deleted there (vinea board rm).`);
+  }
+  if (sub !== "connect") throw new Error("usage: axos board [connect [--board <owner>/<project>/<board>] [--every <minutes>] | disconnect | feed]");
+  const { t } = setUp();
+  const me = await meGet(c!, t);
+  if (!me.operator) throw new Error("the hub's health board is its operator's");
+  const flag = (k: string) => { const i = rest.indexOf(k); return i >= 0 ? rest[i + 1] : undefined; };
+  const id = flag("--board") ?? `${me.human}/${hubShortName(c!.url)}/axos`;
+  const parts = id.split("/");
+  if (parts.length !== 3 || parts.some((x) => !x)) throw new Error(`a board id is <owner>/<project>/<board>, got '${id}'`);
+  const every = Math.max(60, Math.round(Number(flag("--every") ?? BOARD_EVERY_S / 60) * 60)) || BOARD_EVERY_S;
+  const def = JSON.parse(readFileSync(BOARD_DEFINITION, "utf8")) as { widgets: { ttl_s?: number }[] } & Record<string, unknown>;
+  def.project = `${parts[0]}/${parts[1]}`;
+  def.board = parts[2];
+  for (const w of def.widgets) w.ttl_s = 2 * every + 60; // grey means the feed really stopped
+  const file = join(dirname(CONFIG_PATH), "board.json");
+  writeFileSync(file, `${JSON.stringify(def, null, 2)}\n`);
+  for (const l of vineaRun(["apply", file, "--no-prune"]).trim().split("\n").filter(Boolean)) console.log(l);
+  writeConfig({ ...c!, board: { id, every_s: every } });
+  console.log(`connected: ${id}. The vinea bridge (contrib/vinea-bridge.ts) feeds it every ${Math.round(every / 60)} min; axos board feed pushes once.`);
+  console.log(`pushed ${(await boardFeed()).join(", ")}`);
+}
+
 // ---------------------------------------------------------------- help
 
 // `axos <command> --help` (or `axos help <command>`): what the command does and the noun behind it, in a few lines.
@@ -1641,6 +1790,9 @@ const HELP: Record<string, string> = {
   For scripts: reads the replies to a script's messages. A person reads their mail on their page.`,
   landed: `axos landed <remote>/<branch> [<commit>] [--since <old head>] [--repo <name>] [--subject <s>] [--project <p>]
   For a landing script: tells AXOS what it put on a branch, so sessions that subscribed to a commit or the branch hear it.`,
+  board: `axos board [connect [--board <owner>/<project>/<board>] [--every <minutes>] | disconnect | feed]
+  The hub's health board in vinea (the operator's): whether messages reach a reader, who is present, what waits.
+  connect applies it with the vinea command; feed pushes the numbers once; the vinea bridge feeds it while it runs.`,
   "claude-bell": `axos claude-bell --session <Claude session id> [--project <p>]
   Wakes a Claude Code session started with claude --bg when mail comes for it (it has no other way to hear it while idle).`,
   "codex-bell": `axos codex-bell --thread <Codex session> [--session <id>] [--project <p>]
@@ -1709,6 +1861,7 @@ else if ((cmd === "link" || cmd === "unlink") && process.argv.length >= 5) {
 }
 else if (cmd === "link" || cmd === "unlink") linkSaysWhich(cmd);
 else if (cmd === undefined) await status().catch((e: Error) => { console.error(e.message); process.exit(1); });
+else if (cmd === "board") await boardCmd(process.argv.slice(3)).catch((e: Error) => { console.error(e.message); process.exit(1); });
 else if (cmd === "project" || cmd === "machine" || cmd === "person" || cmd === "login-link") {
   const f = cmd === "project" ? projectCmd : cmd === "machine" ? machineCmd : cmd === "person" ? personCmd : loginLink;
   await f(process.argv.slice(3)).catch((e: Error) => { console.error(e.message); process.exit(1); });
@@ -1750,6 +1903,7 @@ else if (cmd === "trust") {
        axos machine [list] | add | rename <name> <new name> | revoke <name>
        axos person invite <name> [--project <project>]     axos login-link (read-only, for a program)     axos trust     axos whoami (JSON)
        axos admin <command>       the hub's admin command on its server, over ssh (admin_ssh in the config)
+       axos board [connect | disconnect | feed]   the hub's health board in vinea (the operator's)
        axos send --name <script> … | inbox --name <script> … | landed <remote>/<branch> | codex [<codex args>] | codex-bell --thread <id> | claude-bell --session <id>
        short forms: axos link <a> <b>… · axos unlink <a> <b>… · axos rename [<project>] <name>
        axos <command> --help says what a command does; axos send and inbox are for scripts, a person uses the page.`);

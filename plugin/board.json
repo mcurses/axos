@@ -1,0 +1,18 @@
+{
+  "board": "axos",
+  "title": "AXOS hub",
+  "description": "How the AXOS hub is doing: whether messages reach a reader, who is present, what waits for whom. Fed by `axos board feed` (the operator's), applied by `axos board connect`.",
+  "sections": [
+    { "id": "now", "title": "Now" },
+    { "id": "delivery", "title": "Delivery, 24 h" },
+    { "id": "people", "title": "Waiting" }
+  ],
+  "widgets": [
+    { "key": "summary", "type": "Summary", "section": "now", "order": 0, "size": "s", "source": "axos board feed (the hub's /api/health)" },
+    { "key": "attention", "type": "Status", "title": "Needs a look", "section": "now", "order": 1, "size": "m", "source": "axos board feed" },
+    { "key": "machines", "type": "Table", "title": "Sessions present, per machine", "section": "now", "order": 2, "size": "l", "source": "axos board feed" },
+    { "key": "delivery", "type": "Table", "title": "Messages that reached a reader", "section": "delivery", "order": 0, "size": "full", "source": "axos board feed" },
+    { "key": "roles", "type": "Table", "title": "Roles with mail and nobody reading", "section": "people", "order": 0, "size": "l", "source": "axos board feed" },
+    { "key": "asks", "type": "Table", "title": "Open questions to people", "section": "people", "order": 1, "size": "m", "source": "axos board feed" }
+  ]
+}
