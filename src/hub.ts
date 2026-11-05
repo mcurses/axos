@@ -231,6 +231,8 @@ export const MAIN_ROLE = "main";
 // and calls to the project reached nobody else): the role `main.<human>`. `role:main` means the sender's own.
 export const mainRole = (human: string) => `${MAIN_ROLE}.${human}`;
 const isMainRole = (role: string) => role === MAIN_ROLE || role.startsWith(`${MAIN_ROLE}.`);
+// A reply into another project without a link (an open role, a person's own project) is taken this long after the message.
+export const UNLINKED_REPLY_MS = 30 * 86_400_000;
 // A machine login not used for this long is listed as unused (health, axos machine), not as mail nobody reads.
 export const UNUSED_MACHINE_MS = 14 * 86_400_000;
 // After the human says no to a takeover, the same one is not asked again for this long.
@@ -2293,7 +2295,7 @@ export class Hub {
     const notSent: { to: string; reason: string }[] = [];
     // A conversation may run across a link: a reply goes into the parent's thread, if the sender saw the parent.
     const inScope = (id: number): boolean => {
-      const m = this.db.query("SELECT project FROM messages WHERE id = ?").get(id) as { project: string } | null;
+      const m = this.db.query("SELECT project, created_at FROM messages WHERE id = ?").get(id) as { project: string; created_at: number } | null;
       if (!m) return false;
       if (m.project === input.project) return true;
       // A message that reached one of the replier's mailboxes through an open role is answered from where it arrived.
@@ -2302,7 +2304,9 @@ export class Hub {
         const box = this.boxSql(boxes);
         return !!this.db.query(`SELECT 1 FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.message_id = ? AND ${box.sql} LIMIT 1`).get(id, ...box.args);
       };
-      if (!this.linkedProjects(input.project).includes(m.project)) return received();
+      // Without a link the door back stays open for a month: an old message is no standing way into another project,
+      // whoever holds its sender's role by then (security review of question 18, F2).
+      if (!this.linkedProjects(input.project).includes(m.project)) return received() && this.now() - m.created_at <= UNLINKED_REPLY_MS;
       const boxes = actor.kind === "agent" ? [sender, ...this.mailboxes(actor)] : [sender];
       const senders = boxes.map((b) => this.boxKey(b));
       const inList = senders.map(() => "?").join(", ");

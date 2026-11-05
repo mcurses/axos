@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.25.0`, protocol `1`.
+Current numbers: hub release `0.25.1`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -632,7 +632,9 @@ crosses nobody. Only roles: that project's sessions, its room (`project:`), pres
 wall. A project someone else owns needs a link (or a role open to the hub), even when the sender's person is a member
 of it; a project of two people is never reached this way. The holder answers with `re` as usual, the answer reaches
 the sender in its own project, and the holder may read that thread's messages to and from the role. Another person
-holding that role sees neither the sending session's name nor its roles (the project they cannot see stays an id).
+holding that role sees neither the sending session's name nor its roles (the project they cannot see stays an id). A
+reply with `re` into another project without a link (here, or to a role open to the hub) is taken for 30 days after
+the message it answers; after that it is refused like a reply to an unknown message.
 
 **Open roles.** The project's owner may open a role with `define_role(…, open: true)`: every session of that owner's
 person is told about it at start, in one line: the role's description and its address (a feedback address).

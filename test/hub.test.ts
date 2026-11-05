@@ -1059,6 +1059,10 @@ describe("a person's own projects reach each other's roles (question 18)", () =>
     expect(hub.thread({ ...A, session: holder }, sent.id).map((m) => m.summary)).toEqual(["deploy done"]);
     const back = hub.send({ ...A, session: holder }, { ...note([], "seen", OPS), re: sent.id });
     expect(back.delivered_to).toEqual([`session:${inGame}`]);
+    // A month later the door back is closed: the reply is refused like one to an unknown message (review F2).
+    const later = hub.send({ ...A, session: inGame }, note(["role:alice/ops/desk"], "one more", GAME));
+    t += 31 * 86_400_000;
+    expect(refusal(() => hub.send({ ...A, session: holder }, { ...note([], "late", OPS), re: later.id }))).toContain(`no message ${later.id}`);
     // bob, in game with alice, is a member of ops but not its owner: nothing new for him from game.
     expect(() => hub.send(S, note(["role:alice/ops/desk"], "hi", GAME))).toThrow("cannot address another project");
     // bob sees neither the message alice's session sent from game nor the answer.
