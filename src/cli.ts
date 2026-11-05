@@ -173,8 +173,8 @@ Next: a project for a repo: axos project add ${name}/<name> --repo <git address>
     for (const i of u.items) senders.set(i.sender, [...(senders.get(i.sender) ?? []), i]);
     if (senders.size) lines.push("By sender (b = reached through the project's address, not addressed to that reader):");
     for (const [s, list] of [...senders].sort((a, b) => b[1].length - a[1].length)) {
-      lines.push(`  ${hub.label(s)}${list[0]!.sender_kind === "script" ? " (script)" : ""}:`);
-      for (const i of list) lines.push(`    #${i.id} ${iso(i.sent)} ${i.type}/${i.priority} → ${hub.label(i.recipient)}${i.broadcast ? " b" : ""}: ${i.state}; ${i.cause}`);
+      lines.push(`  ${hub.label(s, true)}${list[0]!.sender_kind === "script" ? " (script)" : ""}:`);
+      for (const i of list) lines.push(`    #${i.id} ${iso(i.sent)} ${i.type}/${i.priority} → ${hub.label(i.recipient, true)}${i.broadcast ? " b" : ""}: ${i.state}; ${i.cause}`);
     }
     out(lines.join("\n"));
     return;

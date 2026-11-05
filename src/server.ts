@@ -286,7 +286,7 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
         const others = hub.presence(p).filter((x) => x.address !== `session:${session}` && x.online);
         const holders = hub.roles(p).filter((r) => r.holder && r.holder !== session).map((r) => `${r.role}: ${hub.session(r.holder!)?.name ?? r.holder}`);
         const lines = [
-          `AXOS hub: this session is ${hub.label(`session:${session}`)} in project ${p}${held.length ? `, holding the role ${held.join(", ")}` : ""}. ` +
+          `AXOS hub: this session is ${hub.label(`session:${session}`, true)} in project ${p}${held.length ? `, holding the role ${held.join(", ")}` : ""}. ` +
             `${others.length} other session(s) are active${holders.length ? ` (${holders.join("; ")})` : ""}.`,
           "Messages from them and from your human appear in your context as <axos-message> blocks. " +
             `Messaging another session or role, leasing a shared resource, or asking ${agent.human} on their phone is described in the axos skill.`,

@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.25.5`, protocol `1`.
+Current numbers: hub release `0.25.6`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -77,7 +77,7 @@ not decode is `400`.
 | `x-axos-session` | The client's session id, 8 to 80 characters of `A-Za-z0-9-`. Anything else is `400 session id must be 8-80 letters, digits or '-'`. Creates the session on first sight, revives an ended one, refreshes it on every request. |
 | `x-axos-project` | The project of the client's working folder, as an id, `<owner>/<slug>` or a slug. Resolved among the agent's projects. An unknown or ambiguous value is ignored without an error. |
 | `x-axos-name` | The session's display name. Control characters and `<` `>` are removed; at most 48 characters. A name another present (open, not dormant) session of the project already has gets `-` and four characters of this session's key (`shop-5c-c0ff`) until the name is free again; a session that has its name keeps it. A name shared with dormant sessions addresses the present one. |
-| `x-axos-profile` | A label for the account or profile on that machine. Same cleaning; at most 32 characters. Shown in a session's label (`shop-5c (alice/mac#35dabd9e, profile work)`) only while the machine has open sessions under more than one profile. |
+| `x-axos-profile` | A label for the account or profile on that machine. Same cleaning; at most 32 characters. Shown in a session's full label (`shop-5c (alice/mac#35dabd9e, profile work)`) only while the machine has open sessions under more than one profile. Elsewhere a session is named by its name alone (`shop-5c`), with its key only when another present session in its project has the same name; a session's own start line and the admin's lists always use the full label. |
 | `x-axos-folder` | The name of the session's folder: its git checkout's top folder, else the folder itself; never a path (`/`, `<`, `>` removed, at most 64 characters). `presence` shows it to the session's own person only. |
 | `x-axos-tree` | A fingerprint of that checkout on its machine (12 to 64 hex digits; the plugin sends 16 of sha256 over host and path). Two present sessions of one machine with the same fingerprint share a working tree; `presence` says so to their person ("edits may collide"). |
 | `x-axos-client` | The client and its version, e.g. `plugin/0.15.1`. A session whose plugin is older than the hub is told so once per release in a hook's context (never at a stop). |

@@ -1647,11 +1647,18 @@ export class Hub {
   }
 
   // Who a session or agent is, for humans and models: 'shop-5c (alice/mac#35dabd9e, work)'.
-  label(holder: string): string {
+  // A session by its name alone, unless another present session in its project has the same name: then with its key
+  // (and profile), the part `session:<key>` takes (the UX review, 2026-11-05: the hash on every line is noise). full:
+  // always with the key, for the admin's health and undelivered lists.
+  label(holder: string, full = false): string {
     const key = holderOf(holder);
     if (!key.includes("#")) return key;
     const s = this.session(key);
     if (!s?.name) return key;
+    if (!full && s.project) {
+      const twins = this.liveSessions(s.project, true).filter((x) => x.key !== key && x.name === s.name && !this.dormant(x));
+      if (!twins.length) return s.name;
+    }
     // The Claude profile only tells sessions apart when the machine runs more than one; then it says what it is, so it is
     // never read as the main seat (the discoverability critic, 2026-11-04).
     const several = s.profile && (this.db.query(
@@ -3521,7 +3528,7 @@ export class Hub {
       `SELECT s.key, s.name, s.project, s.wakes, s.last_seen, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d
          JOIN messages m ON m.id = d.message_id JOIN sessions s ON 'session:' || s.key = d.recipient
         WHERE d.acked_at IS NULL AND d.shown_at IS NULL AND s.ended_at IS NULL AND m.created_at < ? GROUP BY s.key ORDER BY oldest`, t - 3_600_000)
-      .map((s) => ({ ...s, label: this.label(`session:${s.key}`) }));
+      .map((s) => ({ ...s, label: this.label(`session:${s.key}`, true) }));
     // Dormant sessions with mail are apart: a window that is gone, not a delivery that failed (it ends after 7 days).
     const stuck_sessions = stuck_all.filter((s) => !this.dormant(s));
     const dormant_sessions = stuck_all.filter((s) => this.dormant(s));
@@ -3542,7 +3549,7 @@ export class Hub {
          JOIN deliveries d ON d.recipient = 'role:' || r.project || '/' || r.role JOIN messages m ON m.id = d.message_id
         WHERE d.acked_at IS NULL GROUP BY r.project, r.role ORDER BY oldest`)
       .filter((r) => !r.holder || !this.isOnline(r.holder))
-      .map((r) => ({ ...r, state: r.holder ? `held by ${this.label(r.holder)}, ${this.whereabouts(r.holder)}` : "held by nobody" }));
+      .map((r) => ({ ...r, state: r.holder ? `held by ${this.label(r.holder, true)}, ${this.whereabouts(r.holder)}` : "held by nobody" }));
     // Humans with high-priority mail unhandled on their page for over a day.
     const unread_humans = all<{ human: string; n: number; oldest: number }>(
       `SELECT substr(d.recipient, 7) AS human, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM deliveries d JOIN messages m ON m.id = d.message_id
@@ -3562,7 +3569,7 @@ export class Hub {
         .filter((x) => !this.dormant(x)).length,
       // Every held seat and whether its holder is reachable now: the owner's tick does not start when the owner's seat is held by a live session.
       seats: all<{ project: string; role: string; holder: string }>("SELECT project, role, holder FROM roles WHERE holder IS NOT NULL ORDER BY project, role")
-        .map((r) => ({ ...r, label: this.label(r.holder), online: this.isOnline(r.holder) })),
+        .map((r) => ({ ...r, label: this.label(r.holder, true), online: this.isOnline(r.holder) })),
     };
   }
 

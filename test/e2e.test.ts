@@ -186,7 +186,7 @@ test("a low-priority message rings no bell and does not hold a stop; a note to a
   expect((await call(c, "ack", { ids: [fyi.id], note: "x".repeat(201) })).text).toContain("at most 200");
   const sender = await connect(tokens.dev1!, { "x-axos-session": "10781078-1111-2222-3333-444444444444", "x-axos-project": "shop" });
   const view = (await call(sender, "thread", { id: fyi.id })).text;
-  expect(view).toContain("shop-quiet (alice/dev3#10771077): forwarded (passed to lane 3 second line)");
+  expect(view).toContain("shop-quiet: forwarded (passed to lane 3 second line)");
   await c.close();
   await sender.close();
 });
@@ -361,7 +361,7 @@ test("a session's MCP calls carry its identity: the role it holds is its voice",
   const sent = await call(client, "send", { to: "agent:alice/dev1", type: "note", summary: "Review done, two comments." });
   const id = Number(/message (\d+)/.exec(sent.text)![1]);
   expect(hub.getMessage(id)!.sender).toBe(`role:${SHOP}/reviewer`);
-  expect((await call(client, "join")).text).toContain("shop-rv (alice/dev3#cccccccc) (you)");
+  expect((await call(client, "join")).text).toContain("shop-rv (you)");
   await client.close();
 });
 
@@ -660,7 +660,7 @@ test("hooks fold repeats and let a turn end over an answered thread; thread show
   // (the hub sees the late ping as newer than the answer, so it is not superseded: it shows)
   expect((await hook({ stop: true })).context).toContain("late ping");
   const thread = (await call(dev1, "thread", { id: ask })).text;
-  expect(thread).toMatch(new RegExp(`id="${ask}"[^>]*receipts="shop-fold \\(alice/dev3#f01df01d\\): done"`));
+  expect(thread).toMatch(new RegExp(`id="${ask}"[^>]*receipts="shop-fold: done"`));
   expect(late).toBeGreaterThan(ask);
   // inbox only=roles without a role, and next held for the human's next session.
   expect((await call(c, "inbox", { only: "roles" })).text).toBe("This session holds no role, so it has no role mail.");
@@ -1089,7 +1089,7 @@ test("the stdio proxy outside Claude Code: a wrapper's fixed session id and AXOS
     const reader = proxy.stdout.getReader();
     let out = "";
     while (!out.includes("\n")) out += new TextDecoder().decode((await reader.read()).value);
-    expect(out).toContain("codex-shop (alice/dev3#codexsep, ");
+    expect(out).toContain("codex-shop (you)");
   } finally {
     proxy.kill();
     rmSync(dir, { recursive: true, force: true });
