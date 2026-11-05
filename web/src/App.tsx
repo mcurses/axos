@@ -57,7 +57,7 @@ export default function App() {
           <TabsTrigger value="inbox">Inbox{unread > 0 && <Badge className="ml-1 h-5 px-1.5">{unread}</Badge>}</TabsTrigger>
           <TabsTrigger value="map">Map</TabsTrigger>
           <TabsTrigger value="projects">Projects</TabsTrigger>
-          <TabsTrigger value="people">Humans</TabsTrigger>
+          <TabsTrigger value="people">People</TabsTrigger>
           <TabsTrigger value="send">Send</TabsTrigger>
         </TabsList>
         <TabsContent value="inbox" className="screen-stack">
@@ -129,7 +129,7 @@ function Login() {
         {error && <p className="text-destructive text-sm">{error}</p>}
       </form>
       <form className="mt-6 flex flex-col gap-3 border-t pt-5" onSubmit={(e) => { e.preventDefault(); void send("/ui/login/code", { code }); }}>
-        <p className="text-muted-foreground text-sm">Or the short code from a device where you are logged in (Humans → "Add device"):</p>
+        <p className="text-muted-foreground text-sm">Or the short code from a device where you are logged in (People → "Add device"):</p>
         <label htmlFor="login-code" className="text-sm font-medium">Login code</label>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input id="login-code" className="min-w-0 flex-1 uppercase tracking-widest" autoComplete="one-time-code" placeholder="ABCD-EFGH" value={code} onChange={(e) => setCode(e.target.value)} />

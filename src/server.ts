@@ -1,6 +1,6 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { openDb } from "./db.ts";
-import { AxosError, Hub, mainRole, iso, MAX_IMAGE, oneLine, type AgentRow, type InboxItem } from "./hub.ts";
+import { AxosError, decisionOf, Hub, mainRole, iso, type AskRow, MAX_IMAGE, oneLine, type AgentRow, type InboxItem } from "./hub.ts";
 import { buildMcpServer, type Connection } from "./mcp.ts";
 import { ntfyNotifier } from "./notify.ts";
 import { webPushSender } from "./webpush.ts";
@@ -86,6 +86,38 @@ function handleInbox(hub: Hub, url: URL, agent: AgentRow, conn: Connection): Res
     if (e instanceof AxosError) return json({ error: hub.display(e.message, { agent: agent.id }) }, 400);
     throw e;
   }
+}
+
+// Open questions as JSON (axos asks), for scripts and boards: by default the ones put to this machine's person, across
+// their projects (the person's own machine reads what the person's page shows); ?mine=1 the ones this caller asked
+// (a script's or session's own seat, and roles it holds), open first, with ?all=1 its settled ones too.
+function handleAsks(hub: Hub, url: URL, agent: AgentRow, conn: Connection): Response {
+  const q = url.searchParams;
+  const all = q.get("all") === "1";
+  let rows: (AskRow & { created_at?: number })[];
+  if (q.get("mine") === "1") {
+    const me = conn.session ? `session:${conn.session}` : `agent:${agent.id}`;
+    const askers = [conn.session ?? agent.id, ...(conn.session && conn.project ? hub.rolesHeldBy(me, conn.project).map((r) => `role:${conn.project}/${r}`) : [])];
+    rows = hub.asksOf(askers, 100).filter((a) => all || a.answer === null);
+  } else {
+    // What the person's page shows: open questions, in projects they are still in (review 2026-11-05, F1, F2). A
+    // machine token is no window into their settled history.
+    rows = hub.asks({ human: agent.human, open: true }).filter((a) => hub.humanInProject(agent.human, a.project));
+  }
+  const doc = {
+    human: agent.human,
+    asks: rows.map((a) => ({
+      // Peer text reaches agents' context through scripts: defanged, and marked with whose agent asked (F3).
+      id: a.id, message_id: a.message_id, project: a.project, from: hub.label(a.asker), from_human: hub.askerHuman(a), to: a.human,
+      question: defang(a.question), options: (JSON.parse(a.options_json) as string[]).map(defang),
+      default_answer: a.default_answer === null ? null : defang(a.default_answer), deadline: a.deadline ? iso(a.deadline) : null,
+      decision: { ...decisionOf(a), ...(hub.askerHuman(a) !== a.human ? { suggested_by: hub.askerHuman(a) } : {}) },
+      answer: a.answer, answered_by: a.answered_by, answered_at: a.answered_at ? iso(a.answered_at) : null,
+      asked: iso(hub.getMessage(a.message_id)?.created_at ?? 0), seen: a.seen_at ? iso(a.seen_at) : null,
+    })),
+  };
+  // Names as the person sees them on their page (the questions are theirs, whichever machine reads them).
+  return json(JSON.parse(hub.display(JSON.stringify(doc), q.get("mine") === "1" ? { agent: agent.id } : { human: agent.human })));
 }
 
 // The bell's event stream: one line per event for this session's mailboxes, never the message content.
@@ -609,7 +641,7 @@ export function makeFetch(hub: Hub) {
     }
     const join = /^\/join\/(axosinv_[A-Za-z0-9_-]+)$/.exec(path);
     if (join) return handleJoinPage(hub, url, join[1]!);
-    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/me" || path === "/api/projects" || path === "/api/unshown" || path === "/api/attach" || path === "/api/inbox" || path === "/api/health") {
+    if (path === "/mcp" || path === "/mcp/" || path === "/events" || path === "/api/hook" || path === "/api/landed" || path === "/api/whoami" || path === "/api/me" || path === "/api/projects" || path === "/api/unshown" || path === "/api/attach" || path === "/api/inbox" || path === "/api/asks" || path === "/api/health") {
       const token = bearer(req);
       const agent = token ? hub.authenticateAgent(token) : null;
       if (!agent) return unauthorized();
@@ -647,6 +679,7 @@ export function makeFetch(hub: Hub) {
       }
       if (path === "/api/attach") return handleAttach(hub, req, url, agent);
       if (path === "/api/inbox") return handleInbox(hub, url, agent, conn);
+      if (path === "/api/asks") return handleAsks(hub, url, agent, conn);
       if (path === "/api/unshown") {
         // For a doorbell deciding whether a ring is still news: what waits that no hook has shown yet.
         if (!conn.session) return json({ error: "x-axos-session header is required" }, 400);

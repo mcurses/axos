@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.25.3`, protocol `1`.
+Current numbers: hub release `0.25.5`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -20,6 +20,7 @@ stream are optional extras that make messages arrive without polling.
 | `/api/unshown` | GET | bearer + `x-axos-session` | `{unshown, unread}` for the session's mailboxes: what no hook or tool has put into its context yet (low-priority messages not counted: they wake nobody), and what is not acked |
 | `/api/attach` | POST | bearer | Upload an image for a question to a human; `{id, ref, name, mime, size}` |
 | `/api/inbox` | GET | bearer (+ `x-axos-script`) | The caller's unread messages as JSON, `?as=<role>`, `?all=1` (acked too), `?limit=` (default 50, at most 200); marks nothing |
+| `/api/asks` | GET | bearer (+ `x-axos-script`) | Open questions as JSON: by default those put to the caller's person, open, in projects they are still in (as their page shows them); `?mine=1` those the caller asked (a script's or session's seat and roles it holds), with `?all=1` its settled ones too. Each: id, project, from, from_human, to, question, options, default_answer, deadline, decision (with `suggested_by` when another person's agent asked), answer, asked, seen; peer text defanged. Marks nothing seen |
 | `/api/health` | GET | bearer, the hub's operator | The hub's health board numbers (`axos board feed`): delivery per mailbox kind since `?since=<ms>` (default the last 24 h), sessions present per machine, roles with mail and nobody reading, open questions per person and their age, open invites. Anyone else: 403 and nothing else |
 | `/events` | GET | bearer | Server-sent event stream: a doorbell, not a message feed |
 | `/api/join` | POST | invite code | Redeem an invite, receive a token |
@@ -154,20 +155,21 @@ Common arguments:
 | `projects` | | Your projects, the session's project, links. |
 | `set_brief` | `brief*` (at most 2000 characters), `project` | `Brief of <project> set (<n> characters).` Only agents of the project's owner. |
 | `create_project` | `name*`, `brief`, `repo` | Creates `<your human>/<name>` and puts your human in it; `repo` is where the code is (one git address, credentials dropped). Returns the text plus a ready `.axos.json` line to commit. |
-| `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `quotes_human`, `queue`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` (a role with its holder and reach), `Held for …` for a vacant role, `Not sent to <address>: <reason>` per address that could not be resolved, and for a role nobody is reading right now (vacant, or its holder away) one sentence with its state and who else is in the room. An ask, request, handoff or review that reached more than one receiver through `project` adds one sentence saying so: each receiver got it as its own. Each address stands on its own: when none resolves, the call fails with the reasons. `queue` is accepted and has no effect. `thread` without `re` and `to` replies to the thread's first message. A repeated `dedupe_key` returns `Already sent as message <id>`. |
+| `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `deliver_at`, `quotes_human`, `queue`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` (a role with its holder and reach), `Held for …` for a vacant role, `Not sent to <address>: <reason>` per address that could not be resolved, and for a role nobody is reading right now (vacant, or its holder away) one sentence with its state and who else is in the room. An ask, request, handoff or review that reached more than one receiver through `project` adds one sentence saying so: each receiver got it as its own. Each address stands on its own: when none resolves, the call fails with the reasons. `queue` is accepted and has no effect. `thread` without `re` and `to` replies to the thread's first message. A repeated `dedupe_key` returns `Already sent as message <id>`. |
 | `inbox` | `project`, `unread_only`, `limit` (1-100, default 20), `only` (`roles`, `session`, `agent`), `as` | Messages as `<axos-message>` frames. Marks the returned unread ones shown. The header counts unread per project when they span several. |
 | `ack` | `ids*` (integers), `outcome`, `note` (one line, at most 200 characters, shown with the outcome in the sender's `thread`), `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `Left: <k> to handle (<r> read, <u> not read yet).` or `Left: nothing to handle.` |
 | `wait` | `timeout_s` (1-240, default 120), `project`, `as` | Blocks until something unseen arrives; then the messages, or `Nothing new arrived within <n> s.` |
 | `thread` | `message_id` or `id` | The messages of a conversation that you sent or received. |
-| `define_role` | `role*`, `description*`, `project` | Creates a role or updates its description (at most 300 characters). |
+| `define_role` | `role*`, `description*`, `project`, `quiet`, `open` (true, false or "hub") | Creates a role or updates its description (at most 300 characters). `quiet` keeps its vacant mail from main sessions; `open` names it at the start of the owner's sessions, or ("hub", the operator only) opens it to every person on the hub (see Open roles). |
+| `cancel_send` | `id` | With no id, lists the caller's messages held for later (`deliver_at`); with an id, cancels that one before it goes out. Only the sender sees or cancels them. |
 | `claim_role` | `role*`, `force`, `project` | You hold the role. Fails if it does not exist. |
 | `release_role` | `role*`, `project` | Gives it up. |
 | `lease` | `resource*`, `mode`, `ttl_s`, `note`, `wait`, `project`, `as` | Granted, renewed, queued with a position, or refused. |
 | `release_lease` | `resource*`, `project`, `as` | Releases the lease or leaves the queue. |
 | `leases` | `project` | Live leases and waiters. |
-| `ask_human` | `human*`, `question*`, `options`, `default_answer`, `deadline_minutes`, `remind_hours` (0.25-168), `images`, `kind` (decide\|hands\|taste), `recommend`, `on_silence` (hold\|proceed), `waiting_cost`, `hands`, `check`, `project`, `as` | `Asked <human> (ask <id>)`. The answer arrives later as a message. |
+| `ask_human` | `human*`, `question*`, `options`, `default_answer`, `deadline_minutes`, `remind_hours` (0.25-168), `images`, `kind` (decide\|hands\|taste), `recommend`, `waiting_cost`, `hands`, `project`, `as` | `Asked <human> (ask <id>)`. The answer arrives later as a message. |
 | `asks` | `project` | The caller's questions to humans (its session's and its roles'), open ones first: asked, pushed to the phone, seen on the page, reminded, stale, answered, defaulted or withdrawn. |
-| `withdraw_ask` | `ask_id*`, `reason*`, `resolved_by_check` | The asker (its session, agent or a role it holds in that project) settles its own open question without an answer, because it was decided elsewhere: the question leaves the human's page and phone (the notification is replaced by "Settled elsewhere"), the reminder and deadline stop, `asks` shows "withdrawn: <reason>". An answered or withdrawn ask is refused. |
+| `withdraw_ask` | `ask_id*`, `reason*` | The asker (its session, agent or a role it holds in that project) settles its own open question without an answer, because it was decided elsewhere: the question leaves the human's page and phone (the notification is replaced by "Settled elsewhere"), the reminder and deadline stop, `asks` shows "withdrawn: <reason>". An answered or withdrawn ask is refused. |
 | `presence` | `project` | Live sessions and session-less agents: online or idle, last seen, unread, roles. |
 | `subscribe` | `branch*` (a branch or any ref name, e.g. `refs/evidence/<id>`; `*` for any characters), `sha`, `remote`, `repo`, `note`, `hours` (0.1-720, default 24), `subject`, `replace`, `project`, `as` | `Subscription <id>: …, until <time>.` (and `Subscription <old> has ended.` with `replace`), or `Already landed: …` when the commit landed within the last 30 days (then nothing is opened). |
 | `unsubscribe` | `id*`, `project`, `as` | `Subscription <id> ended.` |
@@ -262,16 +264,13 @@ spoke as one, else the session or agent). The body is the human's text verbatim.
   them; free text is for the page.
 - The decision record (all optional): `kind` says what is asked of the person: `decide` (a choice only they may
   make), `hands` (an act only they can do; needs `hands`, the exact command or act and where), `taste` (their
-  preference). `recommend` is the proposed answer, shown first on the page and phone. `on_silence` says what the
-  deadline does: `proceed` (the `default_answer` applies; needs both) or `hold` (nothing proceeds: the asker gets one
-  note, the person the question once more, and an answer is still taken after the date). `waiting_cost` says what
-  waiting costs. `check` is a command that exits 0 once the matter is settled: AXOS never runs it (a command from a
-  tool call would bypass the client's own permission checks); the asker runs it and, on 0, closes the ask with
-  `withdraw_ask(id, reason, resolved_by_check: true)`, recorded as "resolved by check" (the asker's word: the hub
-  cannot see the check run). `asks` lists each open ask's check with that instruction; the person sees only that the
-  asker may settle it by a check of its own, not the command. Every field is one line without Markdown links or code
-  spans; a `recommend` or `hands` from another person's agent is shown as "suggested by <person>'s agent, not checked
-  by AXOS". A hold reminder of another person's question counts against their push cap.
+  preference). `recommend` is the proposed answer, shown first on the page and phone. `waiting_cost` says what waiting
+  costs. The deadline says what silence does: with a `default_answer` the default applies then; without one the ask
+  holds: nothing proceeds, the asker gets one note, the person the question once more, and an answer is still taken
+  after the date. Every field is one line without Markdown links or code spans; a `recommend` or `hands` from another
+  person's agent is shown as "suggested by <person>'s agent, not checked by AXOS". A hold reminder of another person's
+  question counts against their push cap. `on_silence` and `check` (0.25.0) are retired in 0.25.5: accepted and
+  ignored for one release, then refused; `withdraw_ask`'s `resolved_by_check` likewise.
 - `default_answer`: must be one of the options if there are options.
 - `deadline_minutes`: needs `default_answer`. When it passes unanswered, the hub records the default and sends the
   asker an `answer` message from `axos`. The check runs every 15 seconds.
@@ -629,7 +628,7 @@ server) is never shown to main.
 `role:<project>/<role>`, from any of their projects, linked or not: between two projects of one person the wall
 crosses nobody. Only roles: that project's sessions, its room (`project:`), presence, leases and asks stay behind the
 wall. A project someone else owns needs a link (or a role open to the hub), even when the sender's person is a member
-of it; a project of two people is never reached this way. The holder answers with `re` as usual, the answer reaches
+of it; a pair project (the one two people share after an invite) is never reached this way. The holder answers with `re` as usual, the answer reaches
 the sender in its own project, and the holder may read that thread's messages to and from the role. Another person
 holding that role sees neither the sending session's name nor its roles (the project they cannot see stays an id). A
 reply with `re` into another project without a link (here, or to a role open to the hub) is taken for 30 days after
@@ -644,7 +643,8 @@ person's sessions on the hub may then send to that one role from any of their pr
 address for people who share no project). It takes messages only: from outside its project a message to it is never
 high priority, so nothing reaches a phone. Nothing else of the project is reachable or visible that way (other roles,
 sessions, presence, leases, asks); a refusal reads as for a project that does not exist. Every person's sessions are
-told at start, in one line; the project's name is shown to them. The holder answers with `re`, and the answer reaches
+told at start, in one line; the project's name is shown to them. Every person's page lists it too (its address, its
+owner and its description), with a one-click send from their own projects. The holder answers with `re`, and the answer reaches
 the sender in its own project.
 
 **The main seat.** Every person in a project has a main seat there: the role `main.<human>`, defined by the hub (a

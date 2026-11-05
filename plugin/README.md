@@ -44,8 +44,9 @@ connected for you: your other machines connect a clone of it at its first sessio
 <owner>/<name> <new name>` a named one from anywhere (its owner only; the old name keeps working). A bare `axos use` in a connected folder
 says which project it is connected to and by which rule (`axos whoami` shows the same, with the session's view). A
 checkout that already belongs to another project moves only after a yes at the terminal, or with `--move`; without a
-terminal (an agent's Bash) it refuses and names the command. `axos link` and `axos unlink` do nothing and say why: a
-link is two projects that may reach each other, made on the page.
+terminal (an agent's Bash) it refuses and names the command. `axos link <a> <b>…` and `axos unlink <a> <b>…` link or
+unlink projects you own (their sessions may then reach each other; also on the page); `axos link` alone says where
+this folder points.
 
 A repo can also name its project itself with a committed `.axos.json`, which wins over `folders`:
 `{"hub": "https://axos.example.net", "project": "ana/parser", "id": "prj_…"}`. The plugin ignores a file meant for
@@ -81,6 +82,8 @@ A timer, a sensor or a CI step speaks as a named script of this machine: a sende
 ```bash
 axos send --name nightly-check --to role:supervisor --summary "The nightly run failed" --body - < log.txt
 axos inbox --name nightly-check --json          # unread replies; --ack marks them read, --all includes read ones
+axos ask --name nightly-check --human ana --question "Rerun the nightly?" --option rerun --option skip --json
+axos asks --json                                 # open questions to you, all projects; --name <script>: those it asked
 axos send --name sensor --as supervisor --to project:shop --summary "Disk at 91% on the build box"
 ```
 

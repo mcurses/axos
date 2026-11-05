@@ -35,7 +35,7 @@ function ProjectNode({ data }: NodeProps<FlowNode<ProjectData>>) {
         {data.sessions.length > 3 && <p className="text-muted-foreground">+{data.sessions.length - 3} more sessions</p>}
         {!data.sessions.length && <p className="text-muted-foreground">Ready for your first agent.</p>}
       </div>
-      <div className="map-project-people"><span className="eyebrow">Humans</span><span title={data.humans.join(", ")} className="truncate">{data.humans.includes(data.me) ? "You" : ""}{others.length ? `${data.humans.includes(data.me) ? " + " : ""}${others.length === 1 ? others[0] : `${others.length} others`}` : ""}</span></div>
+      <div className="map-project-people"><span className="eyebrow">People</span><span title={data.humans.join(", ")} className="truncate">{data.humans.includes(data.me) ? "You" : ""}{others.length ? `${data.humans.includes(data.me) ? " + " : ""}${others.length === 1 ? others[0] : `${others.length} others`}` : ""}</span></div>
     </Node>
   );
 }
@@ -44,7 +44,7 @@ function ForeignNode({ data }: NodeProps<FlowNode<ForeignData>>) {
   return (
     <Node handles={{ target: true, source: false }} className="map-project map-project-foreign hidden-handles">
       <div className="map-project-heading"><span className="map-project-symbol"><LinkIcon /></span><div className="min-w-0"><p className="eyebrow">Linked project</p><h3 title={data.name} className="truncate text-sm font-semibold">{data.name}</h3></div></div>
-      <p className="px-4 pb-4 text-xs leading-relaxed text-muted-foreground">Messages can travel both ways. Humans and activity stay private.</p>
+      <p className="px-4 pb-4 text-xs leading-relaxed text-muted-foreground">Messages can travel both ways. People and activity stay private.</p>
     </Node>
   );
 }

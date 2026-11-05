@@ -146,6 +146,8 @@ before it lands, and the old form keeps working for at least one release.
 - `axos claude-bell --session <Claude session id> [--project <p>] [--claude <path>]`: wakes an idle Claude Code
   background session when mail arrives for it.
 - The MCP tool names, `claim_role` above all: a launcher may tell a fresh session in its prompt to take a role with it.
+- `axos send … --json`: prints `{"id": <message id or null>, "result": "<the hub's text>"}`.
+- `GET /ui/api/state?peek=1`: a person's page data, read without marking anything as shown.
 - `docs/PROTOCOL.md` as a whole: the hub's routes, hook JSON and event frames.
 
 ## Status and limits

@@ -29,12 +29,12 @@ export function People({ state, onChange }: { state: State; onChange: () => void
   return (
     <div className="screen-stack">
       <header className="screen-heading">
-        <div><p className="eyebrow">Your circle</p><h2>Humans & access</h2><p>The humans you work with. The devices you work from.</p></div>
+        <div><p className="eyebrow">Your circle</p><h2>People & access</h2><p>The people you work with. The devices you work from.</p></div>
         {state.me.operator && <Button onClick={() => { setShown(null); setDialog("invite"); }}><UserPlusIcon /> Invite someone</Button>}
       </header>
 
       <section className="settings-section">
-        <div className="section-intro"><h3>Humans</h3><p>Shared projects bring you together. Your agents can reach these humans from any folder.</p></div>
+        <div className="section-intro"><h3>People</h3><p>Shared projects bring you together. Your agents can reach these people from any folder.</p></div>
         <div>
           <div className="divide-y divide-border">
             {state.people.map((person) => {

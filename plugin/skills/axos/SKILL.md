@@ -119,10 +119,9 @@ message. With a deadline, the default applies if nobody answers. When a picture 
 layout, a chart), pass `images` with up to 4 paths of PNG, JPEG, GIF or WebP files inside your repo; they show with the
 question on their page. `remind_hours` pushes it once more if still open; `asks` shows how far each of your questions
 got (pushed, seen, answered). A question without a deadline that stays open 3 days gets you a note.
-Make it a decision he can settle in one look: `kind` (decide, hands for an act only he can do with `hands` the exact
-command and where, taste), `recommend` (your answer, one line), `on_silence` (proceed: the default applies at the
-deadline; hold: nothing proceeds) and `waiting_cost`. A `check` command (exits 0 once it settled by itself) is yours
-to run: `asks` lists it; on 0, `withdraw_ask(id, reason, resolved_by_check: true)`.
+Make it a decision they can settle in one look: `kind` (decide, hands for an act only they can do with `hands` the
+exact command and where, taste), `recommend` (your answer, one line) and `waiting_cost`. A deadline with a default
+proceeds with it; without one the question holds (nothing proceeds, they are asked once more).
 If the question gets settled elsewhere before they answer (they told you in chat, the file changed, events decided it),
 `withdraw_ask(ask_id, reason)` at once: their page and phone must hold no leftovers.
 
@@ -149,8 +148,8 @@ A session in a folder that belongs to no project gets no AXOS context. To connec
    of a project's code your human was invited into: it recognises the repository by its remote and picks that project;
    any other folder needs the name). It writes nothing into the repo and connects every clone and worktree of it on
    this machine; teammates connect it on theirs. If the folder already belongs to another project, it refuses and
-   names `--move`: pass it only when your user said to move this folder. `axos link` is not this command: a link is
-   two projects that may reach each other, made by the owner on the page.
+   names `--move`: pass it only when your user said to move this folder. `axos link` is not this command: `axos link
+   <project> <project>…` links projects (their sessions may then reach each other), by their owner, here or on the page.
 3. Commit an `.axos.json` only if your user wants every clone connected (a private team repo), never in a public repo.
    Each person then accepts it with `axos trust` in their own terminal; you cannot do that for them, and you never run
    `axos use` without a project name to accept a repo's file, nor edit `~/.config/axos/trusted.json`.

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, resolve, sep } from "node:path";
-import { AxosError, decisionOf, Hub, MESSAGE_TYPES } from "./hub.ts";
+import { AxosError, decisionOf, Hub, MESSAGE_TYPES, oneLine } from "./hub.ts";
 import { parseDevice } from "./webpush.ts";
 
 // The humans' page: a React app (web/, built into web/dist) and the JSON it reads and posts under /ui/api.
@@ -282,7 +282,7 @@ function state(hub: Hub, human: string, mark = true) {
   const asks = hub.asks({ human, open: true }).map((a) => ({
     id: a.id, message_id: a.message_id, from: hub.label(a.asker), project: a.project, question: a.question,
     options: JSON.parse(a.options_json) as string[], default_answer: a.default_answer, deadline: a.deadline,
-    decision: { ...decisionOf(a), check: undefined, has_check: !!decisionOf(a).check, suggested_by: hub.askerHuman(a) === human ? undefined : hub.askerHuman(a) },
+    decision: { ...decisionOf(a), suggested_by: hub.askerHuman(a) === human ? undefined : hub.askerHuman(a) },
     created_at: hub.getMessage(a.message_id)?.created_at ?? null, images: hub.askImages(a.id).map((i) => ({ id: i.id, name: i.name })),
   }));
   if (mark) hub.asksSeen(human, asks.map((a) => a.id));
@@ -318,5 +318,11 @@ function state(hub: Hub, human: string, mark = true) {
       leases: leases.live.map((l) => ({ resource: l.resource, holder: hub.label(l.holder), until: l.expires_at, note: l.note })),
     };
   });
-  return { human, me, people, invites, pending, push, now: hub.now(), types: MESSAGE_TYPES, asks, inbox, sent, projects };
+  // Roles the operator opened to the whole hub: each person may send to them from any project of theirs. Of such a
+  // project nothing else is told: the role's address, its owner's name and its description (cleaned, short).
+  const open_roles = hub.openRolesOf(human).filter((r) => hub.hubOpenProjects(r.role).includes(r.project)).map((r) => ({
+    address: `role:${hub.projectName(r.project) ?? r.project}/${r.role}`, owner: hub.projectOwner(r.project),
+    description: oneLine(r.description || r.role, 200),
+  }));
+  return { human, me, people, invites, pending, push, now: hub.now(), types: MESSAGE_TYPES, asks, inbox, sent, projects, open_roles };
 }

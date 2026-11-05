@@ -3,7 +3,7 @@
 export interface Ask {
   id: number; message_id: number; from: string; project: string; question: string; options: string[];
   default_answer: string | null; deadline: number | null; created_at: number | null; images: { id: number; name: string }[];
-  decision?: { kind?: "decide" | "hands" | "taste"; recommend?: string; on_silence?: "hold" | "proceed"; waiting_cost?: string; hands?: string; has_check?: boolean; suggested_by?: string };
+  decision?: { kind?: "decide" | "hands" | "taste"; recommend?: string; waiting_cost?: string; hands?: string; suggested_by?: string };
 }
 export interface InboxMessage {
   id: number; from: string; sender_human: string | null; project: string; type: string; priority: string;
@@ -26,7 +26,10 @@ export interface Invite { id: number; name: string; project: string | null; crea
 export interface Me { operator: boolean; password: boolean; logins: { id: number; label: string; created_at: number; last_seen: number | null }[];
   machines?: { name: string; created_at: number; last_seen: number | null; unread: number; sessions: number }[] }
 export interface Pending { id: number; kind: "share" | "link" | "join"; from: string; project: string; created_at: number }
-export interface State { human: string; me: Me; people: Person[]; invites: Invite[]; pending: Pending[]; push: { key: string | null; devices: { label: string; created_at: number; last_ok: number | null }[] }; now: number; types: string[]; asks: Ask[]; inbox: InboxMessage[]; sent: SentMessage[]; projects: Project[] }
+// A role another person opened to the whole hub: it takes messages from anyone on it, from any project.
+export interface OpenRole { address: string; owner: string; description: string }
+
+export interface State { human: string; me: Me; people: Person[]; invites: Invite[]; pending: Pending[]; push: { key: string | null; devices: { label: string; created_at: number; last_ok: number | null }[] }; now: number; types: string[]; asks: Ask[]; inbox: InboxMessage[]; sent: SentMessage[]; projects: Project[]; open_roles: OpenRole[] }
 
 export class NotLoggedIn extends Error {}
 

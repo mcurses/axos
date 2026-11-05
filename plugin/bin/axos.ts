@@ -452,11 +452,13 @@ export function headless(args: string | null): boolean {
 
 // meum's tab labels (`meum tab labels <a> <b>… | none`): best effort, a one-second budget, never failing the hook.
 // Only inside a meum tab ($MEUM_TAB) with meum's CLI present. Returns what is now written (the old list when it failed).
-async function meumLabels(labels: string[], last: string[] | undefined): Promise<string[] | undefined> {
+// At session start it writes even when unchanged: meum may have lost the chips, and the cache is stale after a resume or
+// compaction (Max, ruled through the suite owner 3613).
+async function meumLabels(labels: string[], last: string[] | undefined, force = false): Promise<string[] | undefined> {
   if (!process.env.MEUM_TAB) return last;
   const want = labels.filter((l) => typeof l === "string" && l).slice(0, 4).map((l) => l.slice(0, 24));
-  if (last && last.length === want.length && last.every((l, i) => l === want[i])) return last;
-  if (!last && !want.length) return last; // nothing written yet, nothing to clear
+  if (!force && last && last.length === want.length && last.every((l, i) => l === want[i])) return last;
+  if (!force && !last && !want.length) return last; // nothing written yet, nothing to clear
   const cli = process.env.MEUM_CLI ?? Bun.which("meum") ??
     ["/Applications/meum.app/Contents/Resources/bin/meum", `${HOME}/Applications/meum.app/Contents/Resources/bin/meum`].find((p) => existsSync(p));
   if (!cli) return last;
@@ -531,7 +533,7 @@ async function hook(kind: string): Promise<void> {
     if (r.error === "token") context = kind === "start" ? `The AXOS hub (${id.c.url}) refused this machine's token: it was revoked or is wrong. AXOS is off here until your user asks the person who runs the hub for a new invite link and runs axos join --force <link>.` : "";
     else context = r.context ?? "";
     // The session's roles on its meum tab, from the hub's view, written only when they change (the suite owner, 2667).
-    if (Array.isArray(r.labels) && kind !== "end") state.labels = await meumLabels(r.labels, state.labels);
+    if (Array.isArray(r.labels) && kind !== "end") state.labels = await meumLabels(r.labels, state.labels, kind === "start");
     if (state.unreachable && kind !== "end") context = ["AXOS hub is reachable again.", context].filter(Boolean).join("\n\n");
     state.unreachable = false;
   } catch {
@@ -991,6 +993,59 @@ async function sendCmd(args: string[]): Promise<void> {
     ...(to ? { to: to.split(",").map((x) => x.trim()).filter(Boolean) } : {}), ...(summary ? { summary } : {}), ...(body ? { body } : {}),
     ...(type ? { type } : {}), ...(priority ? { priority } : {}), ...(re ? { re: Number(re) } : {}), ...(as ? { as } : {}), ...(dedupe ? { dedupe_key: dedupe } : {}), ...(deliverAt ? { deliver_at: deliverAt } : {}),
   }));
+}
+
+// `axos asks`: open questions as JSON or lines: to this machine's person (default), or those a script asked (--name).
+async function asksCmd(args: string[]): Promise<void> {
+  const { opt, flag } = scriptOpts(args);
+  const name = opt("--name"), project = opt("--project");
+  const asJson = flag("--json"), all = flag("--all");
+  if (args.length) throw new Error(`unknown arguments: ${args.join(" ")}\nusage: ${HELP.asks!.split("\n")[0]}`);
+  if (all && !name) throw new Error("--all lists a script's settled questions (with --name); yours settled are on your page");
+  const c = config();
+  const t = c && token(c);
+  if (!c || !t) throw new Error(NOT_SET_UP);
+  const url = name ? scriptHub(name, project).url : c.url.replace(/\/$/, "");
+  const h = name ? scriptHub(name, project).h : { Authorization: `Bearer ${t}` };
+  const q = new URLSearchParams({ ...(name ? { mine: "1" } : {}), ...(all ? { all: "1" } : {}) });
+  const res = await fetch(`${url}/api/asks?${q}`, { headers: h, signal: AbortSignal.timeout(15_000) }).catch(() => { throw new Error(unreachable(c.url)); });
+  if (res.status === 401) throw new Error(TOKEN_REFUSED);
+  const doc = (await res.json().catch(() => ({ error: res.status === 404 ? "the hub is older than 0.25.5 (no /api/asks)" : `the hub answered ${res.status}` }))) as
+    { error?: string; asks: { id: number; project: string; from: string; to: string; question: string; options: string[]; default_answer: string | null; deadline: string | null; answer: string | null; decision: { kind?: string; recommend?: string } }[] };
+  if (doc.error) throw new Error(doc.error);
+  if (asJson) return console.log(JSON.stringify(doc));
+  if (!doc.asks.length) return console.log(name ? `No ${all ? "" : "open "}questions asked by ${name}.` : `No ${all ? "" : "open "}questions for you.`);
+  for (const a of doc.asks) {
+    const state = a.answer !== null ? `settled: ${a.answer.split("\n")[0]!.slice(0, 80)}` : a.deadline ? `open, default "${a.default_answer}" at ${a.deadline}` : "open";
+    console.log(`${a.id}  ${a.project}  ${name ? `to ${a.to}` : `from ${a.from}`}${a.decision.kind ? ` (${a.decision.kind})` : ""}: ${a.question.split("\n")[0]!.slice(0, 120)}\n    ${state}${a.options.length ? `; options: ${a.options.join(" | ")}` : ""}${a.decision.recommend ? `; recommended: ${a.decision.recommend}` : ""}`);
+  }
+}
+
+// `axos ask`: a script puts a question to a person (as ask_human), the answer waits in the script's inbox.
+async function askCmd(args: string[]): Promise<void> {
+  const options: string[] = [];
+  for (let i = args.indexOf("--option"); i >= 0; i = args.indexOf("--option")) {
+    const v = args[i + 1];
+    if (v === undefined || v.startsWith("--")) throw new Error("--option needs a value");
+    options.push(v);
+    args.splice(i, 2);
+  }
+  const { opt, flag } = scriptOpts(args);
+  const name = opt("--name"), project = opt("--project"), as = opt("--as"), human = opt("--human"), question = opt("--question");
+  const def = opt("--default"), deadline = opt("--deadline-minutes"), remind = opt("--remind-hours");
+  const kind = opt("--kind"), recommend = opt("--recommend"), cost = opt("--waiting-cost"), hands = opt("--hands");
+  const asJson = flag("--json");
+  if (args.length) throw new Error(`unknown arguments: ${args.join(" ")}\nusage: ${HELP.ask!.split("\n")[0]}`);
+  if (!human || !question) throw new Error(`--human and --question are needed\nusage: ${HELP.ask!.split("\n")[0]}`);
+  const text = await scriptHub(name, project).call("ask_human", {
+    human, question, ...(options.length ? { options } : {}), ...(def ? { default_answer: def } : {}),
+    ...(deadline ? { deadline_minutes: Number(deadline) } : {}), ...(remind ? { remind_hours: Number(remind) } : {}), ...(as ? { as } : {}),
+    ...(kind ? { kind } : {}), ...(recommend ? { recommend } : {}),
+    ...(cost ? { waiting_cost: cost } : {}), ...(hands ? { hands } : {}),
+  });
+  if (!asJson) return console.log(text);
+  const id = /\(ask (\d+)\)/.exec(text)?.[1];
+  console.log(JSON.stringify({ ask_id: id ? Number(id) : null, result: text }));
 }
 
 async function inboxCmd(args: string[]): Promise<void> {
@@ -1856,6 +1911,13 @@ const HELP: Record<string, string> = {
   For scripts (a timer, a CI step): sends as a named script of this machine, whose replies wait for axos inbox.
   A person sends from their page (Send). Addresses: role:<role>, session:<name>, human:<name>, project.
   A role is a mailbox one session holds at a time; it outlives the session, so mail to it waits for the next holder.`,
+  asks: `axos asks [--json] [--all] | axos asks --name <script> [--json] [--all] [--project <p>]
+  Open questions: with no --name, those put to you (this machine's person) in all your projects, as your page shows them;
+  with --name, those that script asked (--all: its settled ones too). --json prints {"human", "asks": [{id, project,
+  from, from_human, to, question, options, default_answer, deadline, decision, answer, …}]}.`,
+  ask: `axos ask --name <script> --human <name> --question <text> [--option <o>]… [--default <o>] [--deadline-minutes <n>] [--remind-hours <h>] [--kind decide|hands|taste] [--recommend <r>] [--waiting-cost <c>] [--hands <what, where>] [--as <role>] [--project <p>] [--json]
+  For scripts: puts a question to a person (their page and phone); the answer waits in the script's inbox (axos inbox
+  --name). --json prints {"ask_id", "result"}. A --deadline-minutes without --default holds: nothing proceeds.`,
   inbox: `axos inbox --name <script> [--as <role>] [--json] [--all] [--ack] [--limit <n>] [--project <p>]
   For scripts: reads the replies to a script's messages. A person reads their mail on their page.`,
   landed: `axos landed <remote>/<branch> [<commit>] [--since <old head>] [--repo <name>] [--subject <s>] [--project <p>]
@@ -1863,7 +1925,7 @@ const HELP: Record<string, string> = {
   board: `axos board [connect [--board <owner>/<project>/<board>] [--every <minutes>] | disconnect | feed]
   The hub's health board in vinea (the operator's): whether messages reach a reader, who is present, what waits.
   connect applies it with the vinea command; feed pushes the numbers once; the vinea bridge feeds it while it runs.`,
-  "claude-bell": `axos claude-bell --session <Claude session id> [--project <p>]
+  "claude-bell": `axos claude-bell --session <Claude session id> [--project <p>] [--claude <path>]
   Wakes a Claude Code session started with claude --bg when mail comes for it (it has no other way to hear it while idle).`,
   "codex-bell": `axos codex-bell --thread <Codex session> [--session <id>] [--project <p>]
   Wakes an idle Codex started by hand when mail comes for it. axos codex does this for you.`,
@@ -1945,8 +2007,9 @@ else if (cmd === "use") {
     process.exit(1);
   });
 }
-else if (cmd === "send" || cmd === "inbox") {
-  await (cmd === "send" ? sendCmd(process.argv.slice(3)) : inboxCmd(process.argv.slice(3))).catch((e: Error) => {
+else if (cmd === "send" || cmd === "inbox" || cmd === "asks" || cmd === "ask") {
+  const run = { send: sendCmd, inbox: inboxCmd, asks: asksCmd, ask: askCmd }[cmd];
+  await run(process.argv.slice(3)).catch((e: Error) => {
     console.error(e.message);
     process.exit(1);
   });
@@ -1970,11 +2033,11 @@ else if (cmd === "trust") {
        axos join <invite link>    set this machine up
        axos use [<project>] [--new [<name>]] [--move] | use --none     this folder's project
        axos project [list] | new <name> | rename [<project>] <name> | link <a> <b>… | unlink <a> <b>… | share <project> <person> | join <project>
-       axos machine [list] | add | rename <name> <new name> | revoke <name>
+       axos machine [list] | add | rename <name> <new name>   (revoke one on your page)
        axos person invite <name> [--project <project>]     axos login-link (read-only, for a program)     axos trust     axos whoami (JSON)
        axos admin <command>       the hub's admin command on its server, over ssh (admin_ssh in the config)
        axos board [connect | disconnect | feed]   the hub's health board in vinea (the operator's)
-       axos send --name <script> … | inbox --name <script> … | landed <remote>/<branch> | codex [<codex args>] | codex-bell --thread <id> | claude-bell --session <id>
+       axos send --name <script> … | inbox --name <script> … | ask --name <script> … | asks [--json] | landed <remote>/<branch> | codex [<codex args>] | codex-bell --thread <id> | claude-bell --session <id>
        short forms: axos link <a> <b>… · axos unlink <a> <b>… · axos rename [<project>] <name>
        axos <command> --help says what a command does; axos send and inbox are for scripts, a person uses the page.
 environment: AXOS_CONFIG (the config file, default ~/.config/axos/config.json) · AXOS_TOKEN_FILE (this machine's token,

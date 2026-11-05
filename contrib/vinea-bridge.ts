@@ -25,7 +25,7 @@ export interface AxosState {
   human: string;
   now: number;
   asks: { id: number; message_id: number; from: string; project: string; question: string; options: string[]; default_answer: string | null; deadline: string | null; created_at: string | null;
-    decision?: { kind?: string; recommend?: string; on_silence?: string; waiting_cost?: string; hands?: string; suggested_by?: string } }[];
+    decision?: { kind?: string; recommend?: string; waiting_cost?: string; hands?: string; suggested_by?: string } }[];
   inbox: { id: number; from: string; project: string; type: string; priority: string; created_at: string; summary: string; body: string | null }[];
   projects: { id: string; sessions: { label: string; name: string | null; human: string; online: boolean; bell: boolean; unread: number; roles: string[]; last_seen: number | null }[] }[];
 }
@@ -67,7 +67,7 @@ export function itemsFor(project: string, s: AxosState, base: string): { items: 
     const head = [d.kind === "hands" ? "Needs your hands." : d.kind === "taste" ? "Your taste." : "",
       d.recommend ? `Recommended: ${cut(d.recommend, 200)}` : "", d.hands ? `Do: \`${cut(d.hands.replace(/`/g, "'"), 200)}\`` : "",
       d.suggested_by && (d.recommend || d.hands) ? `(suggested by ${cut(d.suggested_by, 40)}'s agent, not checked by AXOS)` : "",
-      d.on_silence === "hold" ? "If unanswered: it holds." : "", d.waiting_cost ? `Waiting costs: ${cut(d.waiting_cost, 160)}` : ""].filter(Boolean);
+      a.deadline && a.default_answer === null ? "If unanswered by the date: it holds." : "", d.waiting_cost ? `Waiting costs: ${cut(d.waiting_cost, 160)}` : ""].filter(Boolean);
     if (d.kind) meta.push({ label: "kind", value: d.kind });
     return { title: cut(a.question, 200), state: "waiting", detail: `${head.length ? `${head.join("\n")}\n\n` : ""}${options}\n\nAnswer on the AXOS page or your phone.`, meta, tags: ["question"], link: `${page}#m${a.message_id}` };
   });

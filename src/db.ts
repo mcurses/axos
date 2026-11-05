@@ -187,7 +187,7 @@ CREATE TABLE IF NOT EXISTS asks (
   reminded_at   INTEGER,
   stale_at      INTEGER,                       -- no deadline and no answer for days: the asker was told
   action_json   TEXT,                          -- what the hub does on a yes: {"kind":"takeover",project,role,from,to}
-  decision_json TEXT                           -- the ask as a decision record: {kind, recommend, on_silence, waiting_cost, hands, check}
+  decision_json TEXT                           -- the ask as a decision record: {kind, recommend, waiting_cost, hands}
 );
 CREATE TABLE IF NOT EXISTS attachments (     -- images shown with a question on the human's page; kept 30 days
   id            INTEGER PRIMARY KEY,

