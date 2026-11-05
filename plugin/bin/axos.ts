@@ -29,6 +29,7 @@
 // in the config (a folder path, or a git remote that `axos use` wrote), or through a committed .axos.json ({"hub": "<url>", "project": "<owner>/<name>", "id": "prj_…"}) at or
 // above it, once the person on this machine has trusted that file: a cloned repo must not steer sessions into a project.
 
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -311,6 +312,13 @@ function headers(id: Identity): Record<string, string> {
   };
   if (id.project) h["x-axos-project"] = encodeURIComponent(id.project);
   if (id.name) h["x-axos-name"] = encodeURIComponent(id.name);
+  // The folder's name and a fingerprint of its checkout, never the path: presence names a session's folder to its own
+  // person and says when two sessions share one working tree.
+  if (id.cwd) {
+    const root = gitRemotes(id.cwd)?.root ?? id.cwd;
+    h["x-axos-folder"] = encodeURIComponent(basename(root));
+    h["x-axos-tree"] = createHash("sha256").update(`axos-tree:${hostname()}:${root}`).digest("hex").slice(0, 16);
+  }
   return h;
 }
 
@@ -461,9 +469,25 @@ async function meumLabels(labels: string[], last: string[] | undefined): Promise
   } catch { return last; }
 }
 
-const WAKEUP_OFF = "Idle wake-up is off for this session: Claude Code was started without " +
-  "`--dangerously-load-development-channels plugin:axos@axos`, so a message reaches it only with the next prompt or tool call. " +
-  "Tell your user if they expect messages while you are idle.";
+const CHANNEL_FLAG = "--dangerously-load-development-channels plugin:axos@axos";
+// The line that starts every interactive Claude Code with the AXOS channel, for the person's shell, and the file it goes
+// in. Only interactive shells read these files, so scripts and scheduled runs keep their own command lines.
+export function wakeAlias(shell = process.env.SHELL ?? ""): { file: string; line: string } {
+  const sh = basename(shell);
+  if (sh === "fish") return { file: "~/.config/fish/config.fish", line: `alias claude 'claude ${CHANNEL_FLAG}'` };
+  return { file: sh === "bash" ? "~/.bashrc" : sh === "zsh" ? "~/.zshrc" : "your shell's startup file", line: `alias claude='claude ${CHANNEL_FLAG}'` };
+}
+// Whether the person's shell file already names the channel flag (then nothing is suggested).
+function shellHasChannel(file: string): boolean {
+  if (!file.startsWith("~/")) return false;
+  try { return readFileSync(join(HOME, file.slice(2)), "utf8").includes("plugin:axos@axos"); } catch { return false; }
+}
+function wakeupOffText(): string {
+  const a = wakeAlias();
+  return `Idle wake-up is off for this session: Claude Code was started without \`${CHANNEL_FLAG}\`, so a message reaches it only ` +
+    `with the next prompt or tool call. Tell your user if they expect messages while you are idle. The usual fix is one line in ${a.file}: ` +
+    `\`${a.line}\` (sessions started after it wake on messages); offer it, and add it only on their yes.`;
+}
 
 async function hook(kind: string): Promise<void> {
   const input = (await Bun.stdin.json().catch(() => ({}))) as { session_id?: string; cwd?: string; stop_hook_active?: boolean; session_title?: string; prompt?: string };
@@ -515,7 +539,7 @@ async function hook(kind: string): Promise<void> {
     if (!state.unreachable && kind !== "end") context = `AXOS hub (${id.c.url}) is unreachable; messages wait on the hub and arrive when it is back. To see whether it is up, open ${id.c.url} in a browser.`;
     state.unreachable = true;
   }
-  if (kind === "start" && context && !state.unreachable && wakeupOff() === true) context = `${context}\n${WAKEUP_OFF}`;
+  if (kind === "start" && context && !state.unreachable && wakeupOff() === true) context = `${context}\n${wakeupOffText()}`;
   if (adopted) context = [adopted, context].filter(Boolean).join("\n\n");
   state.last_check = Date.now();
   writeFileSync(stateFile(id.sessionId), JSON.stringify(state));
@@ -570,6 +594,16 @@ async function uploadImages(id: Identity, paths: unknown[]): Promise<string[]> {
   return refs;
 }
 
+const MCP_RETRIES = Number(process.env.AXOS_MCP_RETRIES ?? 10);
+const MCP_RETRY_MS = Number(process.env.AXOS_MCP_RETRY_MS ?? 2000);
+const MCP_CACHE = join(dirname(CONFIG_PATH), "mcp-cache.json");
+function mcpCache(): Record<string, unknown> {
+  try { return JSON.parse(readFileSync(MCP_CACHE, "utf8")) as Record<string, unknown>; } catch { return {}; }
+}
+function saveMcpCache(method: string, result: unknown): void {
+  try { writeFileSync(MCP_CACHE, `${JSON.stringify({ ...mcpCache(), [method]: result })}\n`); } catch { /* a read-only config dir: no copy */ }
+}
+
 async function forward(id: Identity, msg: { id?: unknown; method?: string; params?: { name?: string; arguments?: Record<string, unknown> } }): Promise<void> {
   const call = msg.method === "tools/call" ? msg.params : undefined;
   const args = call?.name === "ask_human" ? call.arguments : undefined;
@@ -590,12 +624,29 @@ async function forward(id: Identity, msg: { id?: unknown; method?: string; param
     }
     extra["x-axos-human-words"] = "checked";
   }
+  // The handshake and the tool list must not fail while the hub is briefly away (a laptop waking, a network still
+  // coming up): Claude Code gives a failed MCP server up for the whole session (vigil's report, 2026-11-05, a 45 s
+  // dark wake). So these retry for a while, then answer from the copy kept from the last time the hub answered; the
+  // tools then work as soon as the hub is back.
+  const cached = msg.method === "initialize" || msg.method === "tools/list";
+  const post = () => fetch(`${id.c.url.replace(/\/$/, "")}/mcp`, {
+    method: "POST",
+    headers: { ...headers(id), ...extra, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+    body: JSON.stringify(msg),
+    ...(cached ? { signal: AbortSignal.timeout(5000) } : {}),
+  });
   try {
-    const res = await fetch(`${id.c.url.replace(/\/$/, "")}/mcp`, {
-      method: "POST",
-      headers: { ...headers(id), ...extra, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
-      body: JSON.stringify(msg),
-    });
+    let res: Response | null = null;
+    for (let tries = 0; ; tries++) {
+      try { res = await post(); break; } catch (e) {
+        if (!cached || tries >= MCP_RETRIES) {
+          const copy = cached ? mcpCache()[msg.method!] : undefined;
+          if (copy) { write({ jsonrpc: "2.0", id: msg.id, result: copy }); return; }
+          throw e;
+        }
+        await Bun.sleep(MCP_RETRY_MS);
+      }
+    }
     if (res.status === 202 || msg.id === undefined) return;
     const body = (await res.json()) as { result?: { capabilities?: Record<string, unknown>; instructions?: string; isError?: boolean } };
     // A send from a folder outside every project went through (to a person): from now on this session reads its mailbox.
@@ -605,6 +656,7 @@ async function forward(id: Identity, msg: { id?: unknown; method?: string; param
       const caps = (body.result.capabilities ??= {}) as { experimental?: Record<string, unknown> };
       caps.experimental = { ...(caps.experimental ?? {}), "claude/channel": {} };
     }
+    if (cached && body.result) saveMcpCache(msg.method!, body.result);
     write(body);
   } catch (e) {
     write({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: `AXOS hub unreachable: ${(e as Error).message}` } });
@@ -1457,6 +1509,8 @@ async function status(): Promise<void> {
     if (m.sessions) bits.push(`${m.sessions} session${m.sessions === 1 ? "" : "s"}`);
     lines.push(`  ${m.name.padEnd(24)} ${bits.join(" · ")}${unusedHint(m)}`);
   }
+  const wake = wakeAlias();
+  if (!shellHasChannel(wake.file)) lines.push("", `Waking: a Claude Code session wakes on a message only when started with AXOS's channel flag. One line in ${wake.file} does it for every session you start afterwards:`, `  ${wake.line}`);
   if (me.pending.length) lines.push("", `Waiting for your answer on your page: ${me.pending.map((r) => `${r.from} ${r.kind === "join" ? "wants to join" : r.kind === "share" ? "shares" : "wants to link"} ${r.project}`).join("; ")}.`);
   console.log(lines.join("\n"));
 }
@@ -1757,7 +1811,8 @@ const HELP: Record<string, string> = {
   use: `axos use [<project>] [--new [<name>]] [--remote <name>] [--here] [--move] | axos use --none
   Connects this folder to a project, so every session started here joins it. A project is what sessions talk in: its
   sessions see each other, message each other and share its roles. Without a name it says where the folder belongs now;
-  --new makes a project; --none disconnects. Connected by the repo's remote, every clone on every machine of yours connects.`,
+  --new makes a project; --none disconnects. Connected by the repo's remote, every clone on every machine of yours connects.
+  Many repos in one project: run it once in the folder that holds them (not inside a checkout); everything below joins.`,
   project: `axos project [list] | new <name> | rename [<project>] <new name> | link <a> <b>… | unlink <a> <b>… | share <project> <person> | join <project>
   Your projects. A link lets two projects' sessions reach each other: your own are linked at once, another person's
   project only when they accept on their page. share adds a person to a project you own; join asks its owner to let you in.`,

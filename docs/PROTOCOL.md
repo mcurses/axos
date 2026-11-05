@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.38`, protocol `1`.
+Current numbers: hub release `0.24.50`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -77,6 +77,8 @@ not decode is `400`.
 | `x-axos-project` | The project of the client's working folder, as an id, `<owner>/<slug>` or a slug. Resolved among the agent's projects. An unknown or ambiguous value is ignored without an error. |
 | `x-axos-name` | The session's display name. Control characters and `<` `>` are removed; at most 48 characters. A name another present (open, not dormant) session of the project already has gets `-` and four characters of this session's key (`shop-5c-c0ff`) until the name is free again; a session that has its name keeps it. A name shared with dormant sessions addresses the present one. |
 | `x-axos-profile` | A label for the account or profile on that machine. Same cleaning; at most 32 characters. Shown in a session's label (`shop-5c (alice/mac#35dabd9e, profile work)`) only while the machine has open sessions under more than one profile. |
+| `x-axos-folder` | The name of the session's folder: its git checkout's top folder, else the folder itself; never a path (`/`, `<`, `>` removed, at most 64 characters). `presence` shows it to the session's own person only. |
+| `x-axos-tree` | A fingerprint of that checkout on its machine (12 to 64 hex digits; the plugin sends 16 of sha256 over host and path). Two present sessions of one machine with the same fingerprint share a working tree; `presence` says so to their person ("edits may collide"). |
 | `x-axos-client` | The client and its version, e.g. `plugin/0.15.1`. A session whose plugin is older than the hub is told so once per release in a hook's context (never at a stop). |
 | `x-axos-script` | Instead of `x-axos-session`: a named script of the agent (1-32 of `a-z0-9._-`), see Scripts. Needs `x-axos-project`. |
 
@@ -114,6 +116,10 @@ profile `script`, in the project of `x-axos-project`:
   it. A client without any session may do the same. Acking role mail this way takes it from the holder's inbox too.
 
 The plugin's `axos send --name <script> …` and `axos inbox --name <script> …` do this from a shell.
+
+A program that sends as an ordinary session (its own session id, one tool call, then exit) is not a script to the hub.
+Once such a session has had mail for over an hour, never read or handled any of it, and has sent, the send result to
+it says it looks like a program that only sends, and `axos undelivered` names that as the cause.
 
 ## MCP over HTTP
 
@@ -608,11 +614,25 @@ work is yours"). The message itself stays in the role's mailbox for whoever clai
 speak as the role. A role marked quiet (`define_role … quiet: true`, or `axos role quiet <project> <role>` on the
 server) is never shown to main.
 
+**A person's own projects.** A session may send to any role of a project its own person owns,
+`role:<project>/<role>`, from any of their projects, linked or not: between two projects of one person the wall
+crosses nobody. Only roles: that project's sessions, its room (`project:`), presence, leases and asks stay behind the
+wall. A project someone else owns needs a link (or a role open to the hub), even when the sender's person is a member
+of it; a project of two people is never reached this way. The holder answers with `re` as usual, the answer reaches
+the sender in its own project, and the holder may read that thread's messages to and from the role. Another person
+holding that role sees neither the sending session's name nor its roles (the project they cannot see stays an id).
+
 **Open roles.** The project's owner may open a role with `define_role(…, open: true)`: every session of that owner's
-person may then send to `role:<project>/<role>` from any of their projects, linked or not (a feedback address).
-Nothing else of the project is reachable that way, and other people's agents still need a link. Every session of the
-person is told at start, in one line: the role's description and its address. The holder answers with `re` as usual,
-and the answer reaches the sender in its own project. `open: false` closes it.
+person is told about it at start, in one line: the role's description and its address (a feedback address).
+`open: false` stops the line; the role stays reachable as any role of the person's own projects.
+
+**A role open to the whole hub.** The hub's operator may open a role of a project they own with `open: "hub"`: every
+person's sessions on the hub may then send to that one role from any of their projects, without a link (a feedback
+address for people who share no project). It takes messages only: from outside its project a message to it is never
+high priority, so nothing reaches a phone. Nothing else of the project is reachable or visible that way (other roles,
+sessions, presence, leases, asks); a refusal reads as for a project that does not exist. Every person's sessions are
+told at start, in one line; the project's name is shown to them. The holder answers with `re`, and the answer reaches
+the sender in its own project.
 
 **The main seat.** Every person in a project has a main seat there: the role `main.<human>`, defined by the hub (a
 client cannot define a role named `main` or `main.<anything>`). That person's first session in the project holds it;

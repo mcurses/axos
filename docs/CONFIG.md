@@ -126,6 +126,7 @@ The Claude Code plugin reads these; another client can ignore them or reuse the 
 | `~/.config/axos/config.json` | `axos join`, `axos use`, or by hand | Hub URL, token locations, folder rules |
 | `~/.config/axos/token` | `axos join` | The default token file, mode 0600 |
 | `~/.config/axos/trusted.json` | `axos trust` | Which `.axos.json` files this machine trusts, mode 0600 |
+| `~/.config/axos/mcp-cache.json` | the plugin's tool server | The hub's handshake and tool list from the last start, so a session started while the hub is unreachable still gets its tools (they work once the hub is back) |
 | `<repo>/.axos.json` | committed by a team that wants it (optional) | Names the repo's project for every clone |
 
 `trusted.json` sits next to the config file, so setting `AXOS_CONFIG` moves it too.

@@ -33,13 +33,15 @@ export interface SessionRow {
   project: string | null;
   name: string | null;
   profile: string | null;
-  cwd: string | null;
+  cwd: string | null;            // the name of the session's folder (its checkout's top folder), never the path
+  tree: string | null;           // a fingerprint of that checkout on its machine, never the path
   started_at: number;
   last_seen: number;
   ended_at: number | null;
   framed_at: number | null;
   former_names: string;
   kind: "session" | "script";
+  wakes: number | null;           // what its last event stream said: 1 the host wakes on a ring, 0 it does not, null unknown
 }
 
 export interface AgentRow {
@@ -1228,12 +1230,14 @@ export class Hub {
       const own = "agent" in viewer ? this.projectsOf(viewer.agent) : this.projectsOfHuman(viewer.human);
       visible = new Set([...own, ...own.flatMap((p) => this.linkedProjects(p))]);
     }
+    // A project with a role open to the whole hub is named to everyone; its agents are not (security review 2026-11-05, F5).
+    const named = visible ? new Set([...visible, ...this.hubOpenProjects()]) : null;
     // An agent is named to someone who shares a project (or a link) with it, and to its own human.
     const knows = (agent: string) => !visible || ("agent" in viewer! && viewer.agent === agent) ||
       this.humanOfHolder(agent) === ("human" in viewer! ? viewer.human : this.humanOfHolder(viewer!.agent)) ||
       this.projectsOf(agent).some((p) => visible!.has(p));
     return text
-      .replace(PROJECT_ID, (id) => (visible && !visible.has(id) ? id : this.projectName(id) ?? id))
+      .replace(PROJECT_ID, (id) => (named && !named.has(id) ? id : this.projectName(id) ?? id))
       .replace(AGENT_ID, (id) => (knows(id) ? this.agentLabel(id) ?? id : id));
   }
 
@@ -1282,15 +1286,32 @@ export class Hub {
     return this.db.query("SELECT * FROM project_links ORDER BY a, b").all() as { a: string; b: string; created_at: number }[];
   }
 
+  // Whether a reader of this person may see a sender's session name and roles: a sender of their own person, or one in a
+  // project the reader is in or linked to. A message from another person's own project reaches a role here without a
+  // link (question 18); its session name and roles say what that person works on there (security review 2026-11-05, F1).
+  senderShownTo(human: string, sender: string): boolean {
+    if (this.humanOfHolder(sender) === human) return true;
+    const p = sender.startsWith("session:") ? this.session(sender.slice(8))?.project : null;
+    if (!p) return true;
+    const mine = this.projectsOfHuman(human);
+    return mine.includes(p) || mine.some((q) => this.linkedProjects(q).includes(p));
+  }
+
   // The project an address points into: the message's own, or one linked to it. Anything else is refused alike.
-  // openRole: the role named in the address; a project of the sender's own human with that role open is reachable
-  // without a link (a feedback address, 2026-11-03). Nothing else of that project is.
+  // openRole: the role named in the address. A project the sender's own human owns is reachable without a link, every
+  // role of it (model question 18, default applied 2026-11-05: between two projects of one person the wall crosses
+  // nobody). A shared project counts only when that person owns it, so a member of someone else's project gets nothing
+  // new here; two people's pair projects stay out. Nothing else of the project is reached: no sessions, no project room.
   private reach(project: string, target: string, address: string, openRole?: { role: string; human?: string }): string {
     const hit = this.projectId(target, [project, ...this.linkedProjects(project)]);
     if (hit) return hit;
     if (openRole?.human) {
-      const own = this.projectId(target, this.projectsOfHuman(openRole.human).filter((q) => this.projectOwner(q) === openRole.human));
-      if (own && this.db.query("SELECT 1 FROM roles WHERE project = ? AND role = ? AND open = 1").get(own, openRole.role)) return own;
+      const own = this.projectId(target, this.projectsOfHuman(openRole.human).filter((q) => this.projectOwner(q) === openRole.human && !this.isPair(q)));
+      if (own) return own;
+      // A role the operator opened to the whole hub (Max, 2026-11-05, "yes build 3": Elli's feedback): every person's
+      // session reaches that one role from any project of theirs. Nothing else of its project.
+      const hubWide = this.projectId(target, this.hubOpenProjects(openRole.role));
+      if (hubWide) return hubWide;
     }
     throw new AxosError(`cannot address another project ('${address}') from '${project}'; only linked projects: ${this.linkedProjects(project).join(", ") || "none"}`);
   }
@@ -1439,6 +1460,17 @@ export class Hub {
     return !this.streams.has(s.key) && this.now() - s.last_seen > SESSION_DORMANT_MS;
   }
 
+  // A session that only sends: it has had mail for over an hour and never read or handled any of it, and it has sent.
+  // One operator's account rotator and file-queue filer are programs that open the MCP server for one send and exit.
+  neverReads(key: string): boolean {
+    const r = this.db.query(
+      `SELECT COALESCE(SUM(d.shown_at IS NOT NULL OR (d.acked_at IS NOT NULL AND COALESCE(d.outcome, '') <> 'expired')), 0) AS read,
+              COALESCE(SUM(m.created_at < ?), 0) AS old
+         FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.recipient = ?`).get(this.now() - 3_600_000, `session:${key}`) as { read: number; old: number };
+    if (r.read || !r.old) return false;
+    return !!this.db.query("SELECT 1 FROM messages WHERE sender = ? OR sent_by = ? LIMIT 1").get(`session:${key}`, `session:${key}`);
+  }
+
   // An agent without a session counts as reachable while it has connected within the liveness window.
   agentReachable(agentId: string): boolean {
     const seen = this.lastSeen(agentId);
@@ -1468,13 +1500,15 @@ export class Hub {
   // ---------------------------------------------------------------- sessions
 
   // Called on every request that carries a session: creates it on first sight, revives it after an end, keeps its roles.
-  openSession(agentId: string, s: { client_session: string; project?: string | null; name?: string | null; profile?: string | null; cwd?: string | null }): string {
+  openSession(agentId: string, s: { client_session: string; project?: string | null; name?: string | null; profile?: string | null; cwd?: string | null; tree?: string | null }): string {
     const cs = s.client_session.trim();
     if (!/^[A-Za-z0-9-]{8,80}$/.test(cs)) throw new AxosError("session id must be 8-80 letters, digits or '-'");
     const key = `${agentId}#${cs.replace(/-/g, "").slice(0, 8).toLowerCase()}`;
     const project = s.project && this.isMember(agentId, s.project) ? s.project : null;
     let name = s.name ? oneLine(s.name, 48) || null : null;
     const profile = s.profile ? oneLine(s.profile, 32) || null : null;
+    const folder = s.cwd ? oneLine(s.cwd, 64).replace(/[\/<>]/g, "") || null : null;
+    const tree = s.tree && /^[0-9a-f]{12,64}$/.test(s.tree) ? s.tree.slice(0, 16) : null;
     const t = this.now();
     const prev = this.db.query("SELECT key, ended_at, name, former_names FROM sessions WHERE key = ?").get(key) as
       { key: string; ended_at: number | null; name: string | null; former_names: string } | null;
@@ -1494,11 +1528,11 @@ export class Hub {
       this.db.query("UPDATE sessions SET former_names = ? WHERE key = ?").run(former, key);
     }
     this.db.query(
-      `INSERT INTO sessions (key, agent_id, client_session, project, name, profile, cwd, started_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO sessions (key, agent_id, client_session, project, name, profile, cwd, tree, started_at, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (key) DO UPDATE SET last_seen = excluded.last_seen, ended_at = NULL,
          project = COALESCE(excluded.project, sessions.project), name = COALESCE(excluded.name, sessions.name),
-         profile = COALESCE(excluded.profile, sessions.profile), cwd = COALESCE(excluded.cwd, sessions.cwd)`,
-    ).run(key, agentId, cs, project, name, profile, null, t, t);
+         profile = COALESCE(excluded.profile, sessions.profile), cwd = COALESCE(excluded.cwd, sessions.cwd), tree = COALESCE(excluded.tree, sessions.tree)`,
+    ).run(key, agentId, cs, project, name, profile, folder, tree, t, t);
     // A session revived after its human left the project does not keep the project.
     const kept = this.session(key)!.project;
     if (kept && !this.isMember(agentId, kept)) this.db.query("UPDATE sessions SET project = NULL WHERE key = ?").run(key);
@@ -1649,12 +1683,16 @@ export class Hub {
     const t = this.now();
     const rolesOf = (holder: string) =>
       (this.db.query("SELECT role FROM roles WHERE project = ? AND holder = ?").all(project, holder) as { role: string }[]).map((x) => x.role);
-    const sessions = this.liveSessions(project).filter((s) => !this.dormant(s) || rolesOf(s.key).length).map((s) => {
+    const present = this.liveSessions(project).filter((s) => !this.dormant(s) || rolesOf(s.key).length);
+    const sessions = present.map((s) => {
       const agent = this.db.query("SELECT human FROM agents WHERE id = ?").get(s.agent_id) as { human: string };
       return {
         id: s.key, address: `session:${s.key}`, name: s.name, profile: s.profile, human: agent.human, last_seen: s.last_seen as number | null,
         bell: this.streams.has(s.key), wake: this.wake(s.key), online: this.streams.has(s.key) || t - s.last_seen < this.onlineWindowMs,
         unread: this.unreadCount(`session:${s.key}`), unseen: this.unshownCount([`session:${s.key}`]), roles: rolesOf(s.key),
+        // Its folder's name, and the other present sessions of the same machine in the same checkout (Elli, 2026-11-05:
+        // two sessions in one working tree, nothing said so). Callers show these only to the session's own person.
+        folder: s.cwd, same_tree: s.tree ? present.filter((x) => x.key !== s.key && x.agent_id === s.agent_id && x.tree === s.tree).map((x) => x.name ?? x.key) : [] as string[],
       };
     });
     const withSessions = new Set(this.liveSessions(project).map((s) => s.agent_id));
@@ -1668,6 +1706,7 @@ export class Hub {
         id: r.id, address: `agent:${r.id}`, name: null as string | null, profile: null as string | null, human: r.human, last_seen: r.last_seen,
         bell: this.streams.has(r.id), wake: this.wake(r.id), online: this.streams.has(r.id) || (r.last_seen !== null && t - r.last_seen < this.onlineWindowMs),
         unread: this.unreadCount(`agent:${r.id}`), unseen: this.unshownCount([`agent:${r.id}`]), roles: rolesOf(r.id),
+        folder: null as string | null, same_tree: [] as string[],
       }));
     // A project of two people lists only the sessions that work in it, not every machine of each (security review 7).
     return [...sessions, ...(this.isPair(project) ? [] : agents)];
@@ -1778,8 +1817,14 @@ export class Hub {
 
   // ---------------------------------------------------------------- roles
 
-  defineRole(project: string, role: string, description?: string, internal = false): void {
+  defineRole(project: string, role: string, description?: string, internal = false, by?: string): void {
     checkName("role", role);
+    // A role open to the whole hub shows its description to every person's sessions: only its owner, the operator,
+    // changes it (security review 2026-11-05, F2). A repo's .axos.json does not.
+    const hubOpen = (this.db.query("SELECT open FROM roles WHERE project = ? AND role = ?").get(project, role) as { open: number } | null)?.open === 2;
+    if (hubOpen && description !== undefined && !(by && by === this.projectOwner(project) && this.isOperator(by))) {
+      throw new AxosError(`the role '${role}' is open to the whole hub: only its project's owner, the hub's operator, changes its description`);
+    }
     if (!internal && isMainRole(role)) throw new AxosError(`'${role}' is the hub's: every person has a main seat in every project (role:main is yours)`);
     if (!this.db.query("SELECT 1 FROM projects WHERE id = ?").get(project)) throw new AxosError(`no project '${project}'`);
     this.db.query("INSERT OR IGNORE INTO roles (project, role) VALUES (?, ?)").run(project, role);
@@ -1960,13 +2005,23 @@ export class Hub {
   }
 
   // The project's owner opens (or closes) a role to every session of their own: it is then addressed from any of their
-  // projects without a link. Other people's agents still need a link.
-  setRoleOpen(human: string, project: string, role: string, open: boolean): void {
+  // projects without a link. "hub" opens it to every person on the hub (a feedback address for people without a link);
+  // only the operator may, for a project they own. Other people's agents reach nothing else of the project.
+  setRoleOpen(human: string, project: string, role: string, open: boolean | "hub"): void {
     if (this.projectOwner(project) !== human) throw new AxosError("only the project's owner opens a role to all their sessions");
+    if (open === "hub" && !this.isOperator(human)) throw new AxosError("only the hub's operator opens a role to every person on the hub");
     if (isMainRole(role)) throw new AxosError("a main seat is not opened; open a role of the project's own");
-    const r = this.db.query("UPDATE roles SET open = ? WHERE project = ? AND role = ?").run(open ? 1 : 0, project, role);
+    const r = this.db.query("UPDATE roles SET open = ? WHERE project = ? AND role = ?").run(open === "hub" ? 2 : open ? 1 : 0, project, role);
     if (!r.changes) throw new AxosError(`no role '${role}' in '${project}'`);
-    this.event(`human:${human}`, open ? "role.opened" : "role.closed", project, { role });
+    this.event(`human:${human}`, open ? (open === "hub" ? "role.opened_hub" : "role.opened") : "role.closed", project, { role });
+  }
+
+  // The projects that have this role open to every person on the hub (or any role, without a name).
+  hubOpenProjects(role?: string): string[] {
+    return (role === undefined
+      ? this.db.query("SELECT DISTINCT r.project FROM roles r JOIN projects p ON p.id = r.project JOIN humans h ON h.name = p.owner WHERE r.open = 2 AND h.operator = 1").all()
+      : this.db.query("SELECT r.project FROM roles r JOIN projects p ON p.id = r.project JOIN humans h ON h.name = p.owner WHERE r.role = ? AND r.open = 2 AND h.operator = 1").all(role))
+      .map((r) => (r as { project: string }).project);
   }
 
   roleQuiet(project: string, role: string): boolean {
@@ -1983,7 +2038,8 @@ export class Hub {
 
   // A human's open roles, for the start line of every session of theirs: where feedback and the like go.
   openRolesOf(human: string): { project: string; role: string; description: string }[] {
-    return this.db.query(`SELECT r.project, r.role, r.description FROM roles r JOIN projects p ON p.id = r.project WHERE r.open = 1 AND p.owner = ? ORDER BY r.project, r.role`)
+    return this.db.query(`SELECT r.project, r.role, r.description FROM roles r JOIN projects p ON p.id = r.project
+        WHERE (r.open >= 1 AND p.owner = ?) OR (r.open = 2 AND EXISTS (SELECT 1 FROM humans h WHERE h.name = p.owner AND h.operator = 1)) ORDER BY r.project, r.role`)
       .all(human) as { project: string; role: string; description: string }[];
   }
 
@@ -2340,7 +2396,14 @@ export class Hub {
     // one review request; "footgun").
     const fanned = [...recipients.values()].filter((v) => v.startsWith("project:")).length;
     const oneTaker = fanned > 1 && ONE_TAKER_TYPES.includes(input.type);
-    const priority = input.priority ?? ((input.type === "note" || input.type === "status") && (input.to ?? []).some((a) => a === "project" || a.startsWith("project:")) ? "low" : "normal");
+    let priority = input.priority ?? ((input.type === "note" || input.type === "status") && (input.to ?? []).some((a) => a === "project" || a.startsWith("project:")) ? "low" : "normal");
+    // A role open to the whole hub takes messages only: from someone outside its project nothing reaches a phone
+    // (the suite owner's condition on "yes build 3", 2026-11-05, 3369).
+    const outside = [...recipients.keys()].some((r) => {
+      const p = r.slice(5, r.lastIndexOf("/"));
+      return r.startsWith("role:") && this.hubOpenProjects().includes(p) && !(human && this.humanInProject(human, p)) && !this.linkedProjects(input.project).includes(p);
+    });
+    if (outside && priority === "high") priority = "normal";
     const id = this.db.transaction(() => {
       const res = this.db.query(
         `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at, sent_by, quotes_human, takers, scheduled_at)
@@ -2371,11 +2434,11 @@ export class Hub {
       if (recipient.startsWith("human:") && !input.no_push) {
         const to = recipient.slice(6);
         const other = !!human && human !== to;
-        const wants = input.priority === "high" || input.type === "ask" || (other && priority !== "low");
+        const wants = priority === "high" || input.type === "ask" || (other && priority !== "low");
         // Everything from another person's side, asks and urgent ones included, counts against their cap.
         if (wants && (!other || this.otherPushAllowed(human!, to))) {
           void this.pushToHuman(to, `${this.senderTitle(sender)} (${this.projectName(input.project)})`, summary, `#m${id}`, [],
-            { priority: input.priority === "high" ? "high" : "default" });
+            { priority: priority === "high" ? "high" : "default" });
         }
       }
     }
@@ -2388,18 +2451,24 @@ export class Hub {
       if (!r.startsWith("role:") || this.roleHolder(r)) continue;
       const [rp, rrole] = r.slice(5).split("/", 2) as [string, string];
       if (isMainRole(rrole) || this.roleQuiet(rp, rrole)) continue;
+      // From outside the project (a role open to the whole hub): it waits for the role, no notice to the members (F3).
+      if (rp !== input.project && !this.linkedProjects(input.project).includes(rp) && !(human && this.humanInProject(human, rp))) continue;
       for (const h of this.projectHumans(rp)) {
         const mainHolder = this.roleHolder(`role:${rp}/${mainRole(h)}`);
         if (!mainHolder || !this.isOnline(mainHolder) || addr(mainHolder) === sender) continue;
         const excerpt = body ? `\n\n${body.length > 1200 ? `${body.slice(0, 1200)}…` : body}` : "";
+        // Another person in the role's project does not learn the session's name in a project of the sender's own (F3).
+        const title = h === human || this.senderShownTo(h, sender) ? this.senderTitle(sender) : `a session of ${human}`;
         this.systemMessage(rp, addr(mainHolder), "status",
-          oneLine(`For the vacant role '${rrole}', from ${this.senderTitle(sender)}: ${summary}`, 300),
+          oneLine(`For the vacant role '${rrole}', from ${title}: ${summary}`, 300),
           `This message waits in the mailbox of the role '${rrole}', which nobody holds. You see it as this project's main session. ` +
           `It is the role's, not yours: do not answer it as the role. Claim it (claim_role ${rrole}) if the work is yours, or tell your human which session should.${excerpt}`, "low");
       }
     }
+    const outsideRole = (r: string) => { const p = r.slice(5, r.lastIndexOf("/")); return p !== input.project && !this.linkedProjects(input.project).includes(p); };
     const holderText = (r: string) => {
       const h = this.roleHolder(r)!;
+      if (outsideRole(r)) return this.isOnline(h) ? "connected" : "away";
       return `${this.labelFor(h, human, r.slice(5).split("/")[0] !== input.project)}, ${this.whereabouts(h)}`;
     };
     // A role nobody is reading right now (vacant, or its holder away): the mail waits, and the sender is told so, with
@@ -2418,6 +2487,9 @@ export class Hub {
       return `${this.label(r)} is a script's mailbox (a command line sent with axos send --name ${s.name}): nobody reads it until ` +
         `\`axos inbox --name ${s.name}\` runs on that machine (last ran ${when(s.last_seen)}). If you meant a session, address it or its role instead.`;
     });
+    // A session that only sends (a program that opens the MCP server for one send): a reply to it is read by nobody.
+    const sendOnly = [...recipients.keys()].filter((r) => r.startsWith("session:") && this.session(r.slice(8))?.kind === "session" && this.neverReads(r.slice(8)))
+      .map((r) => `${this.label(r)} has never read a message: it looks like a program that only sends, so this waits unread. If it spoke for a role, the role is the one to answer; if it needed no reply, ack its message done instead.`);
     // A request to a whole project reaches every receiver as its own, and nothing tells them who took it: two live
     // sessions both started on one (meum-05's report, 2026-11-02, messages 2250 and 2260). The sender is told.
     const many = oneTaker
@@ -2429,7 +2501,7 @@ export class Hub {
       delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => r.startsWith("role:") ? `${r} (held by ${holderText(r)})` : r),
       waiting_for_role: [...recipients.keys()].filter(vacant),
       not_sent: notSent,
-      unattended: [...unattended, ...stale, ...scripts, ...many, ...takenNote, ...toMain],
+      unattended: [...unattended, ...stale, ...scripts, ...sendOnly, ...many, ...takenNote, ...toMain],
     };
   }
 
@@ -2540,6 +2612,10 @@ export class Hub {
     const [p, role] = roleAddr.slice(5).split("/", 2) as [string, string];
     const own = p === from;
     const holder = this.roleHolder(roleAddr);
+    // Reached as a role open to the whole hub, without a link: that one role's state and nothing of the project (F1).
+    if (!own && !this.linkedProjects(from).includes(p)) {
+      return `${roleAddr} is ${holder ? `held, its holder ${this.isOnline(holder) ? "connected" : "away"}` : "held by nobody"}: the message waits there.`;
+    }
     const state = holder ? `held by ${this.labelFor(holder, viewerHuman, !own)} (${this.whereabouts(holder)})` : "held by nobody";
     const room = own
       ? this.liveSessions(p).filter((x) => x.key !== me && x.key !== holder)
@@ -2721,7 +2797,22 @@ export class Hub {
       ? own !== null && [own, ...this.linkedProjects(own)].includes(m.project)
       : [m.project, ...this.linkedProjects(m.project)]
         .some((p) => reader.kind === "agent" ? this.isMember(reader.id, p) : this.humanInProject(reader.name, p));
-    if (!member) throw none;
+    // A message from outside the project that reached a role this reader holds (a role open to the whole hub (F4), or
+    // one of the sender's person's own projects, question 18): the role's part of the thread only.
+    const viaRole = !member && reader.kind === "agent" && !!reader.session && !!this.db.query(
+      `SELECT 1 FROM deliveries d JOIN roles r ON d.recipient = 'role:' || r.project || '/' || r.role WHERE d.message_id = ? AND r.holder = ?`).get(messageId, reader.session) &&
+      // and still a member of that role's project (the re-check's note).
+      (this.db.query("SELECT r.project FROM deliveries d JOIN roles r ON d.recipient = 'role:' || r.project || '/' || r.role WHERE d.message_id = ? AND r.holder = ?")
+        .all(messageId, reader.session) as { project: string }[]).some((x) => this.isMember(reader.id, x.project));
+    if (!member && !viaRole) throw none;
+    if (viaRole) {
+      const root = m.thread ?? m.id;
+      // Only roles in projects the reader is still in (robust even if a removal ever left a holder behind: F4).
+      const held = (this.db.query("SELECT project, role FROM roles WHERE holder = ?").all(reader.session!) as { project: string; role: string }[])
+        .filter((r) => this.isMember(reader.id, r.project)).map((r) => `role:${r.project}/${r.role}`);
+      return (this.db.query("SELECT m.* FROM messages m WHERE (m.id = ? OR m.thread = ?) ORDER BY m.id").all(root, root) as MessageRow[])
+        .filter((x) => held.includes(x.sender) || !!this.db.query(`SELECT 1 FROM deliveries WHERE message_id = ? AND recipient IN (${held.map(() => "?").join(", ") || "''"})`).get(x.id, ...held));
+    }
     const boxes = reader.kind === "agent" ? this.mailboxes(reader) : [`human:${reader.name}`];
     const senders = boxes.map((b) => this.boxKey(b));
     const box = this.boxSql(boxes, "d.recipient", "m.project");
@@ -3438,6 +3529,79 @@ export class Hub {
       roles_waiting: h.unread_roles.map((r) => ({ role: `${this.projectName(r.project)}/${r.role}`, n: r.n, oldest: r.oldest, state: r.state })),
       machines, asks, invites, pushes: h.pushes,
     };
+  }
+
+  // Every message that did not reach a reader (Max, 2026-11-04: "checking every not delivered message and ask the
+  // sender, if applicable the receiver as well, about more context"): each delivery of a message sent in the window
+  // that was not shown within an hour and is not handled, or that expired unread, with the likely cause. Metadata
+  // only: who, to whom, through which address, when, type and priority; never the summary or the body (reading
+  // what people wrote is Max's call). The cause is read from the recipient's state now, not at the send.
+  undelivered(since: number) {
+    const t = this.now();
+    const rows = this.db.query(
+      `SELECT d.message_id AS id, d.recipient, d.via, d.outcome, d.acked_at, m.project, m.sender, m.sender_human, m.sent_by, m.type, m.priority, m.created_at, m.re
+         FROM deliveries d JOIN messages m ON m.id = d.message_id
+        WHERE m.created_at >= ? AND m.created_at < ? AND d.shown_at IS NULL
+          AND (d.acked_at IS NULL OR d.outcome = 'expired')
+        ORDER BY m.created_at, d.recipient`).all(since, t - 3_600_000) as
+      { id: number; recipient: string; via: string; outcome: string | null; acked_at: number | null; project: string; sender: string; sender_human: string | null;
+        sent_by: string | null; type: string; priority: string; created_at: number; re: number | null }[];
+    const kindOf = (address: string) => {
+      if (address.startsWith("session:")) {
+        const s = this.session(address.slice(8));
+        return s?.kind === "script" ? "script" : "session";
+      }
+      return address.split(":")[0]!;
+    };
+    const cause = (r: (typeof rows)[number]): string => {
+      const [kind, rest] = [r.recipient.split(":")[0]!, r.recipient.slice(r.recipient.indexOf(":") + 1)];
+      if (kind === "session") {
+        const s = this.session(rest);
+        if (!s) return "session unknown";
+        if (s.kind === "script") return "a script's mailbox: read only when `axos inbox --name` runs";
+        if (this.neverReads(s.key)) return "a session that only sends: it has never read a message (a program, not a model)";
+        if (s.ended_at !== null) return s.ended_at < r.created_at + 3_600_000 ? "session ended within the hour after the send" : "session ended before reading";
+        if (this.dormant(s)) return "session closed without ending (no sign for a day)";
+        if (s.wakes === 0) return "session's host does not wake on messages; waits for its next prompt";
+        if (s.wakes === 1) return "session's host wakes on messages, yet the hooks did not show it";
+        return "live session without a wake-up stream; waits for its next prompt";
+      }
+      if (kind === "agent") {
+        const a = this.db.query("SELECT last_seen, revoked FROM agents WHERE id = ?").get(rest) as { last_seen: number | null; revoked: number } | null;
+        if (!a) return "machine unknown";
+        if (a.revoked) return "machine revoked";
+        if (a.last_seen === null) return "machine never connected";
+        if (t - a.last_seen > SESSION_LIVE_MS) return "machine not connected for over 7 days";
+        return "machine connects, but nothing reads its own mailbox";
+      }
+      if (kind === "role") {
+        const slash = rest.lastIndexOf("/");
+        const role = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(rest.slice(0, slash), rest.slice(slash + 1)) as { holder: string | null } | null;
+        if (!role?.holder) return "role held by nobody";
+        return this.isOnline(role.holder) ? "role's holder is present, yet it was not shown" : "role's holder is away";
+      }
+      if (kind === "human") return "not opened on the person's page";
+      return "unknown";
+    };
+    // Low priority waits for the reader's next step (PROTOCOL): for news with the reader present, that is no failure.
+    const why = (r: (typeof rows)[number]): string => {
+      const c = cause(r);
+      if (r.priority !== "low" || !/present|does not wake|hooks did not|without a wake-up/.test(c)) return c;
+      // News waits by design; a question or request at low priority is the sender's mistake (Max, 2026-11-04).
+      return ["note", "status"].includes(r.type) ? `low priority, waits for the reader's next step (by design); ${c}`
+        : `${/^[aeiou]/.test(r.type) ? "an" : "a"} ${r.type} sent at low priority to an idle reader: nothing wakes it (should have been normal); ${c}`;
+    };
+    const items = rows.map((r) => ({
+      id: r.id, project: r.project, sent: r.created_at, type: r.type, priority: r.priority, re: r.re,
+      sender: r.sender, sender_kind: r.sent_by ? "script" : kindOf(r.sender), sender_human: r.sender_human,
+      recipient: r.recipient, recipient_kind: kindOf(r.recipient),
+      // Reached through a whole project's address (news to everyone there), not addressed to this reader.
+      broadcast: r.via.startsWith("project:"), state: r.outcome === "expired" ? "expired unread" : "not shown",
+      cause: why(r),
+    }));
+    const by = new Map<string, number>();
+    for (const i of items) by.set(i.cause, (by.get(i.cause) ?? 0) + 1);
+    return { version: VERSION, now: t, since, items, causes: [...by].map(([cause, n]) => ({ cause, n })).sort((a, b) => b.n - a.n) };
   }
 
   // ---------------------------------------------------------------- audit

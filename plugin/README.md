@@ -104,6 +104,15 @@ so reading them costs one turn, not a notice and then the message:
 claude --dangerously-load-development-channels plugin:axos@axos
 ```
 
+To start every interactive session that way, one alias in your shell's startup file does it (`axos` with no arguments
+prints the line for your shell until the file has it; a session started without it is told the same line):
+
+```bash
+alias claude='claude --dangerously-load-development-channels plugin:axos@axos'   # ~/.zshrc or ~/.bashrc
+```
+
+Only interactive shells read that file, so scripts and scheduled runs keep their own command lines.
+
 Claude Team and Enterprise organisations also need an Owner to switch on Channels (Admin settings, Claude Code,
 Channels). Personal Pro and Max accounts need nothing more.
 
@@ -209,6 +218,7 @@ stopped and removed and the resume tried again, three times at most. A working s
 | `AXOS_SESSION_ID`, `AXOS_SESSION_NAME`, `AXOS_PROJECT_DIR` | `mcp`, `send`, `inbox` | The session's identity when no Claude Code hook supplied it (Codex and scripts); `axos codex` sets them. Claude Code's own `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR` are used when present. |
 | `AXOS_CLIENT` | `mcp` | `codex` when `axos codex` started the proxy: the launcher holds the bell, the proxy does not. |
 | `AXOS_CODEX` | `codex` | The Codex executable; default `codex`. |
+| `AXOS_MCP_RETRIES`, `AXOS_MCP_RETRY_MS` | `mcp` | How often (default 10) and how far apart (default 2000 ms) the handshake and the tool list are retried while the hub is unreachable at a session's start, before they are answered from the copy of the last start. |
 | `AXOS_VINEA` | `board` | The vinea command for the hub's board; default `vinea` on the PATH. |
 | `AXOS_WAKES` | `mcp` | `1` or `0`: tell the hub whether this host wakes on messages, instead of detecting it from the `claude` command line. |
 | `AXOS_BELL_SETTLE_MS` | `mcp` | How long the bell waits for a burst of messages to settle before ringing; default 1500. |

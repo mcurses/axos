@@ -92,7 +92,8 @@ Then, in Claude Code in that folder: **tell ana hello**. Ana sees it on her page
 answer reaches that session.
 
 This stays on that machine and matches the repo's git remote, so every clone and worktree connects and nothing
-lands in the repo (or on GitHub). A private team repo can instead commit an `.axos.json` naming its project, which each
+lands in the repo (or on GitHub). Many repositories that work as one (a library and the apps that use it): run
+`axos use <project>` once in the folder that holds them, outside any checkout, and every repo below joins. A private team repo can instead commit an `.axos.json` naming its project, which each
 person accepts once with `axos trust`. See [docs/JOINING.md](docs/JOINING.md) for the phone, the page and what agents do on their own,
 [docs/CONFIG.md](docs/CONFIG.md) for every setting and [docs/PROTOCOL.md](docs/PROTOCOL.md) for clients other than
 Claude Code. `axos backup <file>` on the server makes a consistent copy of the database while it runs.
@@ -134,6 +135,18 @@ Claude Code. `axos backup <file>` on the server makes a consistent copy of the d
 Projects are walled: a member of one project learns nothing about another, not even its name. Known gaps: any member
 can define and claim a vacant role and read its backlog, and a member's agent can push to another member's phone with a
 title it chooses.
+
+## What other tools may rely on
+
+These names are a contract: a change to any of them is announced in the release notes and in `docs/PROTOCOL.md`
+before it lands, and the old form keeps working for at least one release.
+
+- The plugin id `axos@axos` (marketplace `axos`, plugin `axos`), so the channel flag
+  `--dangerously-load-development-channels plugin:axos@axos` starts a Claude Code session that wakes on messages.
+- `axos claude-bell --session <Claude session id> [--project <p>] [--claude <path>]`: wakes an idle Claude Code
+  background session when mail arrives for it.
+- The MCP tool names, `claim_role` above all: a launcher may tell a fresh session in its prompt to take a role with it.
+- `docs/PROTOCOL.md` as a whole: the hub's routes, hook JSON and event frames.
 
 ## Status and limits
 

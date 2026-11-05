@@ -96,14 +96,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   project       TEXT,
   name          TEXT,                          -- the harness's session name, e.g. shop-e9
   profile       TEXT,
-  cwd           TEXT,
+  cwd           TEXT,                          -- the name of its folder (the checkout's top folder), never the path
   started_at    INTEGER NOT NULL,
   last_seen     INTEGER NOT NULL,
   ended_at      INTEGER,
   framed_at     INTEGER,                       -- when the full note on how to read messages was first put into its context
   former_names  TEXT NOT NULL DEFAULT '',      -- names it had before (a restart may rename it), one per line, newest last
   kind          TEXT NOT NULL DEFAULT 'session', -- 'script': a named script of the agent (axos send --name), no model behind it
-  wakes         INTEGER                        -- what its last event stream said: 1 the host wakes on a ring, 0 it does not, NULL unknown
+  wakes         INTEGER,                       -- what its last event stream said: 1 the host wakes on a ring, 0 it does not, NULL unknown
+  tree          TEXT                           -- a fingerprint of the session's checkout on its machine (never the path): two sessions with one share a working tree
 );
 CREATE TABLE IF NOT EXISTS messages (
   id            INTEGER PRIMARY KEY,
@@ -341,14 +342,16 @@ function migrate(db: Database): void {
   migrateToIds(db);
   // After the rebuild above (it copies tables by position): columns added since, on databases that kept their shape.
   const column = (table: string, col: string, ddl: string) => {
-    const t = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string } | null;
-    if (t && !t.sql.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
+    // By the column list, not the table's text: a word in a comment must not count as the column ("tree", 0.24.45).
+    const cols = db.query(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (cols.length && !cols.some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`);
   };
   column("humans", "operator", "INTEGER NOT NULL DEFAULT 0");
   column("logins", "read_only", "INTEGER NOT NULL DEFAULT 0");
   column("login_links", "read_only", "INTEGER NOT NULL DEFAULT 0");
   column("asks", "action_json", "TEXT");
   column("roles", "open", "INTEGER DEFAULT 0");
+  column("sessions", "tree", "TEXT");
   column("roles", "quiet", "INTEGER DEFAULT 0");
   column("messages", "deliver_at", "INTEGER");
   column("messages", "scheduled_json", "TEXT");

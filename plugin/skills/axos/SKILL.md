@@ -71,7 +71,9 @@ pasting them. `type`: note (the default), ask, answer, handoff, status, request,
 message comes with the recipient's next step. Use it for news nobody has to act on now; a note or status to a whole
 project is low unless you say otherwise. An answer someone waits for, above all a promised one ("shipped: here is how
 to use it" to whoever asked for the feature), is normal priority, never low: low does not wake the session waiting for
-it. A message to your own role lands in your own inbox too.
+it. The same holds for a question whose answer you or your human wait on: an idle session has no next step, so
+low mail to it can sit for hours or days, and nothing tells you. Low is for what nobody waits on. A message to your own
+role lands in your own inbox too.
 
 **Quoting your human.** When your human types something meant for another session or role (a ruling, an answer),
 send it with `quotes_human: true` and the body their words verbatim, as whole lines of what they typed or pasted (the
@@ -89,6 +91,8 @@ other, and nothing else crosses: no briefs, leases, roles or presence. `join` li
 Address them as `role:<project>/<role>`, `session:<name>` or `project:<project>`, the project as `<name>` or, when two
 people use the same name, `<owner>/<name>`; replies with `re` work both ways.
 A linked project may belong to other people: what you send there follows the privacy rules below.
+Your human's own projects need no link for roles: `role:<project>/<role>` reaches any role of a project they own
+from any of their projects (their sessions and room stay with links). A project they are only a member of still needs one.
 
 ## Leases: one writer per shared thing
 

@@ -31,3 +31,11 @@ test("the session map: sessions of the last day, grouped by project, another per
   expect(t.group).toBe("project");
   expect(t.rows.map((r) => [r.project, r.session, r.state.text, r.who])).toEqual([["ana/shop", "shop-1", "online", ""], ["ana/game", "g", "away", "ben"]]);
 });
+
+test("the axos list: a body keeps one point per line, and a question's options are a list", () => {
+  const body = "1. Four releases: a, b. 2. The incident; nothing lost. 3. Next: version 2. 4 is not a point.\n\nMore\n  text";
+  const s2: AxosState = { ...state, inbox: [{ ...state.inbox[0]!, body }] };
+  const p = itemsFor("ana/shop", s2, "https://axos.example.com");
+  expect(p.items[1]!.detail).toBe("1. Four releases: a, b.\n2. The incident; nothing lost.\n3. Next: version 2. 4 is not a point.\n\nMore\n text");
+  expect(p.items[0]!.detail).toBe("Options:\n- ship\n- wait\n\nAnswer on the AXOS page or your phone.");
+});

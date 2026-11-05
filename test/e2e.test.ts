@@ -191,7 +191,7 @@ test("a low-priority message rings no bell and does not hold a stop; a note to a
   await sender.close();
 });
 
-test("presence tells a session that wakes from one that only listens; an older plugin hears so once", async () => {
+test("presence tells a session that wakes from one that only listens; an older plugin's session is asked once, at start, to offer its human the update", async () => {
   const open = async (sid: string, wakes: string | null) => {
     const ctrl = new AbortController();
     const res = await fetch(`${base}/events${wakes === null ? "" : `?wakes=${wakes}`}`, {
@@ -213,10 +213,11 @@ test("presence tells a session that wakes from one that only listens; an older p
     method: "POST", body: JSON.stringify({ event: "check", ...extra }),
     headers: { Authorization: `Bearer ${tokens.dev3}`, "x-axos-session": "aaaa0005-1111-2222-3333-444444444444", "x-axos-project": "shop", "x-axos-client": client },
   })).json()) as { context: string }).context;
-  expect(await hook("plugin/0.1.0", { stop: true })).not.toContain("runs plugin");
-  expect(await hook("plugin/0.1.0")).toContain(`this session runs plugin 0.1.0; the current plugin is ${PLUGIN}`);
-  expect(await hook("plugin/0.1.0")).not.toContain("runs plugin");
-  expect(await hook(`plugin/${VERSION}`)).not.toContain("runs plugin");
+  // Only at start, addressed to the agent (never in a check, which the wake-up channel shows to the person).
+  expect(await hook("plugin/0.1.0")).not.toContain("newer AXOS plugin");
+  expect(await hook("plugin/0.1.0", { event: "start" })).toContain(`a newer AXOS plugin (${PLUGIN}) exists than the one this session runs (0.1.0). Tell your human once`);
+  expect(await hook("plugin/0.1.0", { event: "start" })).not.toContain("newer AXOS plugin");
+  expect(await hook(`plugin/${VERSION}`, { event: "start" })).not.toContain("newer AXOS plugin");
 });
 
 test("a session quotes its human only through the plugin's checked call, and the message stays its own", async () => {
@@ -1917,3 +1918,41 @@ test("the hub's health board: the operator's route, axos board connect and feed 
     rmSync(dir, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("a session started while the hub is away still gets its tools: the handshake retries, then answers from the last copy", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "axos-dark-"));
+  writeFileSync(join(dir, "token"), `${tokens.dev3}\n`);
+  const run = async (url: string): Promise<{ id: number; result?: { tools?: unknown[]; capabilities?: Record<string, unknown> }; error?: unknown }[]> => {
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ url, token_file: join(dir, "token"), folders: [{ path: dir, project: "alice/shop" }] }));
+    const proxy = Bun.spawn(["bun", join(import.meta.dir, "..", "plugin", "bin", "axos.ts"), "mcp"], {
+      cwd: dir, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+      env: { ...process.env, AXOS_CONFIG: join(dir, "config.json"), CLAUDE_CODE_SESSION_ID: "da4cda4c-shop", CLAUDE_PROJECT_DIR: dir, AXOS_WAKES: "0", AXOS_MCP_RETRIES: "2", AXOS_MCP_RETRY_MS: "50" },
+    });
+    for (const m of [{ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" }]) proxy.stdin.write(`${JSON.stringify(m)}\n`);
+    proxy.stdin.flush();
+    const reader = proxy.stdout.getReader();
+    let buf = "";
+    const out: { id: number }[] = [];
+    const until = Date.now() + 15_000;
+    while (out.length < 2 && Date.now() < until) {
+      const chunk = await Promise.race([reader.read(), Bun.sleep(200).then(() => null)]);
+      if (chunk && chunk.value) buf += new TextDecoder().decode(chunk.value);
+      let i: number;
+      while ((i = buf.indexOf("\n")) >= 0) { const l = JSON.parse(buf.slice(0, i)); if (l.id !== undefined) out.push(l); buf = buf.slice(i + 1); }
+    }
+    proxy.kill();
+    return out as never;
+  };
+  try {
+    const away = "http://127.0.0.1:9"; // nothing listens there
+    expect((await run(away)).find((m) => m.id === 1)!.error).toBeDefined(); // never connected: nothing to answer from
+    const up = await run(base);
+    expect(up.find((m) => m.id === 2)!.result!.tools!.length).toBeGreaterThan(5);
+    const dark = await run(away);
+    expect(dark.find((m) => m.id === 1)!.result!.capabilities).toHaveProperty("experimental");
+    expect(dark.find((m) => m.id === 2)!.result!.tools!.length).toBe(up.find((m) => m.id === 2)!.result!.tools!.length);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 60_000);

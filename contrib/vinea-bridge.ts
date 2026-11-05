@@ -36,6 +36,18 @@ const cut = (s: string, n: number) => {
   const t = s.replace(/\s+/g, " ").trim();
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
+// A detail keeps its lines (vinea's List detail takes short Markdown): a body's numbered points stay one per line.
+// A line written as "1. … 2. … 3. …" is split before each next number in turn.
+const points = (l: string) => {
+  if (!/^\s*1\. /.test(l)) return l;
+  let out = l, k = 2;
+  for (let i; (i = out.search(new RegExp(`(?<=[.;:!?)]) ${k}\\. `))) > 0; k++) out = `${out.slice(0, i)}\n${out.slice(i + 1)}`;
+  return out;
+};
+const block = (s: string, n: number) => {
+  const t = s.split(/\r?\n/).map((l) => points(l.replace(/[ \t]+/g, " ").trimEnd())).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+};
 function when(iso: string | null): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -49,13 +61,13 @@ export function itemsFor(project: string, s: AxosState, base: string): { items: 
     const meta = [{ label: "from", value: cut(who(a.from), 120) }];
     if (a.created_at) meta.push({ label: "asked", value: when(a.created_at) });
     if (a.deadline) meta.push({ label: "default", value: cut(`${a.default_answer ?? "none"} at ${when(a.deadline)}`, 120) });
-    const options = a.options.length ? `Options: ${a.options.map((o) => cut(o, 80)).join(" · ")}` : "Free answer";
-    return { title: cut(a.question, 200), state: "waiting", detail: `${options}. Answer on the AXOS page or your phone.`, meta, tags: ["question"], link: `${page}#m${a.message_id}` };
+    const options = a.options.length ? `Options:\n${a.options.map((o) => `- ${cut(o, 80)}`).join("\n")}` : "Free answer.";
+    return { title: cut(a.question, 200), state: "waiting", detail: `${options}\n\nAnswer on the AXOS page or your phone.`, meta, tags: ["question"], link: `${page}#m${a.message_id}` };
   });
   const mail = s.inbox.filter((m) => m.project === project).sort((x, y) => y.id - x.id).map((m): Item => ({
     title: cut(m.summary || "(no summary)", 200),
     state: m.priority === "high" ? "warn" : ["request", "handoff", "review"].includes(m.type) ? "info" : "muted",
-    detail: m.body ? cut(m.body, 600) : undefined,
+    detail: m.body ? block(m.body, 600) : undefined,
     meta: [{ label: "from", value: cut(who(m.from), 120) }, { label: "sent", value: when(m.created_at) }],
     tags: m.type === "note" ? undefined : [m.type],
     link: `${page}#m${m.id}`,

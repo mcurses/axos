@@ -33,7 +33,8 @@ const USAGE = `axos — hub admin
   axos project unlink <project> <project>
   axos project links
   axos role add <project> <role>                 define a role so it can be addressed before anyone holds it
-  axos role open <project> <role> [--off]        open a role to every session of the owner's person, from any project
+  axos role open <project> <role> [--hub] [--off] open a role to every session of the owner's person, from any project;
+                                                 --hub: to every person on the hub (the owner must be the operator)
   axos role quiet <project> <role> [--off]       a quiet role's vacant mail is never shown to a main session
   axos agent add <human> <name> <project,...>    add an agent; prints its token
   axos agent join <human>/<name> <project>       add an agent to a project
@@ -46,6 +47,9 @@ const USAGE = `axos — hub admin
   axos events [--since <id>]                     audit log as JSON lines
   axos health [--since <date>] [--json]          did messages reach a reader, and where mail waits with nobody to
                                                  read it (default: the last 7 days)
+  axos undelivered [--since <date>] [--json]     every message that reached no reader (not shown within an hour,
+                                                 or expired unread), with its likely cause, by sender (default: a
+                                                 day); who, to whom and when, never what was written
 
 A project is '<owner>/<name>', its bare name when that is unambiguous, or its id (prj_…).
 Environment: AXOS_DB (default axos.db), AXOS_PUBLIC_URL (for the links it prints)`;
@@ -151,6 +155,27 @@ Next: a project for a repo: axos project add ${name}/<name> --repo <git address>
     }
     lines.push(`Phone: ${h.pushes.sent} push(es) sent, ${h.pushes.failed} failed. Expired unread in the window: ${h.expired_since}.`);
     lines.push(`New in the window: humans ${h.new.humans.join(", ") || "none"}; projects ${h.new.projects.join(", ") || "none"}; agents ${h.new.agents.join(", ") || "none"}.`);
+    out(lines.join("\n"));
+    return;
+  }
+
+  if (noun === "undelivered") {
+    const args = [verb, ...rest].filter((x): x is string => x !== undefined);
+    const sinceArg = flag(args, "--since");
+    const since = sinceArg ? Date.parse(sinceArg) : Date.now() - 86_400_000;
+    if (Number.isNaN(since)) throw new AxosError("usage: axos undelivered [--since <date>] [--json]");
+    const u = hub.undelivered(since);
+    if (args.includes("--json")) { console.log(hub.display(JSON.stringify(u, null, 2))); return; }
+    const lines = [`Messages that reached no reader, hub ${u.version}, sent since ${iso(u.since)} and over an hour ago: ${u.items.length} delivery(ies) of ${new Set(u.items.map((i) => i.id)).size} message(s).`];
+    if (u.causes.length) lines.push("By cause:", ...u.causes.map((c) => `  ${String(c.n).padStart(4)}  ${c.cause}`));
+    // By sender: the one to ask what they were trying to do and what they did instead.
+    const senders = new Map<string, typeof u.items>();
+    for (const i of u.items) senders.set(i.sender, [...(senders.get(i.sender) ?? []), i]);
+    if (senders.size) lines.push("By sender (b = reached through the project's address, not addressed to that reader):");
+    for (const [s, list] of [...senders].sort((a, b) => b[1].length - a[1].length)) {
+      lines.push(`  ${hub.label(s)}${list[0]!.sender_kind === "script" ? " (script)" : ""}:`);
+      for (const i of list) lines.push(`    #${i.id} ${iso(i.sent)} ${i.type}/${i.priority} → ${hub.label(i.recipient)}${i.broadcast ? " b" : ""}: ${i.state}; ${i.cause}`);
+    }
     out(lines.join("\n"));
     return;
   }
@@ -302,8 +327,9 @@ Next: a project for a repo: axos project add ${name}/<name> --repo <git address>
     case "role open": {
       need(2);
       const p = project(rest[0]!);
-      hub.setRoleOpen(hub.projectOwner(p)!, p, rest[1]!, !rest.includes("--off"));
-      out(`${rest.includes("--off") ? "closed" : "opened"} role ${rest[1]} in ${hub.projectName(p)}${rest.includes("--off") ? "" : ": every session of its owner reaches it from any of their projects"}`);
+      const hubWide = rest.includes("--hub");
+      hub.setRoleOpen(hub.projectOwner(p)!, p, rest[1]!, rest.includes("--off") ? false : hubWide ? "hub" : true);
+      out(`${rest.includes("--off") ? "closed" : "opened"} role ${rest[1]} in ${hub.projectName(p)}${rest.includes("--off") ? "" : hubWide ? ": every person's sessions on the hub reach it from any of their projects, and nothing else of it" : ": every session of its owner reaches it from any of their projects"}`);
       return;
     }
     case "role quiet": {
