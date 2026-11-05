@@ -239,8 +239,8 @@ export const UNUSED_MACHINE_MS = 14 * 86_400_000;
 const TAKEOVER_NO_PAUSE_MS = 3_600_000;
 // A holder on another machine counts as away (taken over without asking the human) only after this much silence.
 const CROSS_MACHINE_AWAY_MS = 3_600_000;
-const MAIN_DESCRIPTION = "main session here: calls to the whole project reach this person here; their first session holds it, claim_role main moves it. " +
-  "As main, keep the project's meum workspace's name, icon and colour current: check them at start and after a project change, and set them with meum workspace rename|icon|color when they are wrong or missing; it may give the workspace up to four labels of its own (meum workspace labels: what the project is doing now), never the sessions' roles";
+// What another tool asks of a main session is that tool's own hook's to say (meum's since 2026-11-05, suite owner 3500).
+const MAIN_DESCRIPTION = "main session here: calls to the whole project reach this person here; their first session holds it, claim_role main moves it";
 
 // Types that call for someone to act: sent to the project address and fanned out to several, they have one taker.
 export const ONE_TAKER_TYPES: readonly string[] = ["ask", "request", "review", "handoff"];

@@ -352,6 +352,8 @@ function migrate(db: Database): void {
   column("login_links", "read_only", "INTEGER NOT NULL DEFAULT 0");
   column("asks", "action_json", "TEXT");
   column("asks", "decision_json", "TEXT");
+  // The main seat's description no longer carries meum's instruction (meum's own hook says it, 2026-11-05).
+  if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roles'").get()) db.exec("UPDATE roles SET description = substr(description, 1, instr(description, '. As main, keep the project''s meum') - 1) WHERE instr(description, '. As main, keep the project''s meum') > 0");
   column("roles", "open", "INTEGER DEFAULT 0");
   column("sessions", "tree", "TEXT");
   column("roles", "quiet", "INTEGER DEFAULT 0");
