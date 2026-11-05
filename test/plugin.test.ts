@@ -70,6 +70,8 @@ describe("the plugin's check of a quoted human", () => {
     expect(plugin.wakeAlias("/bin/zsh")).toEqual({ file: "~/.zshrc", line: "alias claude='claude --dangerously-load-development-channels plugin:axos@axos'" });
     expect(plugin.wakeAlias("/usr/local/bin/fish").line).toBe("alias claude 'claude --dangerously-load-development-channels plugin:axos@axos'");
     expect(plugin.wakeAlias("").file).toBe("your shell's startup file");
+    expect(plugin.unreachable("https://hub.example/")).toContain("Open https://hub.example/ui in a browser");
+    expect(plugin.unreachable("https://hub.example")).toContain("messages wait on the hub until it is back");
     expect(plugin.headless("claude --prompt-file x")).toBe(false);
     expect(plugin.headless(null)).toBe(false);
   });

@@ -1324,7 +1324,8 @@ export class Hub {
       const hubWide = this.projectId(target, this.hubOpenProjects(openRole.role));
       if (hubWide) return hubWide;
     }
-    throw new AxosError(`cannot address another project ('${address}') from '${project}'; only linked projects: ${this.linkedProjects(project).join(", ") || "none"}`);
+    throw new AxosError(`cannot address another project ('${address}') from '${project}'. Reachable: any role of a project your person owns, ` +
+      `and projects linked to this one (${this.linkedProjects(project).join(", ") || "none"}); for anything else the owner links the projects`);
   }
 
   addHumanToProject(human: string, project: string): void {

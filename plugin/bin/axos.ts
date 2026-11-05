@@ -1433,8 +1433,16 @@ interface Me {
   remotes: { remote: string; project: string }[];
 }
 
+// The hub did not answer (down, no network, a wrong address): what to do, in words (discoverability round 2).
+export function unreachable(url: string): string {
+  const base = url.replace(/\/$/, "");
+  return `The AXOS hub at ${base} does not answer. Open ${base}/ui in a browser: if it does not load either, the hub or this ` +
+    "network is down. Nothing is lost meanwhile: messages wait on the hub until it is back, and sessions pick them up then.";
+}
+
 async function meGet(c: Config, t: string, here?: string | null): Promise<Me> {
-  const res = await fetch(`${c.url.replace(/\/$/, "")}/api/me${here ? `?here=${encodeURIComponent(here)}` : ""}`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(10_000) });
+  const res = await fetch(`${c.url.replace(/\/$/, "")}/api/me${here ? `?here=${encodeURIComponent(here)}` : ""}`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(10_000) })
+    .catch(() => { throw new Error(unreachable(c.url)); });
   if (res.status === 401) throw new Error(TOKEN_REFUSED);
   const r = (await res.json().catch(() => null)) as (Me & { error?: string }) | null;
   if (!r || r.error) throw new Error(r?.error ?? `the hub answered ${res.status} (older than 0.24.22?)`);
