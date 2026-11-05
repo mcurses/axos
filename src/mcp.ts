@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ACK_OUTCOMES, addr, AxosError, Hub, when, MESSAGE_TYPES, PRIORITIES, type Actor, type AgentRow } from "./hub.ts";
+import { ACK_OUTCOMES, addr, AxosError, decisionOf, Hub, when, MESSAGE_TYPES, PRIORITIES, type Actor, type AgentRow } from "./hub.ts";
 import { ago, defang, renderMessages } from "./render.ts";
 import { VERSION } from "./version.ts";
 
@@ -179,7 +179,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       re: z.number().int().optional().describe("The message id this replies to"),
       thread: z.number().int().optional(),
       as_of: z.string().optional().describe("The state this is based on, e.g. a commit sha, so a reader can tell if it is stale"),
-      priority: z.enum(PRIORITIES).optional().describe("low: wakes nobody, read at the recipient's next step (the default for a note or status to a whole project); never for an answer someone waits for (such as telling the author of a request that it shipped) nor for a question whose answer you or your human wait on: an idle reader has no next step, so low mail can sit for days; high: a message to a human is pushed to their phone, use it rarely"),
+      priority: z.enum(PRIORITIES).optional().describe("low: wakes nobody, so it can sit for days with an idle reader; only for news nobody waits on (the default for a note to a whole project). high: pushes a human's phone; rarely"),
       dedupe_key: z.string().optional().describe("Sending twice with the same key delivers once"),
       deliver_at: z.string().optional().describe("Send later: an ISO 8601 time with its offset (2026-11-04T18:00+01:00), at most 30 days ahead. The hub holds it and sends it then to the addresses as they resolve then (a role to whoever holds it then), so it reaches its reader with this machine closed. cancel_send cancels it"),
       quotes_human: z.boolean().optional().describe("The body is what your human typed to this session, verbatim, as whole lines of one prompt (the summary, if given, one of those lines); the plugin compares it with their recent prompts. Readers see quotes-human=<name> and weigh it as your word; the message stays yours"),
@@ -446,6 +446,12 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       default_answer: z.string().optional().describe("Your recommendation; with a deadline, what applies if nobody answers"),
       deadline_minutes: z.number().int().min(1).optional().describe("Needs default_answer"),
       remind_hours: z.number().min(0.25).max(168).optional().describe("Push the question once more after this many hours if it is still open"),
+      kind: z.enum(["decide", "hands", "taste"]).optional().describe("decide: a choice only they may make; hands: an act only they can do (a login, a tap, a command on their machine); taste: their preference"),
+      recommend: z.string().optional().describe("Your proposed answer, one line; shown first on the page and phone"),
+      on_silence: z.enum(["hold", "proceed"]).optional().describe("What happens at the deadline without an answer: proceed (the default_answer applies; needs both) or hold (nothing proceeds; you hear it and they are asked once more)"),
+      waiting_cost: z.string().optional().describe("One line: what waiting costs (what stays blocked, for whom)"),
+      hands: z.string().optional().describe("For kind hands: the exact command or act, and where (which machine, which page)"),
+      check: z.string().optional().describe("A command that exits 0 once the matter is settled. AXOS never runs it: you (or your next session) run it and, on 0, close the ask with withdraw_ask(resolved_by_check: true)"),
       images: z.array(z.string()).max(4).optional().describe(
         "Up to 4 images shown with the question on their page (a screenshot, a diagram): paths of PNG, JPEG, GIF or WebP files " +
         "inside your repo, up to 5 MB each; the AXOS plugin uploads them. Kept 30 days."),
@@ -457,6 +463,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       project: pr, human: a.human, question: a.question, options: a.options, images: a.images,
       default_answer: a.default_answer, deadline_s: a.deadline_minutes ? a.deadline_minutes * 60 : undefined,
       remind_s: a.remind_hours ? Math.round(a.remind_hours * 3600) : undefined, as: a.as, session: conn.session,
+      decision: { kind: a.kind, recommend: a.recommend, on_silence: a.on_silence, waiting_cost: a.waiting_cost, hands: a.hands, check: a.check },
     });
     const to = addr(hub.seat(agent.id, pr, a.as, conn.session));
     return `Asked ${a.human} (ask ${r.ask_id})${r.pushed ? ", pushed to their phone" : ""}. ` +
@@ -478,20 +485,25 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
         a.seen_at ? `seen on the page ${when(a.seen_at)}` : "",
         a.reminded_at ? `reminded ${when(a.reminded_at)}` : a.remind_at && a.answer === null ? `reminder at ${when(a.remind_at)}` : "",
       ].filter(Boolean);
+      const d = decisionOf(a);
       const state = a.answer !== null
-        ? a.answered_by?.startsWith("default") ? `the default applied ${when(a.answered_at!)}: ${a.answer}`
+        ? a.answered_by?.startsWith("check") ? `${a.answer} (${when(a.answered_at!)})`
+        : a.answered_by?.startsWith("default") ? `the default applied ${when(a.answered_at!)}: ${a.answer}`
           : a.answered_by?.startsWith("withdrawn") ? `withdrawn ${when(a.answered_at!)}: ${a.answer}` : `answered ${when(a.answered_at!)}: ${a.answer.split("\n")[0]}`
+        : d.on_silence === "hold" && a.deadline ? `open, holds if unanswered by ${when(a.deadline)}${a.stale_at ? " (date passed)" : ""}`
         : a.stale_at ? "open, stale (no answer for days)" : a.deadline ? `open, default "${a.default_answer}" at ${when(a.deadline)}` : "open";
-      return `- ask ${a.id} to ${a.human}: ${a.question.split("\n")[0]!.slice(0, 120)}\n  ${state}; ${steps.join(", ")}`;
+      const check = a.answer === null && d.check ? `\n  check: ${d.check} (run it; on exit 0, withdraw_ask(${a.id}, resolved_by_check: true))` : "";
+      return `- ask ${a.id} to ${a.human}${d.kind ? ` (${d.kind})` : ""}: ${a.question.split("\n")[0]!.slice(0, 120)}\n  ${state}; ${steps.join(", ")}${check}`;
     }).join("\n");
   }));
 
   server.registerTool("withdraw_ask", {
     description: "Settle your own open question without an answer because it was decided elsewhere (in a chat, a file, by events): it leaves the human's page and phone, the reminder stops, and asks shows it as withdrawn with your reason. Only the asker (its session, agent or role) can.",
-    inputSchema: strict({ ask_id: z.number().int(), reason: z.string().describe("One line: where it was settled, e.g. 'answered in chat at 10:09'") }),
-  }, tool(({ ask_id, reason }) => {
-    hub.withdrawAsk(agent.id, ask_id, reason, conn.session);
-    return `Ask ${ask_id} withdrawn: ${reason}. It is off the human's page and phone.`;
+    inputSchema: strict({ ask_id: z.number().int(), reason: z.string().describe("One line: where it was settled, e.g. 'answered in chat at 10:09'"),
+      resolved_by_check: z.boolean().optional().describe("The ask's check exited 0: recorded as resolved by check") }),
+  }, tool(({ ask_id, reason, resolved_by_check }) => {
+    hub.withdrawAsk(agent.id, ask_id, reason, conn.session, !!resolved_by_check);
+    return `Ask ${ask_id} ${resolved_by_check ? "resolved by its check" : "withdrawn"}: ${reason}. It is off the human's page and phone.`;
   }));
 
   server.registerTool("presence", {

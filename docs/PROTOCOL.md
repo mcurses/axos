@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.24.51`, protocol `1`.
+Current numbers: hub release `0.25.0`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -165,9 +165,9 @@ Common arguments:
 | `lease` | `resource*`, `mode`, `ttl_s`, `note`, `wait`, `project`, `as` | Granted, renewed, queued with a position, or refused. |
 | `release_lease` | `resource*`, `project`, `as` | Releases the lease or leaves the queue. |
 | `leases` | `project` | Live leases and waiters. |
-| `ask_human` | `human*`, `question*`, `options`, `default_answer`, `deadline_minutes`, `remind_hours` (0.25-168), `images`, `project`, `as` | `Asked <human> (ask <id>)`. The answer arrives later as a message. |
+| `ask_human` | `human*`, `question*`, `options`, `default_answer`, `deadline_minutes`, `remind_hours` (0.25-168), `images`, `kind` (decide\|hands\|taste), `recommend`, `on_silence` (hold\|proceed), `waiting_cost`, `hands`, `check`, `project`, `as` | `Asked <human> (ask <id>)`. The answer arrives later as a message. |
 | `asks` | `project` | The caller's questions to humans (its session's and its roles'), open ones first: asked, pushed to the phone, seen on the page, reminded, stale, answered, defaulted or withdrawn. |
-| `withdraw_ask` | `ask_id*`, `reason*` | The asker (its session, agent or a role it holds in that project) settles its own open question without an answer, because it was decided elsewhere: the question leaves the human's page and phone (the notification is replaced by "Settled elsewhere"), the reminder and deadline stop, `asks` shows "withdrawn: <reason>". An answered or withdrawn ask is refused. |
+| `withdraw_ask` | `ask_id*`, `reason*`, `resolved_by_check` | The asker (its session, agent or a role it holds in that project) settles its own open question without an answer, because it was decided elsewhere: the question leaves the human's page and phone (the notification is replaced by "Settled elsewhere"), the reminder and deadline stop, `asks` shows "withdrawn: <reason>". An answered or withdrawn ask is refused. |
 | `presence` | `project` | Live sessions and session-less agents: online or idle, last seen, unread, roles. |
 | `subscribe` | `branch*` (a branch or any ref name, e.g. `refs/evidence/<id>`; `*` for any characters), `sha`, `remote`, `repo`, `note`, `hours` (0.1-720, default 24), `subject`, `replace`, `project`, `as` | `Subscription <id>: …, until <time>.` (and `Subscription <old> has ended.` with `replace`), or `Already landed: …` when the commit landed within the last 30 days (then nothing is opened). |
 | `unsubscribe` | `id*`, `project`, `as` | `Subscription <id> ended.` |
@@ -260,6 +260,18 @@ spoke as one, else the session or agent). The body is the human's text verbatim.
 
 - `options`: short answers; the first three become phone buttons, all show on the page. Button answers must be one of
   them; free text is for the page.
+- The decision record (all optional): `kind` says what is asked of the person: `decide` (a choice only they may
+  make), `hands` (an act only they can do; needs `hands`, the exact command or act and where), `taste` (their
+  preference). `recommend` is the proposed answer, shown first on the page and phone. `on_silence` says what the
+  deadline does: `proceed` (the `default_answer` applies; needs both) or `hold` (nothing proceeds: the asker gets one
+  note, the person the question once more, and an answer is still taken after the date). `waiting_cost` says what
+  waiting costs. `check` is a command that exits 0 once the matter is settled: AXOS never runs it (a command from a
+  tool call would bypass the client's own permission checks); the asker runs it and, on 0, closes the ask with
+  `withdraw_ask(id, reason, resolved_by_check: true)`, recorded as "resolved by check" (the asker's word: the hub
+  cannot see the check run). `asks` lists each open ask's check with that instruction; the person sees only that the
+  asker may settle it by a check of its own, not the command. Every field is one line without Markdown links or code
+  spans; a `recommend` or `hands` from another person's agent is shown as "suggested by <person>'s agent, not checked
+  by AXOS". A hold reminder of another person's question counts against their push cap.
 - `default_answer`: must be one of the options if there are options.
 - `deadline_minutes`: needs `default_answer`. When it passes unanswered, the hub records the default and sends the
   asker an `answer` message from `axos`. The check runs every 15 seconds.

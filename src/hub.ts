@@ -125,7 +125,16 @@ export interface AskRow {
   seen_at: number | null;
   remind_at: number | null;
   reminded_at: number | null;
-  stale_at: number | null;
+  stale_at: number | null;                 // also: a hold ask's date passed and its asker was told
+  decision_json?: string | null;
+}
+
+// An ask as a decision record (the suite owner's field study, 2026-11-05: what settles at once carries a kind, a
+// recommendation, what silence does and, for hands, the exact act). A check is a command the asker runs itself to see
+// whether the matter settled; AXOS never runs it (a command from a tool call would bypass the client's permissions).
+export interface Decision { kind?: "decide" | "hands" | "taste"; recommend?: string; on_silence?: "hold" | "proceed"; waiting_cost?: string; hands?: string; check?: string }
+export function decisionOf(a: { decision_json?: string | null }): Decision {
+  try { return a.decision_json ? JSON.parse(a.decision_json) as Decision : {}; } catch { return {}; }
 }
 
 export interface SubscriptionRow {
@@ -3131,7 +3140,7 @@ export class Hub {
 
   // ---------------------------------------------------------------- asks to humans
 
-  askHuman(agentId: string, input: { project: string; human: string; question: string; options?: string[]; default_answer?: string; deadline_s?: number; remind_s?: number; summary?: string; as?: string; session?: string; images?: string[] }):
+  askHuman(agentId: string, input: { project: string; human: string; question: string; options?: string[]; default_answer?: string; deadline_s?: number; remind_s?: number; summary?: string; as?: string; session?: string; images?: string[]; decision?: Decision }):
     { ask_id: number; message_id: number; pushed: boolean } {
     const asker = this.seat(agentId, input.project, input.as, input.session);
     if (!this.humanInProject(input.human, input.project)) throw new AxosError(`human '${input.human}' is not in project '${input.project}'`);
@@ -3140,12 +3149,40 @@ export class Hub {
     if (input.default_answer !== undefined && options.length && !options.includes(input.default_answer)) {
       throw new AxosError("default_answer must be one of options");
     }
-    if (input.deadline_s && input.default_answer === undefined) {
-      throw new AxosError("a deadline needs a default_answer: it is what applies when nobody answers in time");
+    const d = input.decision ?? {};
+    const hold = d.on_silence === "hold";
+    if (d.on_silence === "proceed" && (!input.deadline_s || input.default_answer === undefined)) {
+      throw new AxosError("on_silence proceed needs a deadline and a default_answer: the default is what proceeds");
     }
+    if (input.deadline_s && input.default_answer === undefined && !hold) {
+      throw new AxosError("a deadline needs a default_answer (it is what applies when nobody answers in time), or on_silence: hold");
+    }
+    if (d.kind === "hands" && !d.hands?.trim()) throw new AxosError("kind hands needs hands: the exact command or act, and where to do it");
+    if (d.kind !== undefined && !["decide", "hands", "taste"].includes(d.kind)) throw new AxosError("kind is decide, hands or taste");
+    // Peer text that reaches a person's page and phone: one line each, no Markdown link, image or code syntax
+    // (the page renders the body as Markdown; review 2026-11-05, F2).
+    const plain = (x: string, n: number) => oneLine(x.replace(/`/g, "'").replace(/!?\[([^\]]*)\]\(/g, "$1 (").replace(/[[\]]/g, ""), n);
+    const decision: Decision = {
+      ...(d.kind ? { kind: d.kind } : {}),
+      ...(d.recommend?.trim() ? { recommend: plain(d.recommend, 300) } : {}),
+      ...(d.on_silence ? { on_silence: d.on_silence } : {}),
+      ...(d.waiting_cost?.trim() ? { waiting_cost: plain(d.waiting_cost, 300) } : {}),
+      ...(d.hands?.trim() ? { hands: plain(d.hands, 500) } : {}),
+      ...(d.check?.trim() ? { check: oneLine(d.check, 500) } : {}),
+    };
+    const askerHuman0 = (this.db.query("SELECT human FROM agents WHERE id = ?").get(agentId) as { human: string }).human;
+    // What another person's agent proposes is marked as theirs: AXOS has not checked it.
+    const by = askerHuman0 === input.human ? "" : ` (suggested by ${askerHuman0}'s agent, not checked by AXOS)`;
     const summary = (input.summary ?? input.question).trim().slice(0, MAX_SUMMARY);
-    const body = [input.question, options.length ? `\nOptions:\n${options.map((o) => `- ${o}`).join("\n")}` : "",
-      input.default_answer !== undefined ? `\nDefault if unanswered: ${input.default_answer}` : "",
+    const body = [input.question,
+      decision.kind ? `\nKind: ${decision.kind === "hands" ? "needs your hands" : decision.kind === "taste" ? "your taste" : "your decision"}` : "",
+      decision.recommend ? `\nRecommended${by}: ${decision.recommend}` : "",
+      decision.hands ? `\nWhat to do, where${by}: ${decision.hands}` : "",
+      options.length ? `\nOptions:\n${options.map((o) => `- ${o}`).join("\n")}` : "",
+      input.default_answer !== undefined && !hold ? `\nDefault if unanswered: ${input.default_answer}` : "",
+      hold && input.deadline_s ? `\nIf unanswered by the date: it holds; nothing proceeds${decision.waiting_cost ? ` (waiting costs: ${decision.waiting_cost})` : ""}.` : "",
+      !hold && decision.waiting_cost ? `\nWaiting costs: ${decision.waiting_cost}` : "",
+      decision.check ? "\nThe asker says this may settle without you: it runs a check of its own and withdraws the question if it passes." : "",
       images.length ? `\nImages on the page: ${images.map((i) => `${i.name} (${kb(i.size)})`).join(", ")}` : ""].join("");
     const deadline = input.deadline_s ? this.now() + input.deadline_s * 1000 : null;
     const remind = input.remind_s ? this.now() + input.remind_s * 1000 : null;
@@ -3154,20 +3191,26 @@ export class Hub {
       project: input.project, to: [`human:${input.human}`], type: "ask", summary, body, priority: "high", no_push: true,
     });
     const res = this.db.query(
-      `INSERT INTO asks (project, asker, human, question, options_json, default_answer, deadline, remind_at, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(input.project, asker, input.human, input.question, JSON.stringify(options), input.default_answer ?? null, deadline, remind, sent.id);
+      `INSERT INTO asks (project, asker, human, question, options_json, default_answer, deadline, remind_at, message_id, decision_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(input.project, asker, input.human, input.question, JSON.stringify(options), input.default_answer ?? null, deadline, remind, sent.id,
+      Object.keys(decision).length ? JSON.stringify(decision) : null);
     const askId = Number(res.lastInsertRowid);
     for (const i of images) this.db.query("UPDATE attachments SET ask_id = ? WHERE id = ?").run(askId, i.id);
     // A question from another person's side counts against their cap like any push of theirs.
-    const askerHuman = (this.db.query("SELECT human FROM agents WHERE id = ?").get(agentId) as { human: string }).human;
+    const askerHuman = askerHuman0;
     const allowed = askerHuman === input.human || this.otherPushAllowed(askerHuman, input.human);
     if (allowed) this.pushAsk(askId, false);
     return { ask_id: askId, message_id: sent.id, pushed: allowed && this.hasPhone(input.human) };
   }
 
   // The question on the phone, with up to three options as buttons; a reminder is the same push again, replacing it.
+  // A reminder of another person's question counts against their cap like any push of theirs (review 2026-11-05, F1).
   private pushAsk(askId: number, reminder: boolean): void {
     const a = this.db.query("SELECT * FROM asks WHERE id = ?").get(askId) as AskRow;
+    if (reminder) {
+      const from = this.askerHuman(a);
+      if (from !== a.human && !this.otherPushAllowed(from, a.human)) return;
+    }
     const options = JSON.parse(a.options_json) as string[];
     const images = this.askImages(askId).length;
     const summary = this.getMessage(a.message_id)?.summary ?? a.question;
@@ -3175,11 +3218,18 @@ export class Hub {
     const actions: PushAction[] = link ? options.slice(0, 3).map((o) => ({ label: o.slice(0, 40), url: link, body: o })) : [];
     const tail = (options.length > 3 ? `\n(${options.length - 3} more options on the page)` : "") +
       (images ? `\n(${images === 1 ? "an image" : `${images} images`} on the page)` : "") +
-      (a.default_answer !== null && a.deadline ? `\n(default "${a.default_answer}", chosen by the agent, at ${when(a.deadline)})` : "");
+      (decisionOf(a).recommend ? `\nRecommended${this.askerHuman(a) === a.human ? "" : ` by ${this.askerHuman(a)}'s agent`}: ${decisionOf(a).recommend}` : "") +
+      (decisionOf(a).on_silence === "hold" ? (a.deadline ? `\n(holds if unanswered by ${when(a.deadline)})` : "")
+        : a.default_answer !== null && a.deadline ? `\n(default "${a.default_answer}", chosen by the agent, at ${when(a.deadline)})` : "");
     const title = `${reminder ? "Reminder: " : ""}${this.senderTitle(addr(a.asker))} (${this.projectName(a.project)})`;
     void this.pushToHuman(a.human, title, `${summary}${tail}`, `#m${a.message_id}`, actions, { sequence: askSequence(askId) }).then((ok) => {
       if (ok && !reminder) this.db.query("UPDATE asks SET pushed_at = ? WHERE id = ? AND pushed_at IS NULL").run(this.now(), askId);
     });
+  }
+
+  // Whose agent asked: the ask message's sending person.
+  askerHuman(a: AskRow): string {
+    return (this.db.query("SELECT sender_human FROM messages WHERE id = ?").get(a.message_id) as { sender_human: string | null } | null)?.sender_human ?? "";
   }
 
   // The asked human's page showed the question: the asker can tell it was seen.
@@ -3199,17 +3249,20 @@ export class Hub {
   // The asker settles its own open question when it was decided elsewhere (a chat, a file), so the human's page and
   // phone hold no leftovers (a user, 1041; their human: "make sure this board is always clean"). Any seat the caller may be
   // known by in the ask's project (its session, its agent, a role it holds) counts as the asker.
-  withdrawAsk(agentId: string, askId: number, reason: string, session?: string): void {
+  withdrawAsk(agentId: string, askId: number, reason: string, session?: string, byCheck = false): void {
     const ask = this.db.query("SELECT * FROM asks WHERE id = ?").get(askId) as AskRow | null;
     if (!ask) throw new AxosError(`no ask ${askId}`);
     if (!this.seatsOf(agentId, ask.project, undefined, session).includes(ask.asker)) throw new AxosError(`ask ${askId} was asked by ${ask.asker}, not by you`);
-    if (ask.answer !== null) throw new AxosError(ask.answered_by?.startsWith("withdrawn") ? `ask ${askId} is withdrawn already` : `ask ${askId} was already answered by ${ask.answered_by}`);
+    if (ask.answer !== null) throw new AxosError(ask.answered_by?.startsWith("withdrawn") ? `ask ${askId} is withdrawn already` : ask.answered_by?.startsWith("check") ? `ask ${askId} was resolved by its check already` : `ask ${askId} was already answered by ${ask.answered_by}`);
     const why = oneLine(reason, 200) || "settled elsewhere";
     const t = this.now();
-    this.db.query("UPDATE asks SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(why, `withdrawn:${ask.asker}`, t, askId);
+    const check = decisionOf(ask).check;
+    if (byCheck && !check) throw new AxosError(`ask ${askId} has no check`);
+    const said = byCheck ? oneLine(`resolved by check: ${check}${reason.trim() ? ` (${reason})` : ""}`, 300) : why;
+    this.db.query("UPDATE asks SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(said, byCheck ? `check:${ask.asker}` : `withdrawn:${ask.asker}`, t, askId);
     this.ack(`human:${ask.human}`, [ask.message_id]);
-    this.event(session ? `session:${session}` : `agent:${agentId}`, "ask.withdrawn", ask.project, { ask: askId });
-    this.settledOnPhone(ask, "Settled elsewhere, no answer needed", why, ask.message_id);
+    this.event(session ? `session:${session}` : `agent:${agentId}`, byCheck ? "ask.resolved_by_check" : "ask.withdrawn", ask.project, { ask: askId });
+    this.settledOnPhone(ask, byCheck ? "Settled: the check passed, no answer needed" : "Settled elsewhere, no answer needed", said, ask.message_id);
   }
 
   // Stored verbatim. Only the asked human answers.
@@ -3218,12 +3271,13 @@ export class Hub {
     if (!ask) throw new AxosError(`no ask ${askId}`);
     if (ask.human !== human) throw new AxosError(`ask ${askId} was put to ${ask.human}, not ${human}`);
     if (ask.answer !== null) {
-      throw new AxosError(ask.answered_by?.startsWith("withdrawn") ? `ask ${askId} was settled elsewhere and withdrawn by its asker: ${ask.answer}` : `ask ${askId} was already answered by ${ask.answered_by}`);
+      throw new AxosError(ask.answered_by?.startsWith("withdrawn") ? `ask ${askId} was settled elsewhere and withdrawn by its asker: ${ask.answer}`
+        : ask.answered_by?.startsWith("check") ? `ask ${askId} settled without an answer: ${ask.answer}` : `ask ${askId} was already answered by ${ask.answered_by}`);
     }
     if (!answer.trim()) throw new AxosError("answer is empty");
     const t = this.now();
     // Past its deadline the default stands, even before the sweep has written it (F5).
-    if (ask.deadline !== null && ask.deadline <= t) throw new AxosError(`ask ${askId} is past its deadline; its default${ask.default_answer ? ` (${ask.default_answer})` : ""} stands`);
+    if (ask.deadline !== null && ask.deadline <= t && decisionOf(ask).on_silence !== "hold") throw new AxosError(`ask ${askId} is past its deadline; its default${ask.default_answer ? ` (${ask.default_answer})` : ""} stands`);
     this.db.query("UPDATE asks SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(answer, `human:${human}`, t, askId);
     this.ack(`human:${human}`, [ask.message_id]);
     // The answer stands even when the asker can no longer receive it (its machine revoked, it left the project): the
@@ -3398,7 +3452,18 @@ export class Hub {
     }
     this.db.query("DELETE FROM landings WHERE at < ?").run(t - LANDINGS_KEPT_MS);
     this.db.query("DELETE FROM attachments WHERE created_at < ? OR (ask_id IS NULL AND created_at < ?)").run(t - IMAGES_KEPT_MS, t - UNCLAIMED_KEPT_MS);
-    for (const a of this.db.query("SELECT * FROM asks WHERE answer IS NULL AND deadline IS NOT NULL AND deadline < ? AND default_answer IS NOT NULL").all(t) as AskRow[]) {
+    // on_silence hold: the date passes and nothing proceeds; the asker hears it once, the person gets the question again.
+    for (const a of this.db.query(`SELECT * FROM asks WHERE answer IS NULL AND deadline IS NOT NULL AND deadline < ? AND stale_at IS NULL
+        AND json_extract(decision_json, '$.on_silence') = 'hold'`).all(t) as AskRow[]) {
+      this.db.query("UPDATE asks SET stale_at = ? WHERE id = ?").run(t, a.id);
+      const cost = decisionOf(a).waiting_cost;
+      this.systemMessage(a.project, this.liveBox(addr(a.asker)), "note", `Ask ${a.id} to ${a.human}: the date passed without an answer; it holds, nothing proceeds`,
+        `Question: ${a.question}${cost ? `\nWaiting costs: ${cost}` : ""}`, "normal", a.message_id);
+      this.pushAsk(a.id, true);
+      this.event("axos", "ask.held", a.project, { ask: a.id });
+    }
+    for (const a of this.db.query(`SELECT * FROM asks WHERE answer IS NULL AND deadline IS NOT NULL AND deadline < ? AND default_answer IS NOT NULL
+        AND json_extract(decision_json, '$.on_silence') IS NOT 'hold'`).all(t) as AskRow[]) {
       this.db.query("UPDATE asks SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(a.default_answer, "default (deadline passed)", t, a.id);
       this.ack(`human:${a.human}`, [a.message_id]);
       this.systemMessage(a.project, this.liveBox(addr(a.asker)), "answer", `No answer from ${a.human} by the deadline; the default applies: ${a.default_answer}`,

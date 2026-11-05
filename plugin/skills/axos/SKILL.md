@@ -119,6 +119,10 @@ message. With a deadline, the default applies if nobody answers. When a picture 
 layout, a chart), pass `images` with up to 4 paths of PNG, JPEG, GIF or WebP files inside your repo; they show with the
 question on their page. `remind_hours` pushes it once more if still open; `asks` shows how far each of your questions
 got (pushed, seen, answered). A question without a deadline that stays open 3 days gets you a note.
+Make it a decision he can settle in one look: `kind` (decide, hands for an act only he can do with `hands` the exact
+command and where, taste), `recommend` (your answer, one line), `on_silence` (proceed: the default applies at the
+deadline; hold: nothing proceeds) and `waiting_cost`. A `check` command (exits 0 once it settled by itself) is yours
+to run: `asks` lists it; on 0, `withdraw_ask(id, reason, resolved_by_check: true)`.
 If the question gets settled elsewhere before they answer (they told you in chat, the file changed, events decided it),
 `withdraw_ask(ask_id, reason)` at once: their page and phone must hold no leftovers.
 

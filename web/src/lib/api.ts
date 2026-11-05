@@ -3,6 +3,7 @@
 export interface Ask {
   id: number; message_id: number; from: string; project: string; question: string; options: string[];
   default_answer: string | null; deadline: number | null; created_at: number | null; images: { id: number; name: string }[];
+  decision?: { kind?: "decide" | "hands" | "taste"; recommend?: string; on_silence?: "hold" | "proceed"; waiting_cost?: string; hands?: string; has_check?: boolean; suggested_by?: string };
 }
 export interface InboxMessage {
   id: number; from: string; sender_human: string | null; project: string; type: string; priority: string;

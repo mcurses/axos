@@ -186,7 +186,8 @@ CREATE TABLE IF NOT EXISTS asks (
   remind_at     INTEGER,                       -- when to push it once more if still open
   reminded_at   INTEGER,
   stale_at      INTEGER,                       -- no deadline and no answer for days: the asker was told
-  action_json   TEXT                           -- what the hub does on a yes: {"kind":"takeover",project,role,from,to}
+  action_json   TEXT,                          -- what the hub does on a yes: {"kind":"takeover",project,role,from,to}
+  decision_json TEXT                           -- the ask as a decision record: {kind, recommend, on_silence, waiting_cost, hands, check}
 );
 CREATE TABLE IF NOT EXISTS attachments (     -- images shown with a question on the human's page; kept 30 days
   id            INTEGER PRIMARY KEY,
@@ -350,6 +351,7 @@ function migrate(db: Database): void {
   column("logins", "read_only", "INTEGER NOT NULL DEFAULT 0");
   column("login_links", "read_only", "INTEGER NOT NULL DEFAULT 0");
   column("asks", "action_json", "TEXT");
+  column("asks", "decision_json", "TEXT");
   column("roles", "open", "INTEGER DEFAULT 0");
   column("sessions", "tree", "TEXT");
   column("roles", "quiet", "INTEGER DEFAULT 0");
