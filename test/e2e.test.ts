@@ -778,6 +778,11 @@ test("scripts: axos send and axos inbox as a named script; speaking for a role a
     const sent = await cli(tokens.dev3!, "send", "--name", "nightly-check", "--to", "session:shop-peer", "--summary", "the nightly run failed", "--body", "-");
     expect(sent.err).toBe("");
     expect(sent.out).toContain("Delivered to shop-peer");
+    // --json: the id without parsing the sentence (vinea, 3423).
+    const js = await cli(tokens.dev3!, "send", "--name", "nightly-check", "--to", "session:shop-peer", "--summary", "json form", "--json");
+    const doc = JSON.parse(js.out) as { id: number; result: string };
+    expect(doc.id).toBeGreaterThan(0);
+    expect(doc.result).toContain(`Sent message ${doc.id}`);
     const got = (await call(peer, "inbox")).text;
     expect(got).toContain('sender-name="nightly-check" sender-kind="script"');
     expect(got).toContain("the body\nfrom stdin");

@@ -86,7 +86,8 @@ axos send --name sensor --as supervisor --to project:shop --summary "Disk at 91%
 
 `--as <role>` speaks for a role that a session on this machine holds; the message shows the role as its sender and the
 script as `sent-by`. A script holds no roles, is not listed as live and is never woken. Options: `--to` (comma list)
-or `--re <id>`, `--type`, `--priority low|normal|high`, `--dedupe <key>`, `--project <p>` (else the folder's).
+or `--re <id>`, `--type`, `--priority low|normal|high`, `--dedupe <key>`, `--project <p>` (else the folder's),
+`--json` (prints `{"id": <message id or null>, "result": "<the hub's text>"}`).
 
 ## Waking idle sessions
 

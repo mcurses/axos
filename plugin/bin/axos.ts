@@ -977,10 +977,17 @@ async function sendCmd(args: string[]): Promise<void> {
   const name = opt("--name"), project = opt("--project"), as = opt("--as"), to = opt("--to"), summary = opt("--summary");
   const type = opt("--type"), priority = opt("--priority"), re = opt("--re"), dedupe = opt("--dedupe"), deliverAt = opt("--deliver-at");
   let body = opt("--body");
-  if (args.length) throw new Error(`unknown arguments: ${args.join(" ")}\nusage: axos send --name <script> (--to <address>[,…] | --re <id>) --summary <s> [--body <text>|-] [--type <t>] [--priority low|normal|high] [--as <role>] [--project <p>] [--dedupe <key>] [--deliver-at <ISO time with offset>]`);
+  const asJson = scriptOpts(args).flag("--json");
+  if (args.length) throw new Error(`unknown arguments: ${args.join(" ")}\nusage: axos send --name <script> (--to <address>[,…] | --re <id>) --summary <s> [--body <text>|-] [--type <t>] [--priority low|normal|high] [--as <role>] [--project <p>] [--dedupe <key>] [--deliver-at <ISO time with offset>] [--json]`);
   if (body === "-") body = await new Response(Bun.stdin.stream()).text();
   const hub = scriptHub(name, project);
-  console.log(await hub.call("send", {
+  const out = (text: string) => {
+    if (!asJson) return console.log(text);
+    // {"id": <the message id, or null when nothing was sent>, "result": <the hub's text>}
+    const id = /^(?:Sent message|Held as message|Already sent as message) (\d+)/m.exec(text)?.[1];
+    console.log(JSON.stringify({ id: id ? Number(id) : null, result: text }));
+  };
+  out(await hub.call("send", {
     ...(to ? { to: to.split(",").map((x) => x.trim()).filter(Boolean) } : {}), ...(summary ? { summary } : {}), ...(body ? { body } : {}),
     ...(type ? { type } : {}), ...(priority ? { priority } : {}), ...(re ? { re: Number(re) } : {}), ...(as ? { as } : {}), ...(dedupe ? { dedupe_key: dedupe } : {}), ...(deliverAt ? { deliver_at: deliverAt } : {}),
   }));
@@ -1837,7 +1844,7 @@ const HELP: Record<string, string> = {
   Undoes axos link.`,
   admin: `axos admin <command>
   Runs the hub's own admin command on its server over ssh (admin_ssh in ~/.config/axos/config.json). axos admin help lists it.`,
-  send: `axos send --name <script> (--to <address>[,…] | --re <id>) --summary <s> [--body <text>|-] [--type <t>] [--priority low|normal|high] [--as <role>] [--project <p>] [--dedupe <key>] [--deliver-at <time>]
+  send: `axos send --name <script> (--to <address>[,…] | --re <id>) --summary <s> [--body <text>|-] [--type <t>] [--priority low|normal|high] [--as <role>] [--project <p>] [--dedupe <key>] [--deliver-at <time>] [--json]
   For scripts (a timer, a CI step): sends as a named script of this machine, whose replies wait for axos inbox.
   A person sends from their page (Send). Addresses: role:<role>, session:<name>, human:<name>, project.
   A role is a mailbox one session holds at a time; it outlives the session, so mail to it waits for the next holder.`,
@@ -1961,7 +1968,9 @@ else if (cmd === "trust") {
        axos board [connect | disconnect | feed]   the hub's health board in vinea (the operator's)
        axos send --name <script> … | inbox --name <script> … | landed <remote>/<branch> | codex [<codex args>] | codex-bell --thread <id> | claude-bell --session <id>
        short forms: axos link <a> <b>… · axos unlink <a> <b>… · axos rename [<project>] <name>
-       axos <command> --help says what a command does; axos send and inbox are for scripts, a person uses the page.`);
+       axos <command> --help says what a command does; axos send and inbox are for scripts, a person uses the page.
+environment: AXOS_CONFIG (the config file, default ~/.config/axos/config.json) · AXOS_TOKEN_FILE (this machine's token,
+       overriding the config) · AXOS_NO_PROMPT_LOG=1 (a headless run: its prompts are not recorded for quotes_human)`);
   process.exit(unknown ? 2 : 0);
 }
 }
