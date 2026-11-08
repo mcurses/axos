@@ -1768,9 +1768,12 @@ export function boardWidgets(h: BoardHealth): Record<string, [string, unknown]> 
   const rolePct = roles ? pct(roles.shown, roles.n) : 100;
   const asked = h.asks.reduce((n, a) => n + a.n, 0);
   const bad = h.pushes.failed > 0 || rolePct < 90;
-  const warn = h.nobody_reading > 0 || h.roles_waiting.length > 0;
+  const WEEK = 7 * 86_400_000;
+  const fresh = h.roles_waiting.filter((r) => h.now - r.oldest < WEEK);
+  const stale = h.roles_waiting.length - fresh.length;
+  const warn = fresh.length > 0;
   const summary = {
-    status: bad ? (rolePct < 90 ? `roles ${rolePct} % shown` : "push failed") : warn ? `${h.nobody_reading} unread` : "all reached",
+    status: bad ? (rolePct < 90 ? `roles ${rolePct} % shown` : "push failed") : warn ? `${fresh.length} new unread` : "nothing new",
     state: bad ? "bad" : warn ? "warn" : "ok",
     line: `hub ${h.version}: ${h.messages} messages in 24 h; ${h.machines.reduce((n, m) => n + m.sessions, 0)} sessions present, ${h.live_sessions} active in the last day`.slice(0, 120),
     figures: [
@@ -1781,11 +1784,23 @@ export function boardWidgets(h: BoardHealth): Record<string, [string, unknown]> 
     ],
   };
   const items: { label: string; state: string; detail?: string }[] = [];
-  for (const r of h.roles_waiting) items.push({ label: `role ${r.role}: ${r.n} waiting`, state: "warn", detail: `${r.state}, oldest ${age(r.oldest)}`.slice(0, 160) });
-  if (h.nobody_reading > h.roles_waiting.length) items.push({ label: `${h.nobody_reading - h.roles_waiting.length} other mailbox(es) with mail nobody reads`, state: "warn", detail: "axos admin health lists them" });
-  if (h.pushes.failed) items.push({ label: `${h.pushes.failed} phone push(es) failed`, state: "bad" });
-  if (h.dormant_sessions) items.push({ label: `${h.dormant_sessions} dormant session(s) with mail`, state: "muted", detail: "no sign for a day; they end after 7 days" });
-  if (!items.length) items.push({ label: "nothing needs a look", state: "ok" });
+  if (h.pushes.failed) items.push({ label: `${h.pushes.failed} phone push(es) failed`, state: "bad", detail: "who: the AXOS maintainer · next: checks the device (axos admin health)" });
+  for (const r of fresh) {
+    const detail = r.state.startsWith("held by nobody")
+      ? "held by nobody · who: that project's main seat · next: someone claims the role, or the AXOS maintainer asks the sender"
+      : `${r.state} · who: the holder · next: shown when it next starts`;
+    items.push({ label: `role ${r.role}: ${r.n} waiting`, state: "warn", detail: detail.slice(0, 160) });
+  }
+  for (const a of h.asks) items.push({ label: `${a.n} question(s) wait for ${a.human}, oldest ${age(a.oldest)}`, state: "info", detail: `who: ${a.human} · next: answer them on the AXOS page` });
+  const other = Math.max(0, h.nobody_reading - h.roles_waiting.length);
+  const parts = [
+    stale ? `${stale} role(s) waiting over a week` : "",
+    other ? `${other} old mailbox(es)` : "",
+    h.dormant_sessions ? `${h.dormant_sessions} dormant session(s)` : "",
+  ].filter(Boolean);
+  if (parts.length) items.push({ label: "known, nothing to do", state: "muted", detail: `${parts.join(", ")} · who: the AXOS maintainer's daily check; dormant sessions end by themselves`.slice(0, 160) });
+  if (!items.length) items.push({ label: "nothing waits on anyone", state: "ok" });
+  for (const it of items) it.label = it.label.slice(0, 80); // vinea refuses a Status label over 80 characters
   const delivery = {
     columns: [{ key: "kind", label: "Mailbox" }, { key: "n", label: "Delivered" }, { key: "shown", label: "Shown" }, { key: "fast", label: "Within 10 min" }, { key: "handled", label: "Handled" }, { key: "expired", label: "Expired" }],
     rows: h.delivered.map((d) => ({ kind: ({ role: "roles", session: "sessions", agent: "machines", human: "people" } as Record<string, string>)[d.kind] ?? d.kind, n: d.n, shown: `${pct(d.shown, d.n)} %`, fast: `${pct(d.within_10m, d.n)} %`, handled: d.handled, expired: d.expired })),
@@ -1876,6 +1891,8 @@ async function boardCmd(args: string[]): Promise<void> {
   def.project = `${parts[0]}/${parts[1]}`;
   def.board = parts[2];
   for (const w of def.widgets) w.ttl_s = 2 * every + 60; // grey means the feed really stopped
+  // Keep where the board's questions go: applying a definition without ask_to clears it (2026-11-08).
+  try { const askTo = (JSON.parse(vineaRun(["get", id, "--json"])) as { ask_to?: string | null }).ask_to; if (askTo) def.ask_to = askTo; } catch { /* a new board */ }
   const file = join(dirname(CONFIG_PATH), "board.json");
   writeFileSync(file, `${JSON.stringify(def, null, 2)}\n`);
   for (const l of vineaRun(["apply", file, "--no-prune"]).trim().split("\n").filter(Boolean)) console.log(l);

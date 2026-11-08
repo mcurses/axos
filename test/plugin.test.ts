@@ -100,3 +100,43 @@ describe("the plugin's check of a quoted human", () => {
     expect(readdirSync(join(dir, "prompts"))).not.toContain("old-session.jsonl");
   });
 });
+
+describe("boardWidgets: the health board's attention card", () => {
+  const now = 1_800_000_000_000;
+  const base = { version: "t", now, since: now - 86_400_000, messages: 0, live_sessions: 0, delivered: [], nobody_reading: 0, dormant_sessions: 0, roles_waiting: [], machines: [], asks: [], invites: 0, pushes: { sent: 0, failed: 0 } };
+  const card = (h: object) => (plugin.boardWidgets({ ...base, ...h } as never).attention[1] as { items: { label: string; state: string; detail?: string }[] }).items;
+  const summary = (h: object) => plugin.boardWidgets({ ...base, ...h } as never).summary[1] as { state: string; status: string };
+
+  test("a fresh vacant role warns and says who acts", () => {
+    const h = { nobody_reading: 1, roles_waiting: [{ role: "ana/shop/main", n: 2, oldest: now - 3_600_000, state: "held by nobody" }] };
+    const items = card(h);
+    expect(items).toHaveLength(1);
+    expect(items[0].state).toBe("warn");
+    expect(items[0].detail).toContain("who:");
+    expect(summary(h).state).toBe("warn");
+    expect(summary(h).status).toBe("1 new unread");
+  });
+
+  test("known old things collapse into one muted line", () => {
+    const h = { nobody_reading: 14, dormant_sessions: 19, roles_waiting: [{ role: "ana/x/old", n: 1, oldest: now - 10 * 86_400_000, state: "held by nobody" }] };
+    const items = card(h);
+    expect(items).toHaveLength(1);
+    expect(items[0].state).toBe("muted");
+    expect(items[0].label).toStartWith("known, nothing to do");
+    expect(items[0].detail).toContain("13 old mailbox(es)");
+    expect(items.every((i: { label: string }) => i.label.length <= 80)).toBe(true);
+    expect(summary(h).state).not.toBe("warn");
+    expect(summary(h).status).toBe("nothing new");
+  });
+
+  test("open questions are an info line", () => {
+    const items = card({ asks: [{ human: "ana", n: 3, oldest: now - 3 * 3_600_000 }] });
+    expect(items).toHaveLength(1);
+    expect(items[0].state).toBe("info");
+    expect(items[0].detail).toContain("who: ana");
+  });
+
+  test("no data", () => {
+    expect(card({})).toEqual([{ label: "nothing waits on anyone", state: "ok" }]);
+  });
+});
