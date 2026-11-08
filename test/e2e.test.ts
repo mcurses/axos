@@ -1959,6 +1959,30 @@ test("the hub's health board: the operator's route, axos board connect and feed 
   const h = await (await fetch(`${base}/api/health`, { headers: { Authorization: `Bearer ${tokens.dev1}` } })).json() as { delivered: unknown[]; machines: unknown[]; asks: unknown[]; invites: number };
   expect(Array.isArray(h.delivered) && Array.isArray(h.machines) && Array.isArray(h.asks) && typeof h.invites === "number").toBe(true);
 
+  // The undelivered report: the same rule, and metadata only (never a summary or a body).
+  hub.setOperator("alice", false);
+  const no = await fetch(`${base}/api/undelivered`, { headers: { Authorization: `Bearer ${olga.token}` } });
+  expect(no.status).toBe(403);
+  expect(await no.text()).not.toContain("items");
+  expect((await fetch(`${base}/api/undelivered`, { headers: { Authorization: `Bearer ${tokens.dev1}` } })).status).toBe(403);
+  hub.setOperator("alice", true);
+  const secret = "undelivered-body-must-not-travel";
+  const olgaProj = hub.createProject(olga.id, "olga-solo", "");
+  const sent = hub.send({ kind: "agent", id: olga.id, human: "olga" }, { project: olgaProj, to: ["human:olga"], type: "note", summary: secret, body: secret });
+  // Two hours old, so the report counts it (it lists what was not shown within the hour).
+  (hub as unknown as { db: { run(sql: string, ...a: unknown[]): void } }).db.run("UPDATE messages SET created_at = created_at - 7200000 WHERE id = ?", sent.id);
+  const ur = await fetch(`${base}/api/undelivered?since=${Date.now() - 3 * 3600_000}`, { headers: { Authorization: `Bearer ${tokens.dev1}` } });
+  expect(ur.status).toBe(200);
+  const utext = await ur.text();
+  expect(utext).not.toContain(secret);
+  const u = JSON.parse(utext) as { items: { id: number }[]; causes: unknown[] };
+  expect(u.items.some((i) => i.id === sent.id)).toBe(true);
+  // A negative or ancient since is clamped to the last 30 days or a day, never the whole history.
+  const neg = await (await fetch(`${base}/api/undelivered?since=-1`, { headers: { Authorization: `Bearer ${tokens.dev1}` } })).json() as { since: number };
+  expect(neg.since).toBeGreaterThan(Date.now() - 2 * 86_400_000);
+  const old = await (await fetch(`${base}/api/undelivered?since=1`, { headers: { Authorization: `Bearer ${tokens.dev1}` } })).json() as { since: number };
+  expect(old.since).toBeGreaterThan(Date.now() - 31 * 86_400_000);
+
   // connect and feed run `vinea` (a stand-in records its arguments and input) and never read vinea's config.
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "axos-board-")));
   try {

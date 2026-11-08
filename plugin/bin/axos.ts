@@ -1830,6 +1830,24 @@ export async function boardFeed(): Promise<string[]> {
   return done;
 }
 
+// `axos undelivered`: every message that reached no reader, from the hub's operator route, so a scheduled round on
+// the operator's machine needs no ssh to the server. The same report as `axos admin undelivered` (metadata only).
+async function undeliveredCmd(args: string[]): Promise<void> {
+  const i = args.indexOf("--since");
+  const since = i >= 0 ? Date.parse(args[i + 1] ?? "") : Date.now() - 86_400_000;
+  if (Number.isNaN(since)) throw new Error("usage: axos undelivered [--since <date>] [--json]");
+  const { c, t } = setUp();
+  const res = await fetch(`${c.url.replace(/\/$/, "")}/api/undelivered?since=${since}`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(30_000) });
+  if (res.status === 401) throw new Error(TOKEN_REFUSED);
+  const u = (await res.json().catch(() => null)) as { error?: string; since: number; items: { id: number; sent: number; type: string; priority: string; sender: string; recipient: string; state: string; cause: string }[]; causes: { cause: string; n: number }[] } | null;
+  if (!u || u.error) throw new Error(u?.error ?? `the hub answered ${res.status}`);
+  if (args.includes("--json")) return console.log(JSON.stringify(u, null, 2));
+  const lines = [`Messages that reached no reader since ${new Date(u.since).toISOString()}: ${u.items.length} delivery(ies).`];
+  for (const x of u.causes) lines.push(`  ${String(x.n).padStart(4)}  ${x.cause}`);
+  for (const x of u.items) lines.push(`  #${x.id} ${x.type}/${x.priority} ${x.sender} → ${x.recipient}: ${x.state}; ${x.cause}`);
+  console.log(lines.join("\n"));
+}
+
 async function boardCmd(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   const c = config();
@@ -1925,6 +1943,9 @@ const HELP: Record<string, string> = {
   board: `axos board [connect [--board <owner>/<project>/<board>] [--every <minutes>] | disconnect | feed]
   The hub's health board in vinea (the operator's): whether messages reach a reader, who is present, what waits.
   connect applies it with the vinea command; feed pushes the numbers once; the vinea bridge feeds it while it runs.`,
+  undelivered: `axos undelivered [--since <ISO date, e.g. 2026-11-07T09:30:00+01:00>] [--json]
+  The operator's: every message that reached no reader (not shown within an hour and not handled, or expired unread),
+  with its cause; who sent it, to whom, when (--json has the send times). Never what it said. At most the last 30 days.`,
   "claude-bell": `axos claude-bell --session <Claude session id> [--project <p>] [--claude <path>]
   Wakes a Claude Code session started with claude --bg when mail comes for it (it has no other way to hear it while idle).`,
   "codex-bell": `axos codex-bell --thread <Codex session> [--session <id>] [--project <p>]
@@ -1993,6 +2014,7 @@ else if ((cmd === "link" || cmd === "unlink") && process.argv.length >= 5) {
 }
 else if (cmd === "link" || cmd === "unlink") linkSaysWhich(cmd);
 else if (cmd === undefined) await status().catch((e: Error) => { console.error(e.message); process.exit(1); });
+else if (cmd === "undelivered") await undeliveredCmd(process.argv.slice(3)).catch((e: Error) => { console.error(e.message); process.exit(1); });
 else if (cmd === "board") await boardCmd(process.argv.slice(3)).catch((e: Error) => { console.error(e.message); process.exit(1); });
 else if (cmd === "project" || cmd === "machine" || cmd === "person" || cmd === "login-link") {
   const f = cmd === "project" ? projectCmd : cmd === "machine" ? machineCmd : cmd === "person" ? personCmd : loginLink;
@@ -2037,6 +2059,7 @@ else if (cmd === "trust") {
        axos person invite <name> [--project <project>]     axos login-link (read-only, for a program)     axos trust     axos whoami (JSON)
        axos admin <command>       the hub's admin command on its server, over ssh (admin_ssh in the config)
        axos board [connect | disconnect | feed]   the hub's health board in vinea (the operator's)
+       axos undelivered [--since <date>] [--json]   messages that reached no reader, and why (the operator's)
        axos send --name <script> … | inbox --name <script> … | ask --name <script> … | asks [--json] | landed <remote>/<branch> | codex [<codex args>] | codex-bell --thread <id> | claude-bell --session <id>
        short forms: axos link <a> <b>… · axos unlink <a> <b>… · axos rename [<project>] <name>
        axos <command> --help says what a command does; axos send and inbox are for scripts, a person uses the page.

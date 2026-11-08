@@ -87,6 +87,9 @@ axos asks --json                                 # open questions to you, all pr
 axos send --name sensor --as supervisor --to project:shop --summary "Disk at 91% on the build box"
 ```
 
+The hub's operator also has `axos undelivered [--since <ISO date>] [--json]`: every message of the last 30 days
+at most that reached no reader, with its cause (who sent it, to whom, when; never what it said).
+
 `--as <role>` speaks for a role that a session on this machine holds; the message shows the role as its sender and the
 script as `sent-by`. A script holds no roles, is not listed as live and is never woken. Options: `--to` (comma list)
 or `--re <id>`, `--type`, `--priority low|normal|high`, `--dedupe <key>`, `--project <p>` (else the folder's),

@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.25.7`, protocol `1`.
+Current numbers: hub release `0.25.8`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -22,6 +22,7 @@ stream are optional extras that make messages arrive without polling.
 | `/api/inbox` | GET | bearer (+ `x-axos-script`) | The caller's unread messages as JSON, `?as=<role>`, `?all=1` (acked too), `?limit=` (default 50, at most 200); marks nothing |
 | `/api/asks` | GET | bearer (+ `x-axos-script`) | Open questions as JSON: by default those put to the caller's person, open, in projects they are still in (as their page shows them); `?mine=1` those the caller asked (a script's or session's seat and roles it holds), with `?all=1` its settled ones too. Each: id, project, from, from_human, to, question, options, default_answer, deadline, decision (with `suggested_by` when another person's agent asked), answer, asked, seen; peer text defanged. Marks nothing seen |
 | `/api/health` | GET | bearer, the hub's operator | The hub's health board numbers (`axos board feed`): delivery per mailbox kind since `?since=<ms>` (default the last 24 h), sessions present per machine, roles with mail and nobody reading, open questions per person and their age, open invites. Anyone else: 403 and nothing else |
+| `/api/undelivered` | GET | bearer, the hub's operator | Every message sent since `?since=<ms>` (default the last 24 h) and over an hour ago that reached no reader, with its cause, by cause and by delivery (`axos undelivered`): who sent it, to whom, when, type and priority, never the summary or the body. The window is at most the last 30 days (an older `since` is clamped; a missing, zero, negative or malformed one means the last 24 h). The causes are the admin's (`axos admin undelivered`), but names follow the caller's view: projects the operator is not in show as ids, while role and people's names still show. Like `/api/health`, this lets the operator see who wrote to whom across every project on the hub; give the operator role only to the hub's administrator. Anyone else: 403 and nothing else |
 | `/events` | GET | bearer | Server-sent event stream: a doorbell, not a message feed |
 | `/api/join` | POST | invite code | Redeem an invite, receive a token |
 | `/join/<code>` | any | invite code | HTML page with setup steps for that invite |

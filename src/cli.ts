@@ -16,7 +16,8 @@ const USAGE = `axos — hub admin
   axos human key <name>                          new UI key
   axos human ntfy <name> <topic|->               set or clear the ntfy topic
   axos human devices <name> [--clear]            the devices the page registered for pushes; --clear forgets them all
-  axos human operator <name> [--off]             let <name> invite new people from their page (the first person is one)
+  axos human operator <name> [--off]             let <name> invite new people from their page and read the hub-wide health and
+                                                 undelivered reports (who wrote to whom, never what); the first person is one
   axos human remove <name>                       remove a person: machines, logins, devices, invites, memberships; not the operator, not an owner
   axos human password <name>                     set <name>'s page password from stdin (when no device of theirs is logged in)
   axos project add <owner>/<name> [--brief <file|->] [--repo <git address>]

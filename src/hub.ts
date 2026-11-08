@@ -3620,13 +3620,16 @@ export class Hub {
       }
       return address.split(":")[0]!;
     };
+    // neverReads is a query per session; once per recipient, not once per row (security review 2026-11-08, finding 3).
+    const sends = new Map<string, boolean>();
+    const onlySends = (key: string) => { if (!sends.has(key)) sends.set(key, this.neverReads(key)); return sends.get(key)!; };
     const cause = (r: (typeof rows)[number]): string => {
       const [kind, rest] = [r.recipient.split(":")[0]!, r.recipient.slice(r.recipient.indexOf(":") + 1)];
       if (kind === "session") {
         const s = this.session(rest);
         if (!s) return "session unknown";
         if (s.kind === "script") return "a script's mailbox: read only when `axos inbox --name` runs";
-        if (this.neverReads(s.key)) return "a session that only sends: it has never read a message (a program, not a model)";
+        if (onlySends(s.key)) return "a session that only sends: it has never read a message (a program, not a model)";
         if (s.ended_at !== null) return s.ended_at < r.created_at + 3_600_000 ? "session ended within the hour after the send" : "session ended before reading";
         if (this.dormant(s)) return "session closed without ending (no sign for a day)";
         if (s.wakes === 0) return "session's host does not wake on messages; waits for its next prompt";
