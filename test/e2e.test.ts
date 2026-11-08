@@ -1924,6 +1924,7 @@ test("meum tab labels: the hook writes the session's roles (main first, as 'main
     const key = `${ids.dev3}#${sid.replace(/-/g, "").slice(0, 8)}`;
     expect(hub.rolesHeldBy(`session:${key}`, SHOP)).toContain("main.alice");
     expect(start).toContain("You hold this project's main seat");
+    expect(start).toContain("reports no icon or colour, the main sets one");
     expect(start).not.toContain("meum"); // meum's own hook says what meum asks of a main session
     expect(calls()).toEqual(["tab labels main "]);
     await hook("prompt");
