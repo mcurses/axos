@@ -1573,7 +1573,14 @@ export class Hub {
     if (prev === key) return;
     if (prev) {
       const otherMachine = prev.split("#")[0] !== key.split("#")[0];
-      const gone = (this.session(prev)?.ended_at ?? null) !== null || (!this.isOnline(prev) && (!otherMachine || this.silentFor(prev, CROSS_MACHINE_AWAY_MS)));
+      // A holder that is no reader passes the seat as one that left: a program that only sends, or a session that has
+      // never been shown a message while the seat's mail waited over an hour (2026-11-09: a watchdog program held
+      // a project's main seat, and three messages to it reached nobody).
+      const noReader = this.neverReads(prev) || (!this.session(prev)?.framed_at && !!this.db.query(
+        `SELECT 1 FROM deliveries d JOIN messages m ON m.id = d.message_id
+          WHERE d.recipient = ? AND d.acked_at IS NULL AND d.shown_at IS NULL AND m.created_at < ? LIMIT 1`,
+      ).get(`role:${s.project}/${role}`, this.now() - 3_600_000));
+      const gone = (this.session(prev)?.ended_at ?? null) !== null || (!this.isOnline(prev) && (!otherMachine || this.silentFor(prev, CROSS_MACHINE_AWAY_MS))) || noReader;
       if (!gone || this.humanOfHolder(prev) !== this.humanOfHolder(key)) return;
     }
     this.db.query("UPDATE roles SET holder = ?, since = ? WHERE project = ? AND role = ?").run(key, this.now(), s.project, role);

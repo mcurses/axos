@@ -2033,6 +2033,21 @@ describe("mailboxes nobody reads", () => {
     expect(hub.neverReads(bot)).toBe(false);
   });
 
+  test("a program that only sends does not keep its person's main seat: the next session of theirs takes it", () => {
+    const db = (hub as unknown as { db: { query(s: string): { run(...a: unknown[]): unknown } } }).db;
+    db.query("UPDATE roles SET holder = NULL WHERE project = ? AND role = 'main.alice'").run(SHOP);
+    const bot = hub.openSession(DEV3, { client_session: "77777777-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "watchdog", profile: "dev3" });
+    expect(hub.rolesHeldBy(`session:${bot}`, SHOP)).toContain("main.alice");
+    hub.send({ kind: "agent", id: DEV3, human: "alice", session: bot }, note(["agent:alice/dev1"], "box is up"));
+    hub.send(A, note(["role:main.alice"], "for alice's main"));
+    t += 2 * 3_600_000;
+    hub.openSession(DEV3, { client_session: "77777777-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "watchdog", profile: "dev3" });
+    expect(hub.session(bot)!.framed_at).toBeNull(); // never shown a message, though the seat's mail is two hours old
+    const real = hub.openSession(DEV3, { client_session: "88888888-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "coord", profile: "dev3" });
+    expect(hub.rolesHeldBy(`session:${real}`, SHOP)).toContain("main.alice");
+    expect(hub.rolesHeldBy(`session:${bot}`, SHOP)).not.toContain("main.alice");
+  });
+
   test("presence carries each session's folder and the sessions sharing its working tree, never a path", () => {
     const a = hub.openSession(DEV3, { client_session: "77777777-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "ds-77", cwd: "shop-design-system", tree: "aaaaaaaaaaaaaaaa" });
     const b = hub.openSession(DEV3, { client_session: "88888888-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "ds-88", cwd: "shop-design-system", tree: "aaaaaaaaaaaaaaaa" });
