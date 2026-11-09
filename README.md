@@ -78,7 +78,7 @@ Opened in a browser, a join link shows these steps. It works once, within 7 days
 directly, so no token travels through chat or mail. For another machine of yours or for a friend:
 
 ```bash
-docker compose exec axos axos invite --human ana                 # another machine of yours (or Humans → Add device)
+docker compose exec axos axos invite --human ana                 # another machine of yours (or People → Add device)
 docker compose exec axos axos invite ana/parser --human ben      # Ben, straight into ana/parser; or from your page: the project's "Share with… someone new"
 ```
 
@@ -163,13 +163,3 @@ before it lands, and the old form keeps working for at least one release.
 ## Licence
 
 MIT, see [LICENSE](LICENSE).
-
-## Showing AXOS on a vinea board
-
-`contrib/vinea-bridge.ts` fills two widgets on any vinea board whose definition declares them:
-`axos` (a List: that project's open questions and unread messages for you, each linking to your AXOS page, where you
-answer) and `axos-sessions` (a Table: the sessions of your projects seen in the last day, grouped by project). It logs
-in as one of your devices (`bun contrib/vinea-bridge.ts login <link>`, the link from `axos login-link`: it can only read), reads your page
-data without marking anything as shown, and writes with the vinea token from `VINEA_URL`/`VINEA_TOKEN` or the vinea
-CLI's config. Run it with `--once`, or without to keep it filling every 20 seconds.
-

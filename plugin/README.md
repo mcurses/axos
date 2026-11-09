@@ -229,4 +229,4 @@ stopped and removed and the resume tried again, three times at most. A working s
 | `AXOS_VINEA` | `board` | The vinea command for the hub's board; default `vinea` on the PATH. |
 | `AXOS_WAKES` | `mcp` | `1` or `0`: tell the hub whether this host wakes on messages, instead of detecting it from the `claude` command line. |
 | `AXOS_BELL_SETTLE_MS` | `mcp` | How long the bell waits for a burst of messages to settle before ringing; default 1500. |
-| `AXOS_NO_PROMPT_LOG`, `AXOS_OWNER_TICK` | `hook prompt` | Set in headless runs: no prompt is recorded, so nothing fed to the run can be quoted as a person's words. |
+| `AXOS_NO_PROMPT_LOG` | `hook prompt` | Set in headless runs: no prompt is recorded, so nothing fed to the run can be quoted as a person's words. |

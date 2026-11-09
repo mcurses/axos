@@ -29,7 +29,7 @@ session, no project needed. The steps by hand are on the invite page too.
 `~/.config/axos/config.json`. No key is printed: your page logs each device in with a one-time link (Humans → "Add
 device" on a device where you are logged in), or with the password you set under Humans (keep it in your
 password manager; it is the way in when no device of yours is logged in). Whoever runs the hub: `axos init` prints
-their page link with a key once (it logs that browser in; further devices log in from it under Humans → Add device);
+their page link with a key once (it logs that browser in; further devices log in from it under People → Add device);
 your first links, and `axos human password <name>` sets a password from the server.
 
 Then connect each repo of the project once, in its folder:

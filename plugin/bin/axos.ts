@@ -494,8 +494,8 @@ function wakeupOffText(): string {
 async function hook(kind: string): Promise<void> {
   const input = (await Bun.stdin.json().catch(() => ({}))) as { session_id?: string; cwd?: string; stop_hook_active?: boolean; session_title?: string; prompt?: string };
   const id = identity(input.session_id, input.cwd, input.session_title);
-  // Only a person's prompts are recorded: a headless run (the owner tick, scripts) sets AXOS_NO_PROMPT_LOG or AXOS_OWNER_TICK.
-  if (kind === "prompt" && id && !id.quiet && id.project && typeof input.prompt === "string" && !process.env.AXOS_OWNER_TICK && !process.env.AXOS_NO_PROMPT_LOG &&
+  // Only a person's prompts are recorded: a headless run (the owner tick, scripts) sets AXOS_NO_PROMPT_LOG.
+  if (kind === "prompt" && id && !id.quiet && id.project && typeof input.prompt === "string" && !process.env.AXOS_NO_PROMPT_LOG &&
     !headless(claudeArgs())) {
     recordPrompt(id.sessionId, input.prompt);
   }

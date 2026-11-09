@@ -97,7 +97,7 @@ async function main(argv: string[]): Promise<void> {
     const login = hub.createLoginLink(name, 24 * 3600).token;
     console.log(`Welcome, ${name}. Two links, each shown once:
 
-  Your page (open it in your browser within a day; it logs that browser in; other devices log in from it under Humans → Add device):
+  Your page (open it in your browser within a day; it logs that browser in; other devices log in from it under People → Add device):
     ${base}/ui/login/${login}
 
   Your first machine (open it in a browser for the steps, or run there):
@@ -198,7 +198,7 @@ Next: a project for a repo: axos project add ${name}/<name> --repo <git address>
       need(1);
       hub.addHuman(rest[0]!, ntfy, false);
       const login = hub.createLoginLink(rest[0]!, 24 * 3600).token;
-      out(`human ${rest[0]} added. Their page, once, within a day (it logs that browser in; other devices from it under Humans → Add device):\n  ${base}/ui/login/${login}`);
+      out(`human ${rest[0]} added. Their page, once, within a day (it logs that browser in; other devices from it under People → Add device):\n  ${base}/ui/login/${login}`);
       return;
     }
     case "human key": {

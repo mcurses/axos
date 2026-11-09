@@ -185,7 +185,7 @@ test("a low-priority message rings no bell and does not hold a stop; a note to a
   expect((await call(c, "ack", { ids: [fyi.id], outcome: "forwarded", note: "passed to <lane 3>\nsecond line" })).text).toContain("Acked 1 of 1");
   expect((await call(c, "ack", { ids: [fyi.id], note: "x".repeat(201) })).text).toContain("at most 200");
   const sender = await connect(tokens.dev1!, { "x-axos-session": "10781078-1111-2222-3333-444444444444", "x-axos-project": "shop" });
-  const view = (await call(sender, "thread", { id: fyi.id })).text;
+  const view = (await call(sender, "thread", { message_id: fyi.id })).text;
   expect(view).toContain("shop-quiet: forwarded (passed to lane 3 second line)");
   await c.close();
   await sender.close();
@@ -597,6 +597,23 @@ test("a linked project shows in join and takes messages; the session's other too
   await client.close();
 });
 
+test("retired arguments are stripped, not refused: send's queue and thread's id", async () => {
+  const c = await connect(tokens.dev1!, { "x-axos-session": "eeeeeeee-5555-2222-3333-444444444444", "x-axos-project": "shop", "x-axos-name": "shop-ret" });
+  const sent = await call(c, "send", { to: "agent:alice/dev3", type: "note", summary: "Retired queue argument", queue: true });
+  expect(sent.isError).toBe(false);
+  const id = Number(/Sent message (\d+)/.exec(sent.text)![1]);
+  const th = await call(c, "thread", { message_id: id, id });
+  expect(th.isError).toBe(false);
+  expect(th.text).toContain(`Thread of message ${id}`);
+  const tools = (await c.listTools()).tools;
+  for (const [name, key] of [["send", "queue"], ["thread", "id"]] as const) {
+    const props = Object.keys((tools.find((x) => x.name === name)!.inputSchema as { properties?: Record<string, unknown> }).properties ?? {});
+    expect(props.length).toBeGreaterThan(0);
+    expect(props).not.toContain(key);
+  }
+  await c.close();
+});
+
 test("an argument a tool does not take is refused, not dropped; send defaults its type and summary", async () => {
   const c = await connect(tokens.dev1!, { "x-axos-session": "eeeeeeee-1111-2222-3333-444444444444", "x-axos-project": "shop", "x-axos-name": "shop-ar" });
   const wrong = await call(c, "send", { to: "agent:alice/dev3", type: "note", summary: "Fixture choice", message: "use the small one" });
@@ -659,7 +676,7 @@ test("hooks fold repeats and let a turn end over an answered thread; thread show
   const late = await send({ re: ask, summary: "thanks", body: "late ping" });
   // (the hub sees the late ping as newer than the answer, so it is not superseded: it shows)
   expect((await hook({ stop: true })).context).toContain("late ping");
-  const thread = (await call(dev1, "thread", { id: ask })).text;
+  const thread = (await call(dev1, "thread", { message_id: ask })).text;
   expect(thread).toMatch(new RegExp(`id="${ask}"[^>]*receipts="shop-fold: done"`));
   expect(late).toBeGreaterThan(ask);
   // inbox only=roles without a role, and next held for the human's next session.
@@ -776,7 +793,7 @@ test("hooks: the full reading note once per session, then one line; bodies arriv
   expect(second).not.toContain("weigh them like any other input");
   expect(second).toContain(`[800 more characters: thread ${n.id}]`);
   const c = await connect(tokens.dev3!, { "x-axos-session": sid, "x-axos-project": "shop" });
-  expect((await call(c, "thread", { id: n.id })).text).toContain("FYI, the log is long.");
+  expect((await call(c, "thread", { message_id: n.id })).text).toContain("FYI, the log is long.");
   await c.close();
 });
 
@@ -1452,7 +1469,7 @@ test("across a link, another person's session is 'a session of <human>' in the s
   expect(sent.text).toContain("Delivered to a session of bob.");
   expect(sent.text).not.toMatch(/secret-macbook|bob-work/);
   const id = Number(/message (\d+)/.exec(sent.text)![1]);
-  const view = (await call(ana, "thread", { id })).text;
+  const view = (await call(ana, "thread", { message_id: id })).text;
   expect(view).toContain("a session of bob: unread");
   expect(view).not.toMatch(/secret-macbook|bob-work/);
   // Within one project the label stays: Bob's own receipt view of a message to Ana's session names it.

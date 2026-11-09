@@ -720,6 +720,6 @@ if (import.meta.main) {
   setInterval(() => { try { hub.sweep(); } catch (e) { console.error("sweep failed", e); } }, 15_000);
   // idleTimeout 0: long-polls (wait) and the bell's event stream stay open; heartbeats keep proxies honest.
   // development: false, so an unexpected error answers 500 without Bun's page of source code (seen live 2026-10-31).
-  const server = Bun.serve({ port, hostname, idleTimeout: 0, development: process.env.AXOS_DEV === "1", fetch: makeFetch(hub) });
+  const server = Bun.serve({ port, hostname, idleTimeout: 0, fetch: makeFetch(hub) });
   console.log(`axosd listening on http://${server.hostname}:${server.port} (db ${dbPath})`);
 }

@@ -30,13 +30,27 @@ function wrap<A>(show: (s: string) => string, fn: (args: A) => Promise<string | 
 }
 
 // An argument the tool does not take is refused, not dropped: a body sent as 'message' was once stored empty.
-function strict<S extends z.ZodRawShape>(shape: S) {
+// Retired arguments are named in `retired`: an old caller may still send them; they are dropped without a word and
+// are not in the tool's schema. (A loose object plus a check, not z.strictObject: the SDK needs a plain object schema.)
+function strict<S extends z.ZodRawShape>(shape: S, retired: string[] = []) {
   const known = Object.keys(shape);
-  return z.strictObject(shape, {
-    error: (iss) => iss.code === "unrecognized_keys"
-      ? `unknown argument${iss.keys.length > 1 ? "s" : ""} ${iss.keys.join(", ")}; this tool takes ${known.join(", ") || "no arguments"}` +
-        (iss.keys.some((k) => ["message", "text", "content"].includes(k)) && known.includes("body") ? ". The text goes in body" : "")
-      : undefined,
+  const hint = (keys: string[]) => `unknown argument${keys.length > 1 ? "s" : ""} ${keys.join(", ")}; this tool takes ${known.join(", ") || "no arguments"}` +
+    (keys.some((k) => ["message", "text", "content"].includes(k)) && known.includes("body") ? ". The text goes in body" : "");
+  // Without retired arguments the schema stays strict, so the advertised JSON schema says additionalProperties: false.
+  if (!retired.length) return z.strictObject(shape, { error: (iss) => iss.code === "unrecognized_keys" ? hint(iss.keys) : undefined });
+  return z.looseObject(shape).check((ctx) => {
+    const v = ctx.value as Record<string, unknown>;
+    const unknown: string[] = [];
+    for (const k of Object.keys(v)) {
+      if (known.includes(k)) continue;
+      if (retired.includes(k)) delete v[k];
+      else unknown.push(k);
+    }
+    if (!unknown.length) return;
+    ctx.issues.push({
+      code: "unrecognized_keys", keys: unknown, input: ctx.value,
+      message: hint(unknown),
+    });
   });
 }
 
@@ -192,10 +206,9 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       dedupe_key: z.string().optional().describe("Sending twice with the same key delivers once"),
       deliver_at: z.string().optional().describe("Send later: an ISO 8601 time with its offset (2026-11-04T18:00+01:00), at most 30 days ahead. The hub holds it and sends it then to the addresses as they resolve then (a role to whoever holds it then), so it reaches its reader with this machine closed. cancel_send cancels it"),
       quotes_human: z.boolean().optional().describe("The body is what your human typed to this session, verbatim, as whole lines of one prompt (the summary, if given, one of those lines); the plugin compares it with their recent prompts. Readers see quotes-human=<name> and weigh it as your word; the message stays yours"),
-      queue: z.union([z.boolean(), z.string()]).optional().describe("No effect (kept for older sessions): mail to a role always waits for its holder"),
       as: asArg,
-    }),
-  }, tool(({ as, queue: _queue, ...a }) => {
+    }, ["queue"]),
+  }, tool(({ as, ...a }) => {
     // A reply may name the project of the message it answers; across a link it is still sent from this session's own.
     const across = a.re !== undefined && a.project && conn.project && hub.projectId(a.project, hub.linkedProjects(conn.project));
     const body = a.body ?? "";
@@ -311,9 +324,9 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
 
   server.registerTool("thread", {
     description: "Show the whole conversation a message belongs to.",
-    inputSchema: strict({ message_id: z.number().int().optional(), id: z.number().int().optional().describe("Same as message_id") }),
-  }, tool(({ message_id, id }) => {
-    const m = message_id ?? id;
+    inputSchema: strict({ message_id: z.number().int().optional() }, ["id"]),
+  }, tool(({ message_id }) => {
+    const m = message_id;
     if (m === undefined) throw new AxosError("say which message: message_id");
     // On the reader's own messages: how far each recipient got.
     const mine = new Set([me, ...boxes().map((b) => hub.boxKey(b)), ...hub.projectsOf(agent.id).flatMap((p) => conn.session ? hub.rolesHeldBy(me, p).map((r) => `role:${p}/${r}`) : [])]);
