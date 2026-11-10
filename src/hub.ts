@@ -2786,6 +2786,15 @@ export class Hub {
     return this.ackReport(recipient, ids, outcome, note).acked.length;
   }
 
+  // "Mark all as read" on the human's page: every unacked delivery of this one mailbox except asks, which are answered,
+  // not acked. The same set the page's Updates list is drawn from, but without the list's 50-item cap.
+  ackAllUpdates(recipient: string): number {
+    this.sweep();
+    const ids = (this.db.query(`SELECT m.id FROM deliveries d JOIN messages m ON m.id = d.message_id
+      WHERE d.recipient = ? AND d.acked_at IS NULL AND m.type <> 'ask'`).all(recipient) as { id: number }[]).map((r) => r.id);
+    return this.ack(recipient, ids);
+  }
+
   // Which ids were acked now, which were acked before, and which are not in these mailboxes (a message of someone
   // else answers exactly like one that does not exist).
   // note: one line for the sender's view of the thread ("forwarded to lane 3"); peer text, kept to one line.

@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Toaster } from "@/components/ui/sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { AskCard, InboxItem, SentItem } from "@/features/inbox";
+import { AskCard, InboxItem, MarkAllRead, SentItem } from "@/features/inbox";
 import { Composer } from "@/features/composer";
 import { Notifications } from "@/features/notifications";
 import { People } from "@/features/people";
@@ -70,7 +70,10 @@ export default function App() {
             {!state.asks.length && <p className="text-muted-foreground text-sm">None open.</p>}
           </section>
           <section className="flex flex-col gap-3">
-            <h2 className="eyebrow">Updates{state.inbox.length > 0 && <span className="ml-2 font-normal normal-case tracking-normal">{state.inbox.length} unread</span>}</h2>
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="eyebrow">Updates{state.inbox.length > 0 && <span className="ml-2 font-normal normal-case tracking-normal">{state.inbox.length} unread</span>}</h2>
+              {state.inbox.length > 0 && <MarkAllRead onDone={refresh} />}
+            </div>
             {state.inbox.map((m) => <InboxItem key={m.id} m={m} now={state.now} onDone={refresh} />)}
             {!state.inbox.length && <p className="text-muted-foreground text-sm">{state.projects.length ? "Nothing unread." : "Nothing yet. A question from one of your sessions, or a message from a person, appears here and on your phone."}</p>}
           </section>

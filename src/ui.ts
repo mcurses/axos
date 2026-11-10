@@ -218,6 +218,7 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
         hub.pushUnsubscribe(human, str("endpoint"));
         return json({ ok: true });
       } else if (url.pathname === "/ui/api/ack") {
+        if (b.all === true) return json({ ok: true, acked: hub.ackAllUpdates(`human:${human}`) });
         hub.ack(`human:${human}`, [Number(b.id)]);
         return json({ ok: true });
       } else if (url.pathname === "/ui/api/send") {

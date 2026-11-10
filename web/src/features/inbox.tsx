@@ -56,6 +56,22 @@ export function AskCard({ ask, now, onDone }: { ask: Ask; now: number; onDone: (
   );
 }
 
+export function MarkAllRead({ onDone }: { onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    try {
+      await post("ack", { all: true });
+      onDone();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <Button variant="ghost" size="sm" disabled={busy} onClick={run}><CheckIcon /> Mark all as read</Button>;
+}
+
 export function InboxItem({ m, now, onDone }: { m: InboxMessage; now: number; onDone: () => void }) {
   const ack = async () => {
     try {

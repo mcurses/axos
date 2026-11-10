@@ -2075,3 +2075,21 @@ test("a session started while the hub is away still gets its tools: the handshak
     rmSync(dir, { recursive: true, force: true });
   }
 }, 60_000);
+
+test("mark all as read acks every update of the person's own mailbox, leaves open asks and other people's mail alone", async () => {
+  const marKey = hub.addHuman("mar").uiKey; hub.addHuman("noa");
+  const P = hub.addProject("mar/home");
+  hub.addHumanToProject("mar", P); hub.addHumanToProject("noa", P);
+  const agent = hub.addAgent("mar", "markall", [P]).id;
+  const from = { kind: "agent" as const, id: agent, human: "mar" };
+  const notes = [1, 2, 3].map((n) => hub.send(from, { project: P, to: ["human:mar"], type: "note", summary: `note ${n}` }).id);
+  const theirs = hub.send(from, { project: P, to: ["human:noa"], type: "note", summary: "for noa" }).id;
+  const ask = hub.askHuman(agent, { project: P, human: "mar", question: "Keep it?", options: ["yes", "no"] });
+  const marCookie = `axos_ui=${encodeURIComponent(marKey)}`;
+  const res = await fetch(`${base}/ui/api/ack`, { method: "POST", body: JSON.stringify({ all: true }), headers: { cookie: marCookie, "Content-Type": "application/json" } });
+  expect(await res.json()).toEqual({ ok: true, acked: 3 });
+  for (const id of notes) expect(hub.receipts(id).find((r) => r.recipient === "human:mar")!.acked_at).not.toBeNull();
+  expect(hub.receipts(theirs).find((r) => r.recipient === "human:noa")!.acked_at).toBeNull();
+  expect(hub.receipts(hub.asks({ human: "mar", open: true }).find((a) => a.id === ask.ask_id)!.message_id)[0]!.acked_at).toBeNull();
+  expect(hub.asks({ human: "mar", open: true }).map((a) => a.id)).toContain(ask.ask_id);
+});
