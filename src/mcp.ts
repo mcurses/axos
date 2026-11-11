@@ -159,7 +159,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     const mine = hub.projectsOf(agent.id);
     const links = (p: string) => hub.linkedProjects(p);
     return `${mine.length ? mine.map((p) => `- ${p}${p === conn.project ? " (this session)" : ""}${hub.isPair(p) ? ` (direct messages with ${hub.projectHumans(p).filter((h) => h !== agent.human).join(", ") || "nobody: the other person has left"}; no folder)` : ""}${hub.repo(p) ? ` (code: \`${hub.repo(p)}\`)` : ""}${links(p).length ? `, linked with ${links(p).join(", ")}` : ""}`).join("\n") : "No projects yet; create_project opens one."}` +
-      (conn.project ? "" : "\nThis session is not tied to a project: its folder is not connected (axos use) and has no trusted .axos.json. See the axos skill, 'connect'.");
+      (conn.project ? "" : "\nThis session is not tied to a project: its folder is not connected and has no trusted .axos.json. Your human runs \`axos use <owner>/<project>\` in it (no invitation or link needed for their own projects); see the axos skill, 'connect'.");
   }));
 
   server.registerTool("create_project", {

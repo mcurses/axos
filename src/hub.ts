@@ -1810,7 +1810,7 @@ export class Hub {
     if (!session) return;
     const own = this.session(session)?.project;
     if (own === project) return;
-    if (!own) throw new AxosError(`this session's folder belongs to no project, so it cannot act in '${project}'; see the axos skill, 'connect'`);
+    if (!own) throw new AxosError(`this session's folder belongs to no project, so it cannot act in '${project}'. Your human runs \`axos use <owner>/<project>\` in this folder (or you run it on their word) and new sessions there belong to it; no invitation and no link is needed, and a role your person opened for all their projects is reachable once this folder belongs to any of them`);
     const linked = this.linkedProjects(own);
     throw new AxosError(`this session works in '${own}' (its folder's project), not in '${project}'` +
       (linked.includes(project) ? `; to reach '${project}', send from '${own}' to role:${project}/<role>, session:<name> or project:${project}` : ""));

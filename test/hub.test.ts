@@ -1264,6 +1264,7 @@ describe("project links", () => {
     expect(() => hub.lease(DEV3, { project: GAME, resource: "server:box1", session: shopS })).toThrow(/works in/);
     expect(() => hub.claimRole(DEV3, AXOS, "maintainer", "Alice said so", shopS)).toThrow(/works in/);
     expect(() => hub.send(as(DEV1, homeS), note(["project"], "hello", SHOP))).toThrow(/folder belongs to no project/);
+    expect(refusal(() => hub.send(as(DEV1, homeS), note(["project"], "hello", SHOP)), { agent: DEV1 })).toContain("axos use <owner>/<project>");
     expect(hub.send(A, note(["project"], "a bare agent may still post", GAME)).delivered_to.length).toBeGreaterThan(0);
   });
 

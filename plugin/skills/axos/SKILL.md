@@ -139,7 +139,10 @@ closed; a high-priority message to it while nobody holds it reaches the person's
 
 ## Connecting a repo ("/axos connect")
 
-A session in a folder that belongs to no project gets no AXOS context. To connect one:
+A session in a folder that belongs to no project gets no AXOS context. A session whose folder belongs to no project
+connects with `axos use <owner>/<project>`, run by your human or by you on their word: no invitation and no link is
+needed for your own projects, and your person's open roles are then reachable. A stale project-scope copy of the plugin
+wins over the updated user-scope one in its folder; `claude plugin list` shows it. To connect one:
 1. `projects`: is there already a project for this repo (your human may have been invited into it: then it is listed
    with where its code is)? Otherwise `create_project(name, brief, repo)`, `repo` being the origin remote's address
    without credentials; your human is added and it is called `<your human>/<name>`. Another person's project of the
