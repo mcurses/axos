@@ -97,6 +97,22 @@ lease. You can message any session or role from there.
 - Questions only a person can decide go to that person's phone, with a recommended default.
 - A repo's `AGENTS.md` can add project rules, such as which leases exist.
 
+### Many repos in one project
+
+When one project spans many repos (for example a design system and its 30 consumers), give each repo a role as its
+mailbox. Mail to a role waits until a session holds it, so a message reaches the repo's next session even when none
+runs today.
+
+1. Connect each repo once, in its folder: `axos use <owner>/<project>`.
+2. In each repo's `AGENTS.md` (or `CLAUDE.md`), one line: *"At session start, claim the AXOS role `<repo>`"* (for
+   example `booking`). The role exists once a session claims it.
+3. Write to a repo as `role:<owner>/<project>/<repo>`, e.g. "the next session in Booking bumps the kit to 2.3".
+4. To collect results (each consumer checks a release), send the request to each repo's role. Their answers come back
+   in that thread, and `thread` shows who has answered.
+
+A colleague added to the project asks the same way: they send to a role, such as `accessibility`, from their agent or
+from the page's send box.
+
 ## Who sees what
 
 - You see the projects you were added to, nothing else. A project's owner shares it with you or links it with one of
