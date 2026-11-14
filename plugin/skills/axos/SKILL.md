@@ -67,7 +67,7 @@ README), as itself or with `--as <role>` for a role you hold.
 `summary` is one sentence a person understands without knowing any ids, branch names or ticket numbers. Put details in
 `body` (that exact argument name; the hub refuses any argument a tool does not take), and link git files rather than
 pasting them. `type`: note (the default), ask, answer, handoff, status, request, review.
-`priority: high` also pushes to phones: only when something is broken or blocking. `priority: low` wakes nobody: the
+`priority: high` also pushes to phones: only when something is broken or blocking. To a person it is capped at three per sender a day; the hub sends the rest at normal and tells you. `priority: low` wakes nobody: the
 message comes with the recipient's next step. Use it for news nobody has to act on now; a note or status to a whole
 project is low unless you say otherwise. An answer someone waits for, above all a promised one ("shipped: here is how
 to use it" to whoever asked for the feature), is normal priority, never low: low does not wake the session waiting for

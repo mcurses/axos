@@ -191,6 +191,7 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
   try { parsed = JSON.parse(raw || "{}") ?? {}; } catch { return json({ error: "hook body is not JSON" }, 400); }
   const body = parsed as { event?: string; stop?: boolean; roles?: (string | { role: string; reason?: string; description?: string })[]; roles_managed?: boolean };
   const session = conn.session;
+  hub.hooked(session);
   const actor = { id: agent.id, session };
   const rolesOf = (sender: string, p: string) => hub.senderShownTo(agent.human, sender) ? hub.rolesHeldBy(sender, p) : [];
   const nameOf = (sender: string) => sender.startsWith("session:") && hub.senderShownTo(agent.human, sender) ? hub.session(sender.slice(8))?.name ?? null : null;

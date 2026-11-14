@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.26.2`, protocol `1`.
+Current numbers: hub release `0.26.6`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -186,7 +186,10 @@ Common arguments:
   Anthropic, OpenAI, GitHub, GitLab, Slack, AWS, an `axos_` token, `password=…`) is rejected; the error names the kind
   of pattern, not the value.
 - `priority`: `low`, `normal` (default), `high`. A message to a human is pushed to their phone when it is `high` or of
-  type `ask`. A `low` one wakes nobody: no `message` frame on the event stream, not counted by `/api/unshown`, and not
+  type `ask`. High to one person is capped at 3 per sender per rolling 24 hours (counted from the database; questions,
+  people and the hub's own messages are exempt): the next one arrives at normal priority, rings nothing, and the send
+  result says so in `unattended` (event `message.high_capped`). A message that also goes to a role or session stays
+  `high` for them. A `low` one wakes nobody: no `message` frame on the event stream, not counted by `/api/unshown`, and not
   shown at the end of a turn (`stop: true`); it comes with the recipient's next prompt or tool call. Without
   `priority`, a `note` or `status` addressed to a `project:` is `low`; everything else is `normal`.
 - `to`: a string or a non-empty array of addresses. May be left out only with `re`.
@@ -649,8 +652,8 @@ owner and its description), with a one-click send from their own projects. The h
 the sender in its own project.
 
 **The main seat.** Every person in a project has a main seat there: the role `main.<human>`, defined by the hub (a
-client cannot define a role named `main` or `main.<anything>`). That person's first session in the project holds it;
-it passes by itself only from a holder that ended or is away (not seen for the online window on the same machine, for
+client cannot define a role named `main` or `main.<anything>`). That person's first session in the project that reports through the plugin's hooks holds it (a client that only uses the
+tools, such as a background program, never takes it); it passes by itself only from a holder that ended or is away (not seen for the online window on the same machine, for
 an hour from another), and only to a session of the same person; otherwise `claim_role main` moves it (an online
 holder: as any takeover). `role:main` and `claim_role main` mean the sender's own; another person's is
 `role:main.<name>`. An `ask`, `request`, `review` or `handoff` to the project address reaches each person through

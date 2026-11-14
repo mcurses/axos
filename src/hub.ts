@@ -39,6 +39,7 @@ export interface SessionRow {
   last_seen: number;
   ended_at: number | null;
   framed_at: number | null;
+  hooked_at: number | null;       // when it first reached the hub through the plugin's hooks; NULL: only the tools
   former_names: string;
   kind: "session" | "script";
   wakes: number | null;           // what its last event stream said: 1 the host wakes on a ring, 0 it does not, null unknown
@@ -213,6 +214,11 @@ const LOGIN_LOCK_MS = 15 * 60_000;
 const DUMMY_HASH = Bun.password.hashSync("nobody has this password", { algorithm: "argon2id" });
 const OTHER_PUSH_CAP = 10; // pushes to a phone from one other person's side per ten minutes; the rest wait on the page
 const OTHER_PUSH_WINDOW_MS = 600_000;
+// A broken alarm must not flood a person: at most this many high-priority messages per sender per person per rolling
+// 24 hours; the rest arrive at normal priority and ring nothing (2026-11-14: an operator's box sampler sent a person 16
+// high notes in two days). Questions (type ask), people and the hub itself are never capped.
+const HIGH_TO_HUMAN_CAP = 3;
+const HIGH_TO_HUMAN_WINDOW_MS = 86_400_000;
 const SCRIPT_KEPT_MS = 30 * 86_400_000;
 const SCRIPT_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 const ASK_STALE_MS = 3 * 86_400_000; // an open question without a deadline
@@ -1561,9 +1567,11 @@ export class Hub {
   // and only to a session of the same person; anyone else claims it with claim_role (an online holder: force).
   // (Max, 2026-11-03: "every project always has a main … by default the first session … main can be switched";
   // Ensemble's rework 3, R1.)
+  // (2026-11-14: an operator's watchdog program held a main seat for 11 days; only a session with hooks, a model a
+  // person runs, takes it.)
   takeMain(key: string): void {
     const s = this.session(key);
-    if (!s?.project || s.kind !== "session" || s.ended_at !== null) return;
+    if (!s?.project || s.kind !== "session" || s.ended_at !== null || !s.hooked_at) return;
     const human = this.humanOfHolder(key)!;
     const role = mainRole(human);
     const row = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(s.project, role) as { holder: string | null } | null;
@@ -1576,7 +1584,7 @@ export class Hub {
       // A holder that is no reader passes the seat as one that left: a program that only sends, or a session that has
       // never been shown a message while the seat's mail waited over an hour (2026-11-09: a watchdog program held
       // a project's main seat, and three messages to it reached nobody).
-      const noReader = this.neverReads(prev) || (!this.session(prev)?.framed_at && !!this.db.query(
+      const noReader = this.neverReads(prev) || !this.session(prev)?.hooked_at || (!this.session(prev)?.framed_at && !!this.db.query(
         `SELECT 1 FROM deliveries d JOIN messages m ON m.id = d.message_id
           WHERE d.recipient = ? AND d.acked_at IS NULL AND d.shown_at IS NULL AND m.created_at < ? LIMIT 1`,
       ).get(`role:${s.project}/${role}`, this.now() - 3_600_000));
@@ -1586,6 +1594,14 @@ export class Hub {
     this.db.query("UPDATE roles SET holder = ?, since = ? WHERE project = ? AND role = ?").run(key, this.now(), s.project, role);
     this.event(`session:${key}`, "role.claimed", s.project, { role, auto: true, ...(prev ? { from: prev } : {}) });
     this.emit(`session:${key}`, { kind: "role" });
+  }
+
+  // The session reached the hub through the plugin's hooks: the first time it is marked, and it may take its person's
+  // main seat (the connect that opened it came before, and could not).
+  hooked(key: string): void {
+    if (!this.session(key)) return;
+    // Once: later hooks find it marked and cost one indexed update.
+    if (this.db.query("UPDATE sessions SET hooked_at = ? WHERE key = ? AND hooked_at IS NULL").run(this.now(), key).changes) this.takeMain(key);
   }
 
   // A new session hands itself the notes its human left for the next session in its project (not its own notes).
@@ -2365,7 +2381,8 @@ export class Hub {
         }
       }
     }
-    if (thread !== null && !inScope(thread)) throw new AxosError(`no thread ${thread} in '${input.project}'`);
+    // Only a thread the caller named is checked: one taken from an in-scope re may have a root the caller never received.
+    if (input.thread != null && !inScope(input.thread)) throw new AxosError(`no thread ${input.thread} in '${input.project}'`);
     if (!input.to?.length && !recipients.size) {
       throw new AxosError(re === undefined ? "to is empty" : notSent.length ? `nobody to reply to: ${notSent[0]!.to} is ${notSent[0]!.reason}` : "nobody to reply to (that message was yours)");
     }
@@ -2435,6 +2452,25 @@ export class Hub {
       return r.startsWith("role:") && this.hubOpenProjects().includes(p) && !(human && this.humanInProject(human, p)) && !this.linkedProjects(input.project).includes(p);
     });
     if (outside && priority === "high") priority = "normal";
+    // The high-priority cap per sender and person, counted from the database so a restart does not reset it. A person
+    // over the cap gets the message at normal priority and no push; the message itself is stored normal only when every
+    // recipient is such a person (priority is per message, so a mixed one stays high for the others).
+    const capped = new Set<string>();
+    const cappedLines: string[] = [];
+    if (priority === "high" && input.type !== "ask" && !sender.startsWith("human:") && sender !== SYSTEM_SENDER) {
+      const who = sentBy ?? sender;
+      for (const r of recipients.keys()) {
+        if (!r.startsWith("human:")) continue;
+        const n = (this.db.query(`SELECT COUNT(DISTINCT m.id) AS n FROM messages m JOIN deliveries d ON d.message_id = m.id
+          WHERE d.recipient = ? AND m.priority = 'high' AND m.type != 'ask' AND COALESCE(m.sent_by, m.sender) = ? AND m.created_at > ?`)
+          .get(r, who, this.now() - HIGH_TO_HUMAN_WINDOW_MS) as { n: number }).n;
+        if (n < HIGH_TO_HUMAN_CAP) continue;
+        capped.add(r);
+        this.event(sender, "message.high_capped", input.project, { human: r.slice(6) });
+        cappedLines.push(`${r.slice(6)} has had ${HIGH_TO_HUMAN_CAP} high-priority messages from this sender in the last 24 h; this one arrives at normal priority and does not ring their phone (a cap against broken alarms).`);
+      }
+      if (capped.size && capped.size === recipients.size) priority = "normal";
+    }
     const id = this.db.transaction(() => {
       const res = this.db.query(
         `INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, thread, re, as_of, priority, dedupe_key, created_at, sent_by, quotes_human, takers, scheduled_at)
@@ -2459,6 +2495,7 @@ export class Hub {
     }
     const ev: HubEvent = { kind: "message", message_id: id, from: sender, summary, type: input.type, priority };
     for (const recipient of recipients.keys()) {
+      if (capped.has(recipient)) { this.emit(recipient, { ...ev, priority: "normal" }); continue; }
       this.emit(recipient, ev);
       // What reaches a phone: a question, an urgent message, and (the hub's human, 2026-10-31: "I trust the people I invite")
       // anything from another person or their agents; one's own agents' ordinary notes wait on the page.
@@ -2532,7 +2569,7 @@ export class Hub {
       delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => r.startsWith("role:") ? `${r} (held by ${holderText(r)})` : r),
       waiting_for_role: [...recipients.keys()].filter(vacant),
       not_sent: notSent,
-      unattended: [...unattended, ...stale, ...scripts, ...sendOnly, ...many, ...takenNote, ...toMain],
+      unattended: [...unattended, ...stale, ...scripts, ...sendOnly, ...many, ...takenNote, ...toMain, ...cappedLines],
     };
   }
 
@@ -3664,7 +3701,13 @@ export class Hub {
         const slash = rest.lastIndexOf("/");
         const role = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(rest.slice(0, slash), rest.slice(slash + 1)) as { holder: string | null } | null;
         if (!role?.holder) return "role held by nobody";
-        return this.isOnline(role.holder) ? "role's holder is present, yet it was not shown" : "role's holder is away";
+        if (!this.isOnline(role.holder)) return "role's holder is away";
+        const h = this.session(role.holder);
+        if (!h) return "role's holder is present without a wake-up stream; waits for its next prompt";
+        if (onlySends(h.key)) return "role's holder is a session that only sends (a program, not a model)";
+        if (h.wakes === 0) return "role's holder is present, but its host does not wake on messages; waits for its next prompt";
+        if (h.wakes === 1) return "role's holder is present and wakes on messages, yet the hooks did not show it";
+        return "role's holder is present without a wake-up stream; waits for its next prompt";
       }
       if (kind === "human") return "not opened on the person's page";
       return "unknown";
