@@ -140,3 +140,21 @@ describe("boardWidgets: the health board's attention card", () => {
     expect(card({})).toEqual([{ label: "nothing waits on anyone", state: "ok" }]);
   });
 });
+
+describe("a role that moves on one Mac leaves the losing tab's labels", () => {
+  const now = Date.now();
+  const records = {
+    "tab-old": { session: "s1", project: "prj_a", labels: ["main", "reviewer"], at: now - 60_000 },
+    "tab-other-project": { session: "s2", project: "prj_b", labels: ["reviewer"], at: now - 60_000 },
+    "tab-gone": { session: "s3", project: "prj_a", labels: ["reviewer"], at: now - 8 * 86400_000 },
+    "tab-me": { session: "s4", project: "prj_a", labels: ["reviewer"], at: now },
+  };
+
+  test("the gained role comes off the other tab of the same project; other projects, old records and its own tab stay", () => {
+    expect(plugin.staleTabs(records, "tab-me", "prj_a", ["reviewer"], now)).toEqual([{ tab: "tab-old", labels: ["main"] }]);
+  });
+
+  test("nothing gained, nothing rewritten", () => {
+    expect(plugin.staleTabs(records, "tab-me", "prj_a", [], now)).toEqual([]);
+  });
+});

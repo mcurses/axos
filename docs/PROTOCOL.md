@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.26.6`, protocol `1`.
+Current numbers: hub release `0.26.7`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -244,18 +244,18 @@ A role is a named job in a project. One holder at a time; the holder is a sessio
 
 #### Leases
 
-A lease is an exclusive or shared claim on an exact resource name (`file:<path>`, `version:<package>`, `server:<name>`,
+A lease is an exclusive claim on an exact resource name (`file:<path>`, `version:<package>`, `server:<name>`,
 `slot:<box>`, anything; at most 120 characters, no globs).
 
-- `mode`: `exclusive` (default) or `shared`. Shared leases coexist; an exclusive one needs the resource free.
 - `ttl_s`: 30 to 86400, default 1800. Calling `lease` again as the holder renews it: without `ttl_s` for as long as it
-  was granted for; the mode cannot change on renewal. A session is the holder of a lease (or of a place in a queue)
+  was granted for. A session is the holder of a lease (or of a place in a queue)
   taken under any of its seats: its own key or a role it holds, whatever roles it has taken since.
 - If taken and `wait` is not `false` (default true), the caller joins a strict FIFO queue. When it is its turn the hub
   grants the lease and sends a high-priority status message.
 - An expired lease sends its holder a high-priority status message and passes to the queue.
 - The holder is the seat of the caller: the session, or the role it holds if exactly one.
 - `note` is at most 200 characters.
+- `mode` was retired in 0.26.7 (no lease had ever been shared); a client that still sends it gets an exclusive lease.
 
 #### Questions to humans
 

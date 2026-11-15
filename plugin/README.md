@@ -191,6 +191,11 @@ session's roles as the tab's labels (`meum tab labels main reviewer`, or `none`)
 change: the main seat taken at start, a claim, a release, a takeover. Best effort, one second at most; it never fails
 a hook.
 
+When a session takes a role that another session on the same Mac held, it also takes that role off the other session's
+tab (`meum tab labels … --tab <tab>`), since the session that lost it may sit idle for hours. For that the plugin keeps
+the labels it last wrote on each tab, one small file per tab under `~/.config/axos/tabs/` (shared by every profile;
+records older than a week are ignored).
+
 ## The hub's board in vinea
 
 For the hub's operator: `axos board connect` shows the hub's health on a vinea board (whether

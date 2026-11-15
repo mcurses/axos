@@ -454,21 +454,68 @@ export function headless(args: string | null): boolean {
 // Only inside a meum tab ($MEUM_TAB) with meum's CLI present. Returns what is now written (the old list when it failed).
 // At session start it writes even when unchanged: meum may have lost the chips, and the cache is stale after a resume or
 // compaction (Max, ruled through the suite owner 3613).
-async function meumLabels(labels: string[], last: string[] | undefined, force = false): Promise<string[] | undefined> {
-  if (!process.env.MEUM_TAB) return last;
+async function meumLabels(labels: string[], last: string[] | undefined, force = false, own?: { session: string; project: string }): Promise<string[] | undefined> {
+  const tab = process.env.MEUM_TAB;
+  if (!tab) return last;
   const want = labels.filter((l) => typeof l === "string" && l).slice(0, 4).map((l) => l.slice(0, 24));
   if (!force && last && last.length === want.length && last.every((l, i) => l === want[i])) return last;
   if (!force && !last && !want.length) return last; // nothing written yet, nothing to clear
-  const cli = process.env.MEUM_CLI ?? Bun.which("meum") ??
-    ["/Applications/meum.app/Contents/Resources/bin/meum", `${HOME}/Applications/meum.app/Contents/Resources/bin/meum`].find((p) => existsSync(p));
+  const cli = meumCli();
   if (!cli) return last;
+  if (!(await meumTabLabels(cli, want))) return last;
+  if (own) {
+    // A role this session just took is still on the tab of the session that held it, which may sit idle for hours
+    // without a hook: take it off that tab too (the suite owner, 7483). Only tabs on this Mac, in the same project.
+    const records = readTabs();
+    const gained = want.filter((l) => !(last ?? []).includes(l));
+    const stale = staleTabs(records, tab, own.project, gained);
+    await Promise.all(stale.map(async (s) => { if (await meumTabLabels(cli, s.labels, s.tab)) writeTab(s.tab, { ...records[s.tab], labels: s.labels, at: Date.now() }); }));
+    writeTab(tab, { session: own.session, project: own.project, labels: want, at: Date.now() });
+  }
+  return want;
+}
+
+function meumCli(): string | undefined {
+  return process.env.MEUM_CLI ?? Bun.which("meum") ??
+    ["/Applications/meum.app/Contents/Resources/bin/meum", `${HOME}/Applications/meum.app/Contents/Resources/bin/meum`].find((p) => existsSync(p));
+}
+
+// One `meum tab labels`, on this tab or the one named; a one-second budget. True when meum took it.
+async function meumTabLabels(cli: string, labels: string[], tab?: string): Promise<boolean> {
   try {
-    const p = Bun.spawn([cli, "tab", "labels", ...(want.length ? want : ["none"])], { stdout: "ignore", stderr: "ignore" });
+    const p = Bun.spawn([cli, "tab", "labels", ...(labels.length ? labels : ["none"]), ...(tab ? ["--tab", tab] : [])], { stdout: "ignore", stderr: "ignore" });
     const timer = setTimeout(() => p.kill(), 1000);
     const code = await p.exited;
     clearTimeout(timer);
-    return code === 0 ? want : last;
-  } catch { return last; }
+    return code === 0;
+  } catch { return false; }
+}
+
+// The labels AXOS last wrote on each meum tab of this Mac, one file per tab, shared by every profile (a role often
+// moves between profiles). A record older than a week is ignored: that tab is most likely gone.
+export interface TabRecord { session: string; project: string; labels: string[]; at: number }
+const TABS_DIR = join(dirname(CONFIG_PATH), "tabs");
+const tabFile = (tab: string) => join(TABS_DIR, `${tab.replace(/[^A-Za-z0-9-]/g, "")}.json`);
+function readTabs(): Record<string, TabRecord> {
+  const out: Record<string, TabRecord> = {};
+  try {
+    for (const f of readdirSync(TABS_DIR)) {
+      const r = f.endsWith(".json") ? readJson<TabRecord>(join(TABS_DIR, f)) : null;
+      if (r && Array.isArray(r.labels) && typeof r.project === "string") out[f.slice(0, -5)] = r;
+    }
+  } catch { /* none yet */ }
+  return out;
+}
+function writeTab(tab: string, r: TabRecord): void {
+  try { mkdirSync(TABS_DIR, { recursive: true }); writeFileSync(tabFile(tab), JSON.stringify(r)); } catch { /* best effort */ }
+}
+
+// The other tabs of the project that still show a label this session just gained, and what they should show instead.
+export function staleTabs(records: Record<string, TabRecord>, ownTab: string, project: string, gained: string[], now = Date.now()): { tab: string; labels: string[] }[] {
+  if (!gained.length) return [];
+  return Object.entries(records)
+    .filter(([tab, r]) => tab !== ownTab && r.project === project && now - r.at < 7 * 86400_000 && r.labels.some((l) => gained.includes(l)))
+    .map(([tab, r]) => ({ tab, labels: r.labels.filter((l) => !gained.includes(l)) }));
 }
 
 const CHANNEL_FLAG = "--dangerously-load-development-channels plugin:axos@axos";
@@ -533,7 +580,7 @@ async function hook(kind: string): Promise<void> {
     if (r.error === "token") context = kind === "start" ? `The AXOS hub (${id.c.url}) refused this machine's token: it was revoked or is wrong. AXOS is off here until your user asks the person who runs the hub for a new invite link and runs axos join --force <link>.` : "";
     else context = r.context ?? "";
     // The session's roles on its meum tab, from the hub's view, written only when they change (the suite owner, 2667).
-    if (Array.isArray(r.labels) && kind !== "end") state.labels = await meumLabels(r.labels, state.labels, kind === "start");
+    if (Array.isArray(r.labels) && kind !== "end") state.labels = await meumLabels(r.labels, state.labels, kind === "start", id.project ? { session: id.sessionId, project: id.project } : undefined);
     if (state.unreachable && kind !== "end") context = ["AXOS hub is reachable again.", context].filter(Boolean).join("\n\n");
     state.unreachable = false;
   } catch {

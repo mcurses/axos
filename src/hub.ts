@@ -101,7 +101,7 @@ export interface LeaseRow {
   project: string;
   resource: string;
   holder: string;
-  mode: "exclusive" | "shared";
+  mode: "exclusive"; // kept in the table; every lease is exclusive
   note: string;
   ttl_s: number | null;
   granted_at: number;
@@ -2969,41 +2969,37 @@ export class Hub {
 
   // Leases on any named resource: 'file:<path>', 'version:<mod>', 'server:<name>', 'slot:<box>'.
   // Exact-name matching (no globs); strict FIFO for waiters, so nobody starves.
-  lease(agentId: string, input: { project: string; resource: string; mode?: "exclusive" | "shared"; ttl_s?: number; note?: string; wait?: boolean; as?: string; session?: string }):
-    { granted: boolean; lease_id?: number; expires_at?: number; renewed?: boolean; position?: number; holders: { holder: string; mode: string; note: string; expires_at: number }[] } {
+  lease(agentId: string, input: { project: string; resource: string; ttl_s?: number; note?: string; wait?: boolean; as?: string; session?: string }):
+    { granted: boolean; lease_id?: number; expires_at?: number; renewed?: boolean; position?: number; holders: { holder: string; note: string; expires_at: number }[] } {
     const holder = this.seat(agentId, input.project, input.as, input.session);
     const mine = this.seatsOf(agentId, input.project, input.as, input.session);
     this.sweep();
-    const mode = input.mode ?? "exclusive";
     const ttl = Math.min(Math.max(input.ttl_s ?? 1800, 30), MAX_LEASE_TTL_S);
     const resource = oneLine(input.resource, 120);
     if (!resource) throw new AxosError("resource is required");
     input = { ...input, note: input.note === undefined ? undefined : oneLine(input.note, 200) };
     const t = this.now();
     const live = this.liveLeases(input.project, resource);
-    const holders = live.map((l) => ({ holder: l.holder, mode: l.mode, note: l.note, expires_at: l.expires_at }));
+    const holders = live.map((l) => ({ holder: l.holder, note: l.note, expires_at: l.expires_at }));
 
     const own = live.find((l) => mine.includes(l.holder));
     if (own) {
-      // A renewal extends; it does not change the mode, and without ttl_s it runs as long as the lease was granted for.
-      if (input.mode && input.mode !== own.mode) {
-        throw new AxosError(`you hold '${resource}' ${own.mode}; release it and lease again to change to ${input.mode}`);
-      }
+      // A renewal extends; without ttl_s it runs as long as the lease was granted for.
       const span = input.ttl_s === undefined ? (own.ttl_s ?? Math.round((own.expires_at - own.granted_at) / 1000)) : ttl;
       this.db.query("UPDATE leases SET expires_at = ?, note = ? WHERE id = ?").run(t + span * 1000, input.note ?? own.note, own.id);
       return { granted: true, lease_id: own.id, expires_at: t + span * 1000, renewed: true, holders };
     }
     const queue = this.waiters(input.project, resource);
-    if (!queue.length && compatible(live, mode)) {
-      const id = this.grant(input.project, resource, holder, mode, input.note ?? "", ttl);
+    if (!queue.length && live.length === 0) {
+      const id = this.grant(input.project, resource, holder, input.note ?? "", ttl);
       return { granted: true, lease_id: id, expires_at: t + ttl * 1000, holders };
     }
     if (input.wait ?? true) {
       let w = queue.find((q) => mine.includes(q.agent_id));
       if (!w) {
-        this.db.query("INSERT INTO lease_waiters (project, resource, agent_id, mode, note, ttl_s, queued_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(input.project, resource, holder, mode, input.note ?? "", ttl, t);
-        this.event(addr(holder), "lease.queued", input.project, { resource, mode });
+        this.db.query("INSERT INTO lease_waiters (project, resource, agent_id, mode, note, ttl_s, queued_at) VALUES (?, ?, ?, 'exclusive', ?, ?, ?)")
+          .run(input.project, resource, holder, input.note ?? "", ttl, t);
+        this.event(addr(holder), "lease.queued", input.project, { resource });
       }
       const position = this.waiters(input.project, resource).findIndex((q) => mine.includes(q.agent_id)) + 1;
       return { granted: false, position, holders };
@@ -3022,12 +3018,12 @@ export class Hub {
     return { released: !!own, left_queue: left };
   }
 
-  leases(project: string): { live: LeaseRow[]; waiting: { resource: string; agent_id: string; mode: string; note: string; queued_at: number }[] } {
+  leases(project: string): { live: LeaseRow[]; waiting: { resource: string; agent_id: string; note: string; queued_at: number }[] } {
     this.sweep();
     return {
       live: this.db.query("SELECT * FROM leases WHERE project = ? AND ended_at IS NULL ORDER BY resource, id").all(project) as LeaseRow[],
-      waiting: this.db.query("SELECT resource, agent_id, mode, note, queued_at FROM lease_waiters WHERE project = ? AND done_at IS NULL ORDER BY id").all(project) as
-        { resource: string; agent_id: string; mode: string; note: string; queued_at: number }[],
+      waiting: this.db.query("SELECT resource, agent_id, note, queued_at FROM lease_waiters WHERE project = ? AND done_at IS NULL ORDER BY id").all(project) as
+        { resource: string; agent_id: string; note: string; queued_at: number }[],
     };
   }
 
@@ -3037,14 +3033,14 @@ export class Hub {
 
   private waiters(project: string, resource: string) {
     return this.db.query("SELECT * FROM lease_waiters WHERE project = ? AND resource = ? AND done_at IS NULL ORDER BY id").all(project, resource) as
-      { id: number; agent_id: string; mode: "exclusive" | "shared"; note: string; ttl_s: number }[];
+      { id: number; agent_id: string; note: string; ttl_s: number }[];
   }
 
-  private grant(project: string, resource: string, holder: string, mode: string, note: string, ttlS: number): number {
+  private grant(project: string, resource: string, holder: string, note: string, ttlS: number): number {
     const t = this.now();
-    const res = this.db.query("INSERT INTO leases (project, resource, holder, mode, note, ttl_s, granted_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(project, resource, holder, mode, note, ttlS, t, t + ttlS * 1000);
-    this.event(addr(holder), "lease.granted", project, { resource, mode, ttl_s: ttlS });
+    const res = this.db.query("INSERT INTO leases (project, resource, holder, mode, note, ttl_s, granted_at, expires_at) VALUES (?, ?, ?, 'exclusive', ?, ?, ?, ?)")
+      .run(project, resource, holder, note, ttlS, t, t + ttlS * 1000);
+    this.event(addr(holder), "lease.granted", project, { resource, ttl_s: ttlS });
     return Number(res.lastInsertRowid);
   }
 
@@ -3060,10 +3056,10 @@ export class Hub {
 
   private grantWaiters(project: string, resource: string): void {
     for (const w of this.waiters(project, resource)) {
-      if (!compatible(this.liveLeases(project, resource), w.mode)) break;
+      if (this.liveLeases(project, resource).length) break;
       this.db.query("UPDATE lease_waiters SET done_at = ? WHERE id = ?").run(this.now(), w.id);
-      this.grant(project, resource, w.agent_id, w.mode, w.note, w.ttl_s);
-      this.systemMessage(project, addr(w.agent_id), "status", `Lease granted: you now hold '${resource}' (${w.mode}).`,
+      this.grant(project, resource, w.agent_id, w.note, w.ttl_s);
+      this.systemMessage(project, addr(w.agent_id), "status", `Lease granted: you now hold '${resource}'.`,
         `It runs for ${Math.round(w.ttl_s / 60)} minutes; renew by calling lease again, release when done.`, "high");
     }
   }
@@ -3765,10 +3761,6 @@ function landingTarget(input: { repo?: string; remote?: string; branch: string; 
 // 'gitlab/staging (shop)'
 function where(x: { repo: string | null; remote: string | null; branch: string }): string {
   return `${x.remote ? `${x.remote}/` : ""}${x.branch}${x.repo ? ` (${x.repo})` : ""}`;
-}
-
-function compatible(live: { mode: string }[], mode: string): boolean {
-  return live.length === 0 || (mode === "shared" && live.every((l) => l.mode === "shared"));
 }
 
 // One question's notification on the phone; later pushes with this id replace it.

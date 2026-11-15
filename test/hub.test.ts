@@ -321,22 +321,15 @@ describe("leases", () => {
     expect(hub.inbox(`agent:${DEV1}`)[0]!.summary).toContain("expired");
   });
 
-  test("shared leases coexist; exclusive waits for all of them", () => {
+  test("a lease is exclusive: a second holder waits in the queue", () => {
     const DEV2 = hub.addAgent("alice", "dev2", [GAME]).id;
-    expect(hub.lease(DEV1, { project: GAME, resource: "server:test", mode: "shared" }).granted).toBe(true);
-    expect(hub.lease(SC, { project: GAME, resource: "server:test", mode: "shared" }).granted).toBe(true);
-    expect(hub.lease(DEV2, { project: GAME, resource: "server:test" }).granted).toBe(false);
+    expect(hub.lease(DEV1, { project: GAME, resource: "server:test" }).granted).toBe(true);
+    expect(hub.lease(SC, { project: GAME, resource: "server:test" })).toMatchObject({ granted: false, position: 1 });
+    expect(hub.lease(DEV2, { project: GAME, resource: "server:test" })).toMatchObject({ granted: false, position: 2 });
     hub.releaseLease(DEV1, GAME, "server:test");
     expect(hub.leases(GAME).live.map((l) => l.holder)).toEqual([SC]);
     hub.releaseLease(SC, GAME, "server:test");
     expect(hub.leases(GAME).live.map((l) => l.holder)).toEqual([DEV2]);
-  });
-
-  test("no queue jumping: a shared request waits behind a queued exclusive one", () => {
-    const DEV2 = hub.addAgent("alice", "dev2", [GAME]).id;
-    hub.lease(DEV1, { project: GAME, resource: "r", mode: "shared" });
-    hub.lease(DEV2, { project: GAME, resource: "r" });
-    expect(hub.lease(SC, { project: GAME, resource: "r", mode: "shared" })).toMatchObject({ granted: false, position: 2 });
   });
 
   test("wait:false does not queue; leaving the queue works", () => {
@@ -1705,13 +1698,12 @@ describe("delivery and coordination", () => {
     expect(hub.releaseLease(DEV3, SHOP, "db:main", undefined, q)).toEqual({ released: false, left_queue: true });
   });
 
-  test("a renewal keeps the lease's length and mode", () => {
+  test("a renewal keeps the lease's length", () => {
     hub.lease(DEV1, { project: SHOP, resource: "version:studio", ttl_s: 3600 });
     t += 600_000;
     const r = hub.lease(DEV1, { project: SHOP, resource: "version:studio" });
     expect(r.renewed).toBe(true);
     expect(r.expires_at).toBe(t + 3600_000);
-    expect(() => hub.lease(DEV1, { project: SHOP, resource: "version:studio", mode: "shared" })).toThrow(/release it and lease again/);
   });
 
   test("an answer link answers with an offered option only; free text belongs to the page", () => {

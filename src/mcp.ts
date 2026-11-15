@@ -143,8 +143,8 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     lines.push(...hub.presence(pr).map((a) => `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "away"}, seen ${ago(a.last_seen, now)}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`));
     const ls = hub.leases(pr);
     lines.push("", "## Leases");
-    lines.push(...(ls.live.length ? ls.live.map((l) => `- ${l.resource}: ${hub.label(l.holder)} (${l.mode}) until ${when(l.expires_at)}${l.note ? ` — ${l.note}` : ""}`) : ["(none)"]));
-    if (ls.waiting.length) lines.push(...ls.waiting.map((w) => `- waiting for ${w.resource}: ${hub.label(w.agent_id)} (${w.mode})`));
+    lines.push(...(ls.live.length ? ls.live.map((l) => `- ${l.resource}: ${hub.label(l.holder)} until ${when(l.expires_at)}${l.note ? ` — ${l.note}` : ""}`) : ["(none)"]));
+    if (ls.waiting.length) lines.push(...ls.waiting.map((w) => `- waiting for ${w.resource}: ${hub.label(w.agent_id)}`));
     const askers = [conn.session ?? agent.id, ...held.map((r) => `role:${pr}/${r}`)];
     const open = askers.flatMap((k) => hub.asks({ asker: k, open: true }));
     if (open.length) lines.push("", "## Your open questions to humans", ...open.map((a) => `- ask ${a.id} to ${a.human}: ${a.question.split("\n")[0]}`));
@@ -376,16 +376,15 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     inputSchema: strict({
       project: projectArg,
       resource: z.string().describe("An exact name; no globs"),
-      mode: z.enum(["exclusive", "shared"]).optional(),
       ttl_s: z.number().int().min(30).max(86400).optional().describe("Default 1800; a renewal without it extends by what the lease was granted for"),
       note: z.string().optional().describe("What you are doing with it, readable by humans"),
       wait: z.boolean().optional().describe("Default true: queue if taken"),
       as: asArg,
-    }),
+    }, ["mode"]),
   }, tool((a) => {
     const r = hub.lease(agent.id, { ...a, project: project(a.project), session: conn.session });
     if (r.granted) return `${r.renewed ? "Renewed" : "Granted"}: you hold ${a.resource} until ${when(r.expires_at!)}.`;
-    const who = r.holders.map((h) => `${hub.label(h.holder)} (${h.mode}${h.note ? `: ${h.note}` : ""}, until ${when(h.expires_at)})`).join("; ");
+    const who = r.holders.map((h) => `${hub.label(h.holder)} (${h.note ? `${h.note}, ` : ""}until ${when(h.expires_at)})`).join("; ");
     return r.position ? `Taken by ${who || "someone ahead in the queue"}. You are number ${r.position} in the queue; a message will tell you when it is yours.`
       : `Taken by ${who}. Not queued.`;
   }));
@@ -403,8 +402,8 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     inputSchema: strict({ project: projectArg }),
   }, tool(({ project: p }) => {
     const ls = hub.leases(project(p));
-    const lines = ls.live.map((l) => `- ${l.resource}: ${hub.label(l.holder)} (${l.mode}) until ${when(l.expires_at)}${l.note ? ` — ${l.note}` : ""}`);
-    lines.push(...ls.waiting.map((w) => `- waiting for ${w.resource}: ${hub.label(w.agent_id)} (${w.mode})`));
+    const lines = ls.live.map((l) => `- ${l.resource}: ${hub.label(l.holder)} until ${when(l.expires_at)}${l.note ? ` — ${l.note}` : ""}`);
+    lines.push(...ls.waiting.map((w) => `- waiting for ${w.resource}: ${hub.label(w.agent_id)}`));
     return lines.join("\n") || "No leases. A lease marks a shared thing (a version number, a deploy, a file) as yours for a while, so others wait instead of colliding (the lease tool, e.g. resource version:parser).";
   }));
 
