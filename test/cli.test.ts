@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../src/db.ts";
@@ -46,6 +46,21 @@ test("role open: the owner's sessions reach it from any project; --off closes it
     expect(cli(db, "role", "open", "ana/hq", "owner", "--off").out).toContain("closed role owner");
     expect(hub.openRolesOf("ana")).toEqual([]);
     expect(cli(db, "role", "open", "ana/hq", "nope").err).toContain("no role 'nope'");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("help prints the usage without creating a database", () => {
+  const dir = mkdtempSync(join(tmpdir(), "axos-cli-"));
+  const db = join(dir, "axos.db");
+  try {
+    for (const a of [["help"], []]) {
+      const r = cli(db, ...a);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("axos — hub admin");
+    }
+    expect(existsSync(db)).toBe(false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

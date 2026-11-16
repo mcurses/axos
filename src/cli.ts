@@ -67,6 +67,8 @@ const readText = (file: string) => file === "-" ? Bun.stdin.text() : Bun.file(fi
 
 async function main(argv: string[]): Promise<void> {
   const args = [...argv];
+  // Help needs no database: print it before opening one, so `axos help` in any folder creates no axos.db.
+  if (!args.length || ["help", "--help", "-h"].includes(args[0])) { console.log(USAGE); return; }
   // The CLI runs beside the hub process, without its notifier: it must not sweep (a reminder would count as pushed
   // and never reach the phone). Reads here are reads; the hub's own sweep runs in the service.
   const hub = new Hub(openDb(process.env.AXOS_DB ?? "axos.db"), { sweep: false });

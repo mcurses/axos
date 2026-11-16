@@ -16,7 +16,8 @@ and deploy scripts, start with `docs/internal/OWNER.md` and `docs/internal/DIREC
   `src/components/ai-elements` are vendored by their CLIs; `src/features` is ours). `bun run build` makes `web/dist`,
   which the hub serves at `/ui`; it reads `/ui/api/state` and posts to `/ui/api/{answer,ack,send}`.
 - `deploy/` — Docker (`../Dockerfile`, `../compose.yml`, `docker/Caddyfile`), a systemd example and an nginx example.
-- `test/` — `hub.test.ts` (logic) and `e2e.test.ts` (real HTTP server and MCP client).
+- `test/` — `hub.test.ts` (logic), `e2e.test.ts` (real HTTP server and MCP client), `cli.test.ts`, `plugin.test.ts`
+  and `webpush.test.ts`.
 
 ## Working
 
