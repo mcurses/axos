@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.26.7`, protocol `1`.
+Current numbers: hub release `0.26.8`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -194,8 +194,9 @@ Common arguments:
   `priority`, a `note` or `status` addressed to a `project:` is `low`; everything else is `normal`.
 - `to`: a string or a non-empty array of addresses. May be left out only with `re`.
 - `re`: the id of the message this answers. The reply joins that message's thread. With no `to`, it goes to the
-  sender of that message: to its mailbox as it was addressed (a role, a human, an agent), or to the sender's agent
-  mailbox if the sender was a session that has ended. It may cross a project link if you saw the parent; `project` may
+  sender of that message: to its mailbox as it was addressed (a role, a human, an agent). If the sender was a session
+  that has ended, the reply goes to the role that session held (see "Mail to a session that has ended" below), or is
+  not sent. It may cross a project link if you saw the parent; `project` may
   then name the parent's project, and the reply is still sent from the session's own. Replying to the hub's own
   messages needs a `to`. A reply to your own message goes to whoever that message went to.
 - `quotes_human`: `true` when the body (and the summary, if given) is what the sender's human typed to this session,
@@ -305,11 +306,29 @@ An address names who receives a message. Resolution happens at send time, in the
 | `role:<project>/<role>` | The same in a linked project. `<project>` is a slug, `<owner>/<slug>` or an id. |
 | `human:<name>` | A person in the message's own project (not a linked one): their page, and their phone when the message is high or an ask, or when the sender is another person or their agent (not for priority low, and at most ten such pushes per sender per ten minutes; the rest wait on the page). From a session whose folder belongs to no project, `send` with only this address and no `project` goes through the project the two people share (their pair first); that session then reads its own mailbox, so the reply reaches it. |
 | `session:<name>` | The one live session with that name. Looks in the message's project, then in linked projects. If several sessions of different people share a name, one of the sender's own is preferred; otherwise the error lists keys. A session renamed by a restart also answers to its last five names while no live session has that name now. |
-| `session:<key>` | A session by key, as `<agent id>#<8>` or `<human>/<agent name>#<8>`. A key also works for a session that is not live if it belongs to the project or a linked one. |
+| `session:<key>` | A session by key, as `<agent id>#<8>` or `<human>/<agent name>#<8>`. A key also works for a session that has ended if it belongs to the project or a linked one: mail to it goes to the role it held (below). |
 | `agent:<human>/<name>` or `<human>/<name>` or `agt_…` | The agent's shared mailbox. The agent must be a member of the project or a linked project, and not revoked. |
 | `project` | Every live session in the project, plus every member agent that has no live session but has connected within the last 7 days (a mailbox nobody has opened for a week, or ever, is not in the room). The sender is excluded. |
 | `next` | For the next session of the sender's human in the message's project, from any of that human's agents (a handoff before a restart). A session of theirs that started there within the last 30 minutes, other than the sender, gets it at once (people start the new session while the old one still writes the handoff); otherwise it is held and the first new session takes it; a session also claims, when it reads, notes sent within 30 minutes after its start. The sender session never gets its own. Not across links. |
 | `project:<project>` | The same for a linked project. |
+
+**Mail to a session that has ended.** Peer mail (a reply, or `session:<key>` for a session that has ended) no longer
+lands in the agent's shared mailbox, where nobody reads it. The hub records the roles a session held when it ended
+(an empty record means it held none). Mail to it goes to a role it held: non-main roles first (the one held longest), its main seat last;
+the first of them whose holder is the same person now is the target. Only roles in the message's own project or a project linked to it count; a role
+anywhere else is treated as not held. The mail is redirected only to a role whose current holder is the same person;
+the sender's result then carries a line "session X has ended: sent to role:<project>/<role> instead". A vacant role is
+not a target, because nobody can say who will take it. A redirected message sits in that role's mailbox, so whoever
+holds the role later reads it, which can be another person if the role changes hands before it is read (the same
+person only at send time). Otherwise the recipient is not sent to: it appears in
+`not_sent` with the reason ("… has ended and held no role; nobody would read it. Address a role instead", "… its role
+<role> is vacant now. Address role:<role> if the message is for whoever takes it", or "… its role <role> is now held
+by someone else; address the role if the message is for them", which never names the other holder), and when no
+recipient remains `send` fails with that reason. Where the sender would not see the session (it belongs to another
+person's project the sender is not in or linked to), the text says "a session of <human>" and leaves the role out.
+The hub's own notices (answers to an ask, subscription and deadline notices) still go to the asker's agent mailbox when
+the session has ended. A session that ended before 0.26.8 has no record; its role release events since its last start
+stand in. A session that moves to another project (resumed in another folder) gives up the roles it held in the old one.
 
 Anything else is an error that lists the accepted forms. Naming a project that is neither the message's own nor linked
 to it is refused alike, whether it exists or not.
@@ -656,7 +675,7 @@ client cannot define a role named `main` or `main.<anything>`). That person's fi
 tools, such as a background program, never takes it); it passes by itself only from a holder that ended or is away (not seen for the online window on the same machine, for
 an hour from another), and only to a session of the same person; otherwise `claim_role main` moves it (an online
 holder: as any takeover). `role:main` and `claim_role main` mean the sender's own; another person's is
-`role:main.<name>`. An `ask`, `request`, `review` or `handoff` to the project address reaches each person through
+`role:main.<name>`, and `claim_role` refuses another person's main seat, vacant or held. An `ask`, `request`, `review` or `handoff` to the project address reaches each person through
 their main seat while it is online and is not the sender, instead of through all their sessions; a person without an
 online main gets it in every session as before; with several receivers it has one taker (the send result says who
 was reached). Holding a main seat does not change the seat a session speaks as: only `as: "main"` does.

@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   framed_at     INTEGER,                       -- when the full note on how to read messages was first put into its context
   hooked_at     INTEGER,                       -- when it first reached the hub through the plugin's hooks (a model a person runs); NULL for a program that only uses the tools
   former_names  TEXT NOT NULL DEFAULT '',      -- names it had before (a restart may rename it), one per line, newest last
+  roles_at_end  TEXT,                          -- the roles it held when it ended, one per line: '<project id>\t<role>\t<since>' ('' none; NULL ended before 0.26.8)
   kind          TEXT NOT NULL DEFAULT 'session', -- 'script': a named script of the agent (axos send --name), no model behind it
   wakes         INTEGER,                       -- what its last event stream said: 1 the host wakes on a ring, 0 it does not, NULL unknown
   tree          TEXT                           -- a fingerprint of the session's checkout on its machine (never the path): two sessions with one share a working tree
@@ -331,6 +332,7 @@ function migrate(db: Database): void {
   if (sessions && !sessions.sql.includes("framed_at")) db.exec("ALTER TABLE sessions ADD COLUMN framed_at INTEGER");
   if (sessions && !sessions.sql.includes("hooked_at")) db.exec("ALTER TABLE sessions ADD COLUMN hooked_at INTEGER");
   if (sessions && !sessions.sql.includes("former_names")) db.exec("ALTER TABLE sessions ADD COLUMN former_names TEXT NOT NULL DEFAULT ''");
+  if (sessions && !sessions.sql.includes("roles_at_end")) db.exec("ALTER TABLE sessions ADD COLUMN roles_at_end TEXT");
   if (sessions && !/\bkind\b/.test(sessions.sql)) db.exec("ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'session'");
   if (messages && !messages.sql.includes("sent_by")) db.exec("ALTER TABLE messages ADD COLUMN sent_by TEXT");
   if (messages && !messages.sql.includes("quotes_human")) db.exec("ALTER TABLE messages ADD COLUMN quotes_human TEXT");

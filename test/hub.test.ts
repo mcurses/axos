@@ -1584,7 +1584,7 @@ INSERT INTO events (at, actor, kind, project, data_json) VALUES
       expect(db.query("SELECT project, role, holder FROM roles ORDER BY role").all()).toEqual([
         { project: F, role: "modder", holder: X }, { project: E, role: "r", holder: `${M}#abcd1234` }, { project: F, role: "vacant", holder: null }]);
       expect(db.query("SELECT key, agent_id, project, name FROM sessions").all()).toEqual([{ key: `${M}#abcd1234`, agent_id: M, project: E, name: "shop-ab" }]);
-      expect(db.query("SELECT former_names FROM sessions").all()).toEqual([{ former_names: "" }]);
+      expect(db.query("SELECT former_names, roles_at_end FROM sessions").all()).toEqual([{ former_names: "", roles_at_end: null }]);
       expect(db.query("SELECT outcome FROM deliveries LIMIT 1").all()).toEqual([{ outcome: null }]);
       expect(db.query("SELECT takers, taken_by, taken_at FROM messages LIMIT 1").all()).toEqual([{ takers: null, taken_by: null, taken_at: null }]);
       expect(db.query("SELECT COUNT(*) AS n FROM attachments").get()).toEqual({ n: 0 });
@@ -1733,11 +1733,267 @@ describe("delivery and coordination", () => {
     const reply = hub.send(bob, { project: GAME, type: "answer", summary: "Version 1.2, released today.", re: ask.id });
     expect(hub.inbox(`session:${aliceS}`).map((m) => m.id)).toContain(reply.id);
     hub.endSession(aliceS, "the session closed");
-    const later = hub.send(bob, { project: GAME, type: "note", summary: "1.2.1 fixes a crash, use that.", re: ask.id });
-    expect(hub.inbox(`agent:${DEV3}`).map((m) => m.id)).toContain(later.id);
+    // It held no role: nobody would read mail to it, so the reply is refused rather than left in the agent's mailbox.
+    expect(() => hub.send(bob, { project: GAME, type: "note", summary: "1.2.1 fixes a crash, use that.", re: ask.id })).toThrow(/has ended and held no role/);
     // Without re, the other side of an unlinked project stays out of reach.
     hub.unlinkProjects(SHOP, GAME);
     expect(() => hub.send(bob, { project: GAME, to: ["role:shop/main-coordinator"], type: "note", summary: "hi" })).toThrow(/cannot address another project/);
+  });
+
+  describe("peer mail to an ended session", () => {
+    const sess = (agent: string, project: string, id: string, name: string) => opened(agent, { client_session: `${id}-0000-0000-0000-000000000000`, project, name });
+
+    test("goes to the role it held, which its successor reads; the sender is told", () => {
+      hub.defineRole(SHOP, "reviewer");
+      const old = sess(DEV3, SHOP, "aaaaaaaa", "shop-old");
+      hub.claimRole(DEV3, SHOP, "reviewer", undefined, old);
+      const asker = sess(DEV1, SHOP, "bbbbbbbb", "shop-asker");
+      const q = hub.send({ ...A, session: asker }, { ...note([`session:${old}`], "look at this?"), type: "request" });
+      hub.endSession(old, "the session closed");
+      const next = sess(DEV3, SHOP, "cccccccc", "shop-new");
+      hub.claimRole(DEV3, SHOP, "reviewer", undefined, next);
+      const r = hub.send({ ...B, session: next }, { project: SHOP, type: "answer", summary: "looks fine", re: q.id });
+      expect(r.delivered_to.some((x) => x.startsWith(`session:${asker}`))).toBe(true);
+      // Mail to the ended session itself, by key: the role gets it, the next holder reads it, the result says so.
+      const m = hub.send({ ...A, session: asker }, note([`session:${old}`], "are you there?"));
+      expect(m.delivered_to.map((x) => x.replace(/ \(held by.*\)$/, ""))).toEqual([`role:${SHOP}/reviewer`]);
+      expect(shown(m.unattended[0]!)).toBe("session shop-old has ended: sent to role:alice/shop/reviewer instead");
+      expect(hub.inbox(`role:${SHOP}/reviewer`).map((x) => x.id)).toContain(m.id);
+      expect(hub.inbox(`agent:${DEV3}`).map((x) => x.id)).not.toContain(m.id);
+    });
+
+    test("a main seat only when it held nothing else; otherwise the other role", () => {
+      hub.defineRole(SHOP, "builder");
+      const old = sess(DEV3, SHOP, "aaaaaaaa", "shop-old");
+      hub.claimRole(DEV3, SHOP, "builder", undefined, old);
+      const main = hub.rolesHeldBy(`session:${old}`, SHOP).find((r) => r.startsWith("main"));
+      const asker = sess(DEV1, SHOP, "bbbbbbbb", "shop-asker");
+      hub.endSession(old);
+      const next = sess(DEV3, SHOP, "cccccccc", "shop-new");
+      hub.claimRole(DEV3, SHOP, "builder", undefined, next); // a vacant role is no target: the same person holds it again
+      const r = hub.send({ ...A, session: asker }, note([`session:${old}`], "hello"));
+      expect(r.delivered_to.map((x) => x.replace(/ \(held by.*\)$/, "")).concat(r.waiting_for_role)).toEqual([`role:${SHOP}/builder`]);
+      expect(main).toBeDefined();
+      // A session that ended before roles_at_end existed: its release events stand in.
+      hub.db.query("UPDATE sessions SET roles_at_end = NULL WHERE key = ?").run(old);
+      const legacy = hub.send({ ...A, session: asker }, note([`session:${old}`], "hello again"));
+      expect(legacy.delivered_to.map((x) => x.replace(/ \(held by.*\)$/, "")).concat(legacy.waiting_for_role)).toEqual([`role:${SHOP}/builder`]);
+    });
+
+    test("no role: refused with the reason; with another live recipient the message goes there and the result lists the refusal", () => {
+      const old = hub.openSession(DEV3, { client_session: "aaaaaaaa-0000-0000-0000-000000000000", project: SHOP, name: "shop-old" }); // never hooked: no main seat
+      const live = sess(DEV3, SHOP, "dddddddd", "shop-live");
+      const asker = sess(DEV1, SHOP, "bbbbbbbb", "shop-asker");
+      hub.endSession(old);
+      const from = { ...A, session: asker };
+      expect(refusal(() => hub.send(from, note([`session:${old}`], "x")))).toBe("shop-old has ended and held no role; nobody would read it. Address a role instead");
+      const r = hub.send(from, note([`session:${old}`, `session:${live}`], "x"));
+      expect(r.delivered_to).toEqual([`session:${live}`]);
+      expect(r.not_sent.map((x) => x.reason)).toEqual(["shop-old has ended and held no role; nobody would read it. Address a role instead"]);
+    });
+
+    test("an outsider: the role is now held by another person; mail to the first person's ended session is not delivered to them", () => {
+      hub.defineRole(GAME, "keeper");
+      const carol = hub.addHuman("carol") && hub.addAgent("carol", "c1", [GAME]).id;
+      hub.addHumanToProject("carol", GAME);
+      const old = hub.openSession(DEV1, { client_session: "aaaaaaaa-0000-0000-0000-000000000000", project: GAME, name: "game-old" }); // no main seat
+      hub.claimRole(DEV1, GAME, "keeper", undefined, old);
+      hub.endSession(old);
+      const bobS = sess(SC, GAME, "bbbbbbbb", "game-bob");
+      hub.claimRole(SC, GAME, "keeper", undefined, bobS);
+      const carolS = sess(carol, GAME, "cccccccc", "game-carol");
+      const msg = refusal(() => hub.send({ kind: "agent", id: carol, human: "carol", session: carolS }, note([`session:${old}`], "secret", GAME)));
+      expect(msg).toBe("game-old has ended; its role keeper is now held by someone else; address the role if the message is for them");
+      expect(msg).not.toContain("game-bob");
+      expect(hub.inbox(`role:${GAME}/keeper`)).toEqual([]);
+      // Vacant and shared with another person: not delivered either.
+      hub.releaseRole(SC, GAME, "keeper", bobS);
+      expect(refusal(() => hub.send({ kind: "agent", id: carol, human: "carol", session: carolS }, note([`session:${old}`], "x", GAME))))
+        .toBe("game-old has ended; its role keeper is vacant now. Address role:keeper if the message is for whoever takes it");
+    });
+
+    // Regression tests for the security review of 2026-11-16 (docs/internal/research).
+    const bobIn = () => sess(SC, GAME, "bbbbbbbb", "game-bob");
+    const sentTo = (r: { delivered_to: string[]; waiting_for_role: string[] }) => [...r.delivered_to, ...r.waiting_for_role].map((x) => x.replace(/ \(.*$/, ""));
+
+    test("F1: a role of another project, held by a session that moved projects, is skipped: the redirect stays inside the message's projects", () => {
+      const cs = "aaaaaaaa-0000-0000-0000-000000000000";
+      const s = opened(DEV1, { client_session: cs, project: SHOP, name: "shop-x" });
+      hub.defineRole(SHOP, "secret-plan");
+      hub.claimRole(DEV1, SHOP, "secret-plan", undefined, s);
+      opened(DEV1, { client_session: cs, project: GAME, name: "game-x" });
+      t += 1000;
+      hub.endSession(s);
+      const bobS = bobIn();
+      // SHOP lies outside the allowed set (GAME and its links): skipped, the refusal names nothing of SHOP.
+      const msg = refusal(() => hub.send({ ...S, session: bobS }, { project: GAME, to: [`session:${s}`], type: "note", summary: "for alice's session" }), { agent: SC });
+      expect(msg).not.toContain(SHOP);
+      expect(msg).not.toContain("secret-plan");
+      expect(hub.db.query("SELECT recipient FROM deliveries WHERE message_id = ?").all()).toEqual([]);
+    });
+
+    test("F1: a role of another project in roles_at_end is skipped as if not held, for a to and for a re", () => {
+      const s = opened(DEV1, { client_session: "aaaaaaaa-0000-0000-0000-000000000000", project: GAME, name: "game-x" });
+      const bobS = bobIn();
+      const q = hub.send({ ...A, session: s }, { project: GAME, to: [`session:${bobS}`], type: "request", summary: "look?" });
+      hub.endSession(s);
+      // A record that names alice's unlinked project (as a session of an older state could have left).
+      hub.db.query("UPDATE sessions SET roles_at_end = ? WHERE key = ?").run(`${SHOP}\tmain.alice\t1`, s);
+      const msg = "game-x has ended and held no role; nobody would read it. Address a role instead";
+      expect(refusal(() => hub.send({ ...S, session: bobS }, { project: GAME, to: [`session:${s}`], type: "note", summary: "hi" }))).toBe(msg);
+      expect(refusal(() => hub.send({ ...S, session: bobS }, { project: GAME, type: "answer", summary: "done", re: q.id }))).toBe(msg);
+      expect(hub.inbox(`role:${SHOP}/main.alice`)).toEqual([]);
+    });
+
+    test("F1: a role of a linked project is a target", () => {
+      hub.linkProjects(SHOP, GAME);
+      const s = hub.openSession(DEV1, { client_session: "aaaaaaaa-0000-0000-0000-000000000000", project: SHOP, name: "shop-x" });
+      hub.defineRole(SHOP, "reviewer");
+      hub.claimRole(DEV1, SHOP, "reviewer", undefined, s);
+      hub.endSession(s);
+      const s2 = hub.openSession(DEV1, { client_session: "dddddddd-0000-0000-0000-000000000000", project: SHOP, name: "shop-y" });
+      hub.claimRole(DEV1, SHOP, "reviewer", undefined, s2); // the same person holds it again
+      const r = hub.send({ ...S, session: bobIn() }, { project: GAME, to: [`session:${s}`], type: "note", summary: "linked" });
+      expect(sentTo(r)).toEqual([`role:${SHOP}/reviewer`]);
+    });
+
+    test("F2: a session the reader may not see is \"a session of <human>\", and its role is not named", () => {
+      hub.defineRole(GAME, "keeper"); hub.defineRole(SHOP, "ops");
+      const bobS = bobIn();
+      hub.claimRole(SC, GAME, "keeper", undefined, bobS);
+      const s = opened(DEV1, { client_session: "aaaaaaaa-0000-0000-0000-000000000000", project: SHOP, name: "shop-secret-name" });
+      expect(hub.senderShownTo("bob", `session:${s}`)).toBe(false);
+      const q = hub.send({ ...A, session: s }, { project: SHOP, to: ["role:alice/game/keeper"], type: "request", summary: "q" });
+      hub.endSession(s);
+      const out = refusal(() => hub.send({ ...S, session: bobS, as: "keeper" }, { project: GAME, type: "answer", summary: "a", re: q.id }), { agent: SC });
+      expect(out).toBe("a session of alice has ended; a role it held is vacant now. Address the role if the message is for whoever takes it");
+      expect(out).not.toContain("shop-secret-name");
+    });
+
+    test("F2: where the session is shown, the redirect names it with labelFor", () => {
+      hub.defineRole(GAME, "keeper");
+      const s = sess(DEV1, GAME, "aaaaaaaa", "game-a");
+      hub.claimRole(DEV1, GAME, "keeper", undefined, s);
+      hub.endSession(s);
+      const s3 = sess(DEV1, GAME, "eeeeeeee", "game-a3");
+      hub.claimRole(DEV1, GAME, "keeper", undefined, s3);
+      const r = hub.send({ ...S, session: bobIn() }, { project: GAME, to: [`session:${s}`], type: "note", summary: "hi" });
+      expect(shown(r.unattended[0]!, { agent: SC })).toBe("session game-a has ended: sent to role:alice/game/keeper instead");
+    });
+
+    test("N1: a follow-up to one's own message to a role of one's own unlinked project (question 18) still reaches it", () => {
+      hub.defineRole(GAME, "keeper");
+      const bobS = bobIn();
+      hub.claimRole(SC, GAME, "keeper", undefined, bobS);
+      const a = sess(DEV3, SHOP, "aaaaaaaa", "shop-a");
+      const q = hub.send({ ...B, session: a }, { project: SHOP, to: ["role:alice/game/keeper"], type: "request", summary: "q" });
+      expect(q.delivered_to[0]).toStartWith(`role:${GAME}/keeper`);
+      const f = hub.send({ ...B, session: a }, { project: SHOP, type: "note", summary: "more", re: q.id });
+      expect(sentTo(f)).toEqual([`role:${GAME}/keeper`]);
+    });
+
+    test("N2: a session whose project header alternates keeps its roles", () => {
+      hub.defineRole(SHOP, "maintainer");
+      const cs = "aaaaaaaa-0000-0000-0000-000000000000";
+      const k = opened(DEV1, { client_session: cs, project: SHOP, name: "x" });
+      hub.claimRole(DEV1, SHOP, "maintainer", undefined, k);
+      opened(DEV1, { client_session: cs, project: GAME, name: "x" });
+      opened(DEV1, { client_session: cs, project: SHOP, name: "x" });
+      expect(hub.roles(SHOP).find((r) => r.role === "maintainer")!.holder).toBe(k);
+    });
+
+    test("N3/N4: a reply redirected into a project the replier cannot see names no role or project there", () => {
+      hub.defineRole(GAME, "keeper"); hub.defineRole(SHOP, "ops"); hub.defineRole(SHOP, "ops2");
+      const bobS = bobIn();
+      hub.claimRole(SC, GAME, "keeper", undefined, bobS);
+      const s = hub.openSession(DEV1, { client_session: "aaaaaaaa-0000-0000-0000-000000000000", project: SHOP, name: "shop-secret" });
+      hub.claimRole(DEV1, SHOP, "ops", undefined, s);
+      hub.claimRole(DEV1, SHOP, "ops2", undefined, s); // two roles: it speaks as the session
+      const q = hub.send({ ...A, session: s }, { project: SHOP, to: ["role:alice/game/keeper"], type: "request", summary: "q" });
+      t += 1000; hub.endSession(s);
+      const s2 = hub.openSession(DEV3, { client_session: "cccccccc-0000-0000-0000-000000000000", project: SHOP, name: "shop-2" });
+      t += 1000; hub.claimRole(DEV3, SHOP, "ops", undefined, s2);
+      expect(hub.senderShownTo("bob", `session:${s}`)).toBe(false);
+      const r = hub.send({ ...S, session: bobS, as: "keeper" }, { project: GAME, type: "answer", summary: "a", re: q.id });
+      expect(r.delivered_to).toHaveLength(1);
+      expect(r.delivered_to[0]).toMatch(/^a role of alice's \((connected|away)\)$/);
+      expect(r.unattended).toEqual(["a session of alice has ended: sent to a role it held instead"]);
+      const row = hub.db.query("SELECT to_json FROM messages WHERE id = ?").get(r.id) as { to_json: string };
+      expect(row.to_json).toBe(JSON.stringify([`session:${s}`]));
+      const seen = JSON.stringify([r, shown(JSON.stringify(r), { agent: SC }), row]);
+      expect(seen).not.toContain(SHOP);
+      expect(seen).not.toContain("ops");
+      expect(seen).not.toContain("shop-secret");
+      // The mail did land in the role's mailbox.
+      expect(hub.inbox(`role:${SHOP}/ops`).map((m) => m.id)).toContain(r.id);
+    });
+
+    test("N5: no redirect line when the redirected box is the sender's own and the mail goes to the original recipients", () => {
+      hub.defineRole(GAME, "keeper"); hub.defineRole(GAME, "r2");
+      const bobS = bobIn();
+      const s1 = sess(DEV1, GAME, "aaaaaaaa", "game-a1");
+      hub.claimRole(DEV1, GAME, "keeper", undefined, s1); hub.claimRole(DEV1, GAME, "r2", undefined, s1);
+      const q = hub.send({ ...A, session: s1 }, { project: GAME, to: [`session:${bobS}`], type: "request", summary: "q" });
+      hub.endSession(s1);
+      const s2 = sess(DEV1, GAME, "cccccccc", "game-a2");
+      hub.claimRole(DEV1, GAME, "keeper", undefined, s2);
+      const r = hub.send({ ...A, session: s2 }, { project: GAME, type: "note", summary: "x", re: q.id });
+      expect(r.delivered_to).toEqual([`session:${bobS}`]);
+      expect(r.unattended.filter((x) => shown(x).includes("has ended"))).toEqual([]);
+    });
+
+    test("F3: a vacant role is no target: refused with a hint; the mail never waits for a later holder", () => {
+      hub.defineRole(SHOP, "reviewer");
+      const s = hub.openSession(DEV1, { client_session: "aaaaaaaa-0000-0000-0000-000000000000", project: SHOP, name: "shop-x" });
+      hub.claimRole(DEV1, SHOP, "reviewer", undefined, s);
+      hub.endSession(s);
+      const s2 = hub.openSession(DEV1, { client_session: "cccccccc-0000-0000-0000-000000000000", project: SHOP, name: "shop-y" });
+      expect(refusal(() => hub.send({ ...A, session: s2 }, note([`session:${s}`], "private to that session"))))
+        .toBe("shop-x has ended; its role reviewer is vacant now. Address role:reviewer if the message is for whoever takes it");
+      expect(hub.inbox(`role:${SHOP}/reviewer`)).toEqual([]);
+    });
+
+    test("F4: a revived session that ends holding nothing is not sent to an earlier role", () => {
+      hub.defineRole(SHOP, "reviewer");
+      const cs = "aaaaaaaa-0000-0000-0000-000000000000";
+      const s = hub.openSession(DEV1, { client_session: cs, project: SHOP, name: "shop-x" });
+      hub.claimRole(DEV1, SHOP, "reviewer", undefined, s);
+      hub.endSession(s);
+      expect(hub.session(s)!.roles_at_end).toContain("reviewer");
+      hub.openSession(DEV1, { client_session: cs, project: SHOP, name: "shop-x" }); // revived, holds nothing now
+      expect(hub.session(s)!.roles_at_end).toBe("");
+      hub.endSession(s);
+      expect(hub.session(s)!.roles_at_end).toBe("");
+      const asker = sess(DEV3, SHOP, "bbbbbbbb", "shop-asker");
+      expect(refusal(() => hub.send({ ...B, session: asker }, note([`session:${s}`], "x")))).toContain("held no role");
+    });
+
+    test("F4: the legacy fallback (NULL) uses only release events after the session's last start", () => {
+      hub.defineRole(SHOP, "reviewer");
+      const cs = "aaaaaaaa-0000-0000-0000-000000000000";
+      const s = hub.openSession(DEV1, { client_session: cs, project: SHOP, name: "shop-x" });
+      hub.claimRole(DEV1, SHOP, "reviewer", undefined, s);
+      hub.endSession(s, "the session closed");
+      t += 1000;
+      hub.openSession(DEV1, { client_session: cs, project: SHOP, name: "shop-x" });
+      hub.endSession(s, "the session closed");
+      hub.db.query("UPDATE sessions SET roles_at_end = NULL WHERE key = ?").run(s);
+      const asker = sess(DEV3, SHOP, "bbbbbbbb", "shop-asker");
+      expect(refusal(() => hub.send({ ...B, session: asker }, note([`session:${s}`], "x")))).toContain("held no role");
+    });
+
+    test("F6: another person cannot claim a main seat, vacant or held", () => {
+      const a = opened(DEV1, { client_session: "aaaaaaaa-0000-0000-0000-000000000000", project: GAME, name: "game-a" });
+      hub.endSession(a); // main.alice is vacant
+      const bobS = bobIn();
+      const msg = "a main seat belongs to its person; claim role main for your own";
+      expect(() => hub.claimRole(SC, GAME, "main.alice", undefined, bobS)).toThrow(msg);
+      const a2 = opened(DEV1, { client_session: "cccccccc-0000-0000-0000-000000000000", project: GAME, name: "game-a2" });
+      expect(() => hub.claimRole(SC, GAME, "main.alice", "I need it", bobS)).toThrow(msg);
+      expect(hub.roles(GAME).find((r) => r.role === "main.alice")!.holder).toBe(a2);
+      hub.claimRole(SC, GAME, "main", undefined, bobS); // one's own is fine
+      expect(hub.roles(GAME).find((r) => r.role === "main.bob")!.holder).toBe(bobS);
+    });
   });
 
   test("a message from the hub takes no reply without to", () => {
