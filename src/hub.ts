@@ -1364,6 +1364,15 @@ export class Hub {
     }
     // What else they kept (security review of 0.22.0): their landing subscriptions here, the links to projects they
     // own, and the questions still open on their page from this project.
+    // Their waiting mail of this project (security review of 0.26.9, P1): unacked deliveries to the agent's mailbox and its
+    // sessions close as 'withdrawn', so neither the agent nor a revived session is handed them afterwards.
+    for (const id of agents) {
+      this.db.query(
+        `UPDATE deliveries SET acked_at = ?1, outcome = 'withdrawn', note = 'the person was removed from the project'
+          WHERE acked_at IS NULL AND message_id IN (SELECT id FROM messages WHERE project = ?2)
+            AND (recipient = ?3 OR recipient LIKE ?4 OR recipient LIKE ?5)`,
+      ).run(this.now(), project, `agent:${id}`, `agent:${id}@%`, `session:${id}#%`);
+    }
     for (const id of agents) {
       this.db.query("DELETE FROM subscriptions WHERE project = ? AND (subscriber = ? OR subscriber LIKE ?)").run(project, `agent:${id}`, `session:${id}#%`);
     }
@@ -2711,6 +2720,23 @@ export class Hub {
     return !acrossLink || h === viewerHuman ? this.label(holder) : `a session of ${h}`;
   }
 
+  // A receipt's role for a viewer: a role of a project the viewer's agent is not in and that none of its projects links to
+  // is "a role of <human>'s", as send's answer says (security review of 0.26.9, P2). Other addresses are returned as is.
+  receiptAddress(viewerAgent: string, address: string, msg?: { project: string; sender: string; sender_human?: string | null; to_json: string }): string {
+    if (!address.startsWith("role:")) return address;
+    const p = address.slice(5, address.lastIndexOf("/"));
+    const mine = this.projectsOf(viewerAgent);
+    if (mine.includes(p) || mine.some((q) => this.linkedProjects(q).includes(p))) return address;
+    // A role the sender addressed itself keeps its name for the sender's own person; one a redirect chose, or one a later
+    // holder of the sending role would see, is masked (re-check 2026-11-17).
+    const viewer = this.db.query("SELECT human FROM agents WHERE id = ?").get(viewerAgent) as { human: string } | null;
+    if (msg && viewer && msg.sender_human === viewer.human && (JSON.parse(msg.to_json) as string[]).some((t) => {
+      try { return this.resolve(msg.project, t, msg.sender, msg.sender_human ?? undefined).some((r) => r.recipient === address); } catch { return false; }
+    })) return address;
+    const holder = this.roleHolder(address);
+    return `a role of ${(holder ? this.humanOfHolder(holder) : null) ?? this.projectOwner(p) ?? "someone"}'s`;
+  }
+
   // The state of a role nobody is reading now and who else is in the room: in the sender's own project every other
   // live session with its roles and reach; in a linked project only the roles held there, as nothing else crosses.
   private room(from: string, roleAddr: string, viewerHuman: string, me: string): string {
@@ -2956,23 +2982,13 @@ export class Hub {
       ? own !== null && [own, ...this.linkedProjects(own)].includes(m.project)
       : [m.project, ...this.linkedProjects(m.project)]
         .some((p) => reader.kind === "agent" ? this.isMember(reader.id, p) : this.humanInProject(reader.name, p));
-    // A message from outside the project that reached a role this reader holds (a role open to the whole hub (F4), or
-    // one of the sender's person's own projects, question 18): the role's part of the thread only.
-    const viaRole = !member && reader.kind === "agent" && !!reader.session && !!this.db.query(
-      `SELECT 1 FROM deliveries d JOIN roles r ON d.recipient = 'role:' || r.project || '/' || r.role WHERE d.message_id = ? AND r.holder = ?`).get(messageId, reader.session) &&
-      // and still a member of that role's project (the re-check's note).
-      (this.db.query("SELECT r.project FROM deliveries d JOIN roles r ON d.recipient = 'role:' || r.project || '/' || r.role WHERE d.message_id = ? AND r.holder = ?")
-        .all(messageId, reader.session) as { project: string }[]).some((x) => this.isMember(reader.id, x.project));
-    if (!member && !viaRole) throw none;
-    if (viaRole) {
-      const root = m.thread ?? m.id;
-      // Only roles in projects the reader is still in (robust even if a removal ever left a holder behind: F4).
-      const held = (this.db.query("SELECT project, role FROM roles WHERE holder = ?").all(reader.session!) as { project: string; role: string }[])
-        .filter((r) => this.isMember(reader.id, r.project)).map((r) => `role:${r.project}/${r.role}`);
-      return (this.db.query("SELECT m.* FROM messages m WHERE (m.id = ? OR m.thread = ?) ORDER BY m.id").all(root, root) as MessageRow[])
-        .filter((x) => held.includes(x.sender) || !!this.db.query(`SELECT 1 FROM deliveries WHERE message_id = ? AND recipient IN (${held.map(() => "?").join(", ") || "''"})`).get(x.id, ...held));
-    }
-    const boxes = reader.kind === "agent" ? this.mailboxes(reader) : [`human:${reader.name}`];
+    // A message from outside the reader's projects that was delivered to one of the reader's own mailboxes (a role it
+    // holds, open to the whole hub (F4) or of the sender's person's own projects (question 18); its session), or sent by
+    // one of them: the reader's part of the thread only, below.
+    // mailboxes() keeps only roles in projects the reader is still a member of (the re-check's note).
+    if (!member && reader.kind !== "agent") throw none;
+    // Outside the reader's scope the agent's mailbox, scoped or not, and its sender key are no way in (review 2026-11-17).
+    const boxes = (reader.kind === "agent" ? this.mailboxes(reader) : [`human:${reader.name}`]).filter((b) => member || !b.startsWith("agent:"));
     const senders = boxes.map((b) => this.boxKey(b));
     const box = this.boxSql(boxes, "d.recipient", "m.project");
     const root = m.thread ?? m.id;
@@ -2982,6 +2998,16 @@ export class Hub {
        ORDER BY m.id`,
     ).all(root, root, ...senders, ...box.args) as MessageRow[];
     if (!rows.some((r) => r.id === messageId)) throw none;
+    if (!member) {
+      // A conversation outside the reader's scope opens only if the reader took part from inside it
+      // (its own message in its session's project or a linked one), or it reached a role the reader holds now. Mail its
+      // session kept after moving project or after its person left one does not.
+      const scope = own ? [own, ...this.linkedProjects(own)] : [];
+      const roles = boxes.filter((b) => b.startsWith("role:"));
+      const viaRole = (id: number) => roles.length > 0 && !!this.db.query(
+        `SELECT 1 FROM deliveries WHERE message_id = ? AND recipient IN (${roles.map(() => "?").join(", ")})`).get(id, ...roles);
+      if (!rows.some((r) => (senders.includes(r.sender) && (roles.includes(r.sender) || scope.includes(r.project))) || viaRole(r.id))) throw none;
+    }
     return rows;
   }
 

@@ -331,7 +331,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     // On the reader's own messages: how far each recipient got.
     const mine = new Set([me, ...boxes().map((b) => hub.boxKey(b)), ...hub.projectsOf(agent.id).flatMap((p) => conn.session ? hub.rolesHeldBy(me, p).map((r) => `role:${p}/${r}`) : [])]);
     const rows = hub.thread(actor, m).map((row) => mine.has(row.sender) ? { ...row, receipts: hub.receipts(row.id).map((d) =>
-      `${peer(d.recipient, row.project)}: ${d.acked_at ? `${d.outcome ?? "acked"}${d.note ? ` (${d.note})` : ""}` : d.shown_at ? "read" : "unread"}`).join("; ") } : row);
+      `${peer(hub.receiptAddress(agent.id, d.recipient, row), row.project)}: ${d.acked_at ? `${d.outcome ?? "acked"}${d.note ? ` (${d.note})` : ""}` : d.shown_at ? "read" : "unread"}`).join("; ") } : row);
     return render(rows, `Thread of message ${m}:`);
   }));
 

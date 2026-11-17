@@ -3247,3 +3247,127 @@ describe("a role open to the whole hub (a feedback address for people without a 
     expect(hub.openRolesOf("carol")).toEqual([]);
   });
 });
+
+describe("a reply delivered to a session from a project it is not in", () => {
+  test("the session reads its own part of the thread with thread(); nothing else; an outsider gets the missing-message error", () => {
+    for (const h of ["ana", "ben", "carl"]) hub.addHuman(h);
+    const X = hub.addProject("ana/x"), Y = hub.addProject("ben/y"), Z = hub.addProject("carl/z");
+    hub.addHumanToProject("ana", X);
+    hub.addHumanToProject("ben", Y);
+    hub.addHumanToProject("carl", Z);
+    const ANA = hub.addAgent("ana", "laptop", [X]).id, BEN = hub.addAgent("ben", "laptop", [Y]).id, CARL = hub.addAgent("carl", "laptop", [Z]).id;
+    hub.setOperator("ben", true);
+    hub.defineRole(Y, "owner", "Feedback");
+    hub.setRoleOpen("ben", Y, "owner", "hub");
+    const anaS = hub.openSession(ANA, { client_session: "a1a1a1a1-de4e-4733-bf41-1e0e45605f16", project: X, name: "x-a1" });
+    const benS = hub.openSession(BEN, { client_session: "b2b2b2b2-de4e-4733-bf41-1e0e45605f16", project: Y, name: "y-b2" });
+    const carlS = hub.openSession(CARL, { client_session: "c3c3c3c3-de4e-4733-bf41-1e0e45605f16", project: Z, name: "z-c3" });
+    hub.claimRole(BEN, Y, "owner", undefined, benS);
+    const ana = { kind: "agent" as const, id: ANA, human: "ana", session: anaS };
+    const ben = { kind: "agent" as const, id: BEN, human: "ben", session: benS };
+    const carl = { kind: "agent" as const, id: CARL, human: "carl", session: carlS };
+    const q = hub.send(ana, { ...note(["role:ben/y/owner"], "question from ana", X) });
+    const reply = hub.send(ben, { ...note([], "answer from ben", Y), to: undefined, re: q.id, body: "the whole answer" });
+    expect(reply.delivered_to).toEqual([`session:${anaS}`]);
+    // ana addressed ben's open role herself, so her receipts keep its name; without the message it is masked.
+    const qRow = hub.db.query("SELECT project, sender, sender_human, to_json FROM messages WHERE id = ?").get(q.id) as { project: string; sender: string; sender_human: string | null; to_json: string };
+    expect(hub.receiptAddress(ANA, `role:${Y}/owner`, qRow)).toBe(`role:${Y}/owner`);
+    expect(hub.receiptAddress(ANA, `role:${Y}/owner`)).toBe("a role of ben's");
+    // Another person seeing ana's message (say a later holder of her role) does not get the name she typed.
+    expect(hub.receiptAddress(CARL, `role:${Y}/owner`, qRow)).toBe("a role of ben's");
+    // A third message in the same thread, from ben's holder to someone else in ben/y.
+    const other = hub.addAgent("ben", "second", [Y]).id;
+    const otherS = hub.openSession(other, { client_session: "e5e5e5e5-de4e-4733-bf41-1e0e45605f16", project: Y, name: "y-e5" });
+    const aside = hub.send(ben, { ...note([`session:${otherS}`], "aside to someone else", Y), thread: q.id });
+    const seen = hub.thread(ana, reply.id);
+    expect(seen.map((m) => m.id)).toEqual([q.id, reply.id]);
+    expect(seen.find((m) => m.id === reply.id)!.body).toBe("the whole answer");
+    expect(seen.map((m) => m.id)).not.toContain(aside.id);
+    expect(() => hub.thread(ana, aside.id)).toThrow(`no message ${aside.id} for you`);
+    // An outsider asks exactly as for a missing id.
+    expect(refusal(() => hub.thread(carl, reply.id))).toBe(refusal(() => hub.thread(carl, 99999)).replace("99999", String(reply.id)));
+    expect(() => hub.thread(carl, reply.id)).toThrow(`no message ${reply.id} for you`);
+  });
+});
+
+describe("thread for a reader outside the message's project (security review of 0.26.9)", () => {
+  const cs = (n: number) => `${String(n).repeat(8)}-0000-0000-0000-000000000000`;
+
+  test("a session in shop does not read what its agent sent without a session in game, nor the ack notes on it", () => {
+    const bobS = opened(SC, { client_session: cs(1), project: GAME, name: "game-b" });
+    const sent = hub.send(A, note([`session:${bobS}`], "game plan for tonight", GAME));
+    hub.ackReport([`session:${bobS}`], [sent.id], "done", "a note from bob");
+    const inShop = opened(DEV1, { client_session: cs(2), project: SHOP, name: "shop-d1" });
+    expect(() => hub.thread({ ...A, session: inShop }, sent.id)).toThrow(`no message ${sent.id} for you`);
+  });
+
+  test("a token without a session no longer reads a project its person was removed from", () => {
+    const aliceS = opened(DEV1, { client_session: cs(3), project: GAME, name: "game-a" });
+    const q = hub.send({ ...S, session: undefined }, note([`session:${aliceS}`], "is the release ready?", GAME));
+    const m = hub.send(A, note(["agent:bob/claude"], "the launch date is friday", GAME));
+    hub.removeHumanFromProject("bob", GAME);
+    expect(() => hub.thread(S, q.id)).toThrow(`no message ${q.id} for you`);
+    expect(() => hub.thread(S, m.id)).toThrow(`no message ${m.id} for you`);
+  });
+
+  test("a session that reconnects under another project does not keep the old project's threads", () => {
+    const s = opened(DEV1, { client_session: cs(4), project: GAME, name: "game-d3" });
+    const bobS = opened(SC, { client_session: cs(5), project: GAME, name: "game-b1" });
+    const m = hub.send({ ...S, session: bobS }, note([`session:${s}`], "text from the other project", GAME));
+    expect(hub.thread({ ...A, session: s }, m.id).map((x) => x.id)).toEqual([m.id]);
+    opened(DEV1, { client_session: cs(4), project: SHOP, name: "shop-d3" });
+    expect(() => hub.thread({ ...A, session: s }, m.id)).toThrow(`no message ${m.id} for you`);
+  });
+
+  test("a session revived after its person's removal does not read the mail it had received there", () => {
+    const bobS = opened(SC, { client_session: cs(6), project: GAME, name: "game-b2" });
+    const m = hub.send(A, note([`session:${bobS}`], "the launch date is friday", GAME));
+    hub.removeHumanFromProject("bob", GAME);
+    expect(hub.openSession(SC, { client_session: cs(6), project: GAME })).toBe(bobS);
+    expect(() => hub.thread({ ...S, session: bobS }, m.id)).toThrow(`no message ${m.id} for you`);
+  });
+
+  test("a message neither sent nor received stays hidden from a non-member", () => {
+    const aliceS = opened(DEV1, { client_session: cs(7), project: GAME, name: "game-a2" });
+    const m = hub.send({ ...A, session: aliceS }, note(["human:alice"], "private to alice", GAME));
+    hub.removeHumanFromProject("bob", GAME);
+    expect(() => hub.thread(S, m.id)).toThrow(`no message ${m.id} for you`);
+  });
+
+  test("removing a person withdraws their waiting mail in that project: the agent's and a revived session's inbox", () => {
+    const bobS = opened(SC, { client_session: cs(8), project: GAME, name: "game-b3" });
+    hub.endSession(bobS);
+    const toAgent = hub.send(A, note(["agent:bob/claude"], "to the agent box", GAME));
+    const aliceS = opened(DEV1, { client_session: cs(9), project: GAME, name: "game-a4" });
+    hub.openSession(SC, { client_session: cs(8), project: GAME });
+    const toSession = hub.send({ ...A, session: aliceS }, note([`session:${bobS}`], "to the session", GAME));
+    const PLAY = hub.addProject("alice/play");
+    hub.addHumanToProject("alice", PLAY); hub.addHumanToProject("bob", PLAY);
+    hub.db.query("INSERT INTO memberships (agent_id, project) VALUES (?, ?)").run(SC, PLAY);
+    hub.db.query("INSERT INTO memberships (agent_id, project) VALUES (?, ?)").run(DEV1, PLAY);
+    const other = hub.send(A, note(["agent:bob/claude"], "another project", PLAY));
+    hub.removeHumanFromProject("bob", GAME);
+    expect(hub.inbox(hub.mailboxes({ id: SC })).map((m) => m.id)).not.toContain(toAgent.id);
+    hub.openSession(SC, { client_session: cs(8), project: GAME });
+    expect(hub.inbox(hub.mailboxes({ id: SC, session: bobS })).map((m) => m.id)).not.toContain(toSession.id);
+    const d = hub.receipts(toAgent.id).find((r) => r.recipient === `agent:${SC}`)!;
+    expect(d.outcome).toBe("withdrawn");
+    // Mail of a project the agent is still in is untouched.
+    expect(hub.receipts(other.id).every((r) => r.outcome !== "withdrawn")).toBe(true);
+  });
+
+  test("a receipt names a role of a project the viewer is not in as a role of its holder's person", () => {
+    hub.addHuman("ana"); hub.addHuman("ben");
+    const X = hub.addProject("ana/x"), Y = hub.addProject("ben/y");
+    hub.addHumanToProject("ana", X); hub.addHumanToProject("ben", Y);
+    const ANA = hub.addAgent("ana", "laptop", [X]).id, BEN = hub.addAgent("ben", "laptop", [Y]).id;
+    hub.defineRole(Y, "owner", "Feedback");
+    const benS = opened(BEN, { client_session: cs(1), project: Y, name: "y-b" });
+    hub.claimRole(BEN, Y, "owner", undefined, benS);
+    expect(hub.receiptAddress(ANA, `role:${Y}/owner`)).toBe("a role of ben's");
+    expect(hub.receiptAddress(BEN, `role:${Y}/owner`)).toBe(`role:${Y}/owner`);
+    expect(hub.receiptAddress(ANA, `session:${benS}`)).toBe(`session:${benS}`);
+    hub.linkProjects(X, Y);
+    expect(hub.receiptAddress(ANA, `role:${Y}/owner`)).toBe(`role:${Y}/owner`);
+  });
+});

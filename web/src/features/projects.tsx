@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { BellIcon, LinkIcon, UserIcon, PlusIcon, FolderGit2Icon, Settings2Icon } from "lucide-react";
 
 export function Dot({ on }: { on: boolean }) {
-  return <span className={cn("inline-block size-2 shrink-0 rounded-full", on ? "bg-emerald-500" : "bg-muted-foreground/40")} />;
+  return <span className={cn("inline-block size-2 shrink-0 rounded-full", on ? "bg-ok" : "bg-muted-foreground/40")} />;
 }
 
 export function ProjectCard({ p, now, me, people = [], operator = false, onChange }: { p: Project; now: number; me: string; people?: string[]; operator?: boolean; onChange?: () => void }) {

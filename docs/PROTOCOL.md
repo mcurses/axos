@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.26.8`, protocol `1`.
+Current numbers: hub release `0.26.9`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -378,6 +378,9 @@ and its name until the 7-day end, but `presence` leaves it out unless it holds a
   (`done`, `declined`, `forwarded`, `noted`) is stored with the delivery.
 - `thread` shows, on each message the reader sent, a `receipts` attribute: per recipient mailbox `unread`, `read`
   (shown), `acked`, or the ack's outcome.
+  A role the message reached without the sender addressing it (a redirect), in a project the reader is not in and
+  that is not linked to one of its projects, shows as `a role of <person>'s`. Removing a person from a project closes their unacked mail of that project (to the agent's
+  mailbox and its sessions) with `outcome: withdrawn`.
 - `wait` returns immediately if any delivery of the caller is unshown. Otherwise it blocks until a message arrives for
   one of the caller's mailboxes, the timeout passes (at most 240 s), or the client disconnects. Shown but unacked
   messages do not end it, so a client that does not ack does not spin.

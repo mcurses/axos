@@ -18,9 +18,23 @@ const LinkMap = lazy(() => import("@/features/map").then((m) => ({ default: m.Li
 
 const REFRESH_MS = 10_000;
 
+// Sidebar from 768 px up (vinea's breakpoint): the navigation then runs top to bottom, arrow keys included.
+const WIDE = "(min-width: 768px)";
+function useWide() {
+  const [wide, setWide] = useState(() => matchMedia(WIDE).matches);
+  useEffect(() => {
+    const m = matchMedia(WIDE);
+    const on = () => setWide(m.matches);
+    m.addEventListener("change", on);
+    return () => m.removeEventListener("change", on);
+  }, []);
+  return wide;
+}
+
 export default function App() {
   const [state, setState] = useState<State | null>(null);
   const [error, setError] = useState<Error | null>(null);
+  const wide = useWide();
   const refresh = useCallback(() => {
     loadState().then((s) => { setState(s); setError(null); }, setError);
   }, []);
@@ -40,26 +54,30 @@ export default function App() {
   }, [state]);
 
   if (error instanceof NotLoggedIn) return <Login />;
-  if (!state) return <main className="p-6 text-muted-foreground">{error ? `Could not load: ${error.message}` : "Loading…"}</main>;
+  if (!state) return <main className="axos-loading glass text-muted-foreground">{error ? `Could not load: ${error.message}` : "Loading…"}</main>;
 
   const unread = state.asks.length + state.inbox.length + state.pending.length;
   return (
-    <main className="mx-auto flex max-w-6xl flex-col gap-6 p-5 sm:px-10 sm:py-8">
-      <header className="axos-header flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3"><img src={axosIcon} alt="" className="axos-mark size-11 shrink-0" /><div className="min-w-0"><h1 className="font-semibold text-lg tracking-[0.16em]">AXOS</h1><p className="truncate text-xs text-muted-foreground">{state.human}</p></div></div>
-        <span className="flex items-center gap-2">
-          {error && <Badge variant="destructive">offline: {error.message}</Badge>}
-          <Notifications hubKey={state.push.key} devices={state.push.devices.length} />
-        </span>
-      </header>
-      <Tabs defaultValue={["people", "projects", "send", "map", "inbox"].includes(location.hash.slice(1)) ? location.hash.slice(1) : location.hash.startsWith("#m") || unread ? "inbox" : "map"} onValueChange={(tab) => history.replaceState(null, "", `#${tab}`)}>
-        <TabsList className="axos-navigation w-full sm:w-auto" onPointerDown={(e) => { e.currentTarget.dataset.pointer = "true"; }} onKeyDown={(e) => { delete e.currentTarget.dataset.pointer; }}>
-          <TabsTrigger value="inbox">Inbox{unread > 0 && <Badge className="ml-1 h-5 px-1.5">{unread}</Badge>}</TabsTrigger>
+    <Tabs className="axos-shell" orientation={wide ? "vertical" : "horizontal"} defaultValue={["people", "projects", "send", "map", "inbox"].includes(location.hash.slice(1)) ? location.hash.slice(1) : location.hash.startsWith("#m") || unread ? "inbox" : "map"} onValueChange={(tab) => history.replaceState(null, "", `#${tab}`)}>
+      {/* The sidebar card: who you are, where you are, this device's notifications. On a phone it is the top card. */}
+      <aside className="axos-sidebar glass">
+        <header className="axos-brand">
+          <img src={axosIcon} alt="" className="axos-mark" />
+          <div className="min-w-0 flex-1"><h1 className="axos-wordmark">AXOS</h1><p className="truncate text-xs text-muted-foreground">{state.human}</p></div>
+        </header>
+        <TabsList className="axos-navigation" onPointerDown={(e) => { e.currentTarget.dataset.pointer = "true"; }} onKeyDown={(e) => { delete e.currentTarget.dataset.pointer; }}>
+          <TabsTrigger value="inbox">Inbox{unread > 0 && <Badge className="ml-auto h-5 px-1.5">{unread}</Badge>}</TabsTrigger>
           <TabsTrigger value="map">Map</TabsTrigger>
           <TabsTrigger value="projects">Projects</TabsTrigger>
           <TabsTrigger value="people">People</TabsTrigger>
           <TabsTrigger value="send">Send</TabsTrigger>
         </TabsList>
+        <div className="axos-sidebar-foot">
+          {error && <Badge variant="destructive">offline: {error.message}</Badge>}
+          <Notifications hubKey={state.push.key} devices={state.push.devices.length} />
+        </div>
+      </aside>
+      <main className="axos-main">
         <TabsContent value="inbox" className="screen-stack">
           <header className="screen-heading"><div><p className="eyebrow">Your attention</p><h2>Inbox</h2><p>Decisions to make, updates to catch up on. This is where your agents reach you.</p></div></header>
           <PendingRequests pending={state.pending} projects={state.projects} onChange={refresh} />
@@ -69,7 +87,7 @@ export default function App() {
             {state.asks.map((a) => <AskCard key={a.id} ask={a} now={state.now} onDone={refresh} />)}
             {!state.asks.length && <p className="text-muted-foreground text-sm">None open.</p>}
           </section>
-          <section className="flex flex-col gap-3">
+          <section className="panel flex flex-col gap-3">
             <div className="flex items-center justify-between gap-2">
               <h2 className="eyebrow">Updates{state.inbox.length > 0 && <span className="ml-2 font-normal normal-case tracking-normal">{state.inbox.length} unread</span>}</h2>
               {state.inbox.length > 0 && <MarkAllRead onDone={refresh} />}
@@ -79,7 +97,7 @@ export default function App() {
           </section>
           {/* Bonus information, folded by default: what your agents sent to other people, and what they quoted as your words. */}
           {state.sent.length > 0 && (
-            <details className="group">
+            <details className="panel group">
               <summary className="eyebrow cursor-pointer list-none select-none opacity-70 hover:opacity-100"><span className="mr-1 inline-block transition-transform group-open:rotate-90">›</span>Agent activity<span className="ml-2 font-normal normal-case tracking-normal">last {state.sent.length}</span></summary>
               <div className="mt-2 flex flex-col">{state.sent.map((m) => <SentItem key={m.id} m={m} now={state.now} />)}</div>
             </details>
@@ -94,15 +112,15 @@ export default function App() {
           {state.projects.filter((p) => !p.pair).map((p) => <ProjectCard key={p.id} p={p} now={state.now} me={state.human} people={state.people.map((x) => x.name)} operator={state.me.operator} onChange={refresh} />)}
           {!state.projects.some((p) => !p.pair) && <p className="text-muted-foreground text-sm">No projects yet. In a repo, tell Claude Code "connect this folder to AXOS".</p>}
         </TabsContent>
-        <TabsContent value="people" className="pt-2">
+        <TabsContent value="people">
           <People state={state} onChange={refresh} />
         </TabsContent>
-        <TabsContent value="send" className="pt-2">
+        <TabsContent value="send">
           <Composer state={state} onSent={refresh} />
         </TabsContent>
-      </Tabs>
+      </main>
       <Toaster />
-    </main>
+    </Tabs>
   );
 }
 
@@ -120,9 +138,9 @@ function Login() {
   const submit = (e: React.FormEvent) => { e.preventDefault(); void send("/ui/login", { name, password }); };
   return (
     <main className="mx-auto max-w-md px-4 py-12 sm:py-20">
-      <header className="mb-8 flex flex-col items-center gap-3 text-center"><img src={axosIcon} alt="" className="axos-mark size-20" /><h1 className="font-semibold text-2xl tracking-[0.18em]">AXOS</h1><p className="text-sm text-muted-foreground">Your people, projects and sessions.</p></header>
-      <div className="axos-login rounded-2xl border bg-card p-5 sm:p-6">
-      <h2 className="mb-4 text-lg font-medium">Log in</h2>
+      <header className="mb-8 flex flex-col items-center gap-3 text-center"><img src={axosIcon} alt="" className="axos-mark size-20" /><h1 className="axos-wordmark text-2xl">AXOS</h1><p className="text-sm text-muted-foreground">Your people, projects and sessions.</p></header>
+      <div className="axos-login glass p-5 sm:p-6">
+      <h2 className="mb-4 text-lg font-semibold">Log in</h2>
       <form className="flex flex-col gap-2" onSubmit={submit}>
         <label htmlFor="username" className="text-sm font-medium">Name</label>
         <Input id="username" name="username" autoComplete="username" placeholder="your name" value={name} onChange={(e) => setName(e.target.value)} />
