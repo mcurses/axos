@@ -2,5 +2,5 @@
 // headers; docs/PROTOCOL.md). The protocol number changes only when an existing client would break.
 export const VERSION = "0.26.9";
 // The plugin release that ships with this hub (plugin/.claude-plugin/plugin.json); a session on an older one is told once.
-export const PLUGIN = "0.23.3";
+export const PLUGIN = "0.23.5";
 export const PROTOCOL = 1;

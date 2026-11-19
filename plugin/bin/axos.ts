@@ -712,9 +712,17 @@ async function forward(id: Identity, msg: { id?: unknown; method?: string; param
   }
 }
 
-// Hold the hub's event stream and call ring() when a message arrives (or, after a reconnect, when one is waiting).
+// Hold the hub's event stream and call ring() when a message arrives, a role is taken, or (after a reconnect) one is waiting.
 // A ring carries no message: the client reads its inbox. Reconnects with backoff; without an identity it waits.
 const BELL_SETTLE_MS = Number(process.env.AXOS_BELL_SETTLE_MS ?? 1500);
+
+// Which frames ring: a message; a reconnect with mail waiting; and a role this session just took, whose mail may have
+// waited for its holder (message 9381 sat unshown for a day after a main seat moved between two sessions of one window:
+// the new holder was never woken). The ring asks the hub before it notifies, so a role with nothing waiting stays quiet.
+export function ringsFor(frame: string): boolean {
+  if (/^event: (message|role)$/m.test(frame)) return true;
+  return /^event: hello$/m.test(frame) && Number(/"unshown":(\d+)/.exec(frame)?.[1] ?? 0) > 0;
+}
 
 // wakes: told to the hub, so presence can say whether this session really wakes (null: not known).
 async function doorbell(connect: () => { url: string; headers: Record<string, string> } | null, ring: () => void, wakes: boolean | null = null): Promise<void> {
@@ -740,8 +748,7 @@ async function doorbell(connect: () => { url: string; headers: Record<string, st
         while ((i = buf.indexOf("\n\n")) >= 0) {
           const frame = buf.slice(0, i);
           buf = buf.slice(i + 2);
-          const hello = /^event: hello$/m.test(frame) && Number(/"unshown":(\d+)/.exec(frame)?.[1] ?? 0) > 0;
-          if (hello || /^event: message$/m.test(frame)) ring();
+          if (ringsFor(frame)) ring();
         }
       }
     } catch {
@@ -1808,25 +1815,27 @@ interface BoardHealth {
 }
 
 // {key: [component, props]} for the board, from the hub's health numbers.
-export function boardWidgets(h: BoardHealth): Record<string, [string, unknown]> {
+// The Summary's state speaks only for what waits for the board's reader (me): their unanswered questions. Agents' unread
+// mail, a vacant role and a failed push are the maintainer's work and stay in the attention card (Max, 2026-11-18:
+// "the vinea line appears only if something really needs my attention. otherwise its just noise"; suite owner 9176).
+export function boardWidgets(h: BoardHealth, me?: string): Record<string, [string, unknown]> {
   const pct = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 100);
   const age = (ms: number) => { const m = Math.round((h.now - ms) / 60_000); return m < 120 ? `${m} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} days`; };
   const roles = h.delivered.find((d) => d.kind === "role");
   const rolePct = roles ? pct(roles.shown, roles.n) : 100;
   const asked = h.asks.reduce((n, a) => n + a.n, 0);
-  const bad = h.pushes.failed > 0 || rolePct < 90;
   const WEEK = 7 * 86_400_000;
   const fresh = h.roles_waiting.filter((r) => h.now - r.oldest < WEEK);
   const stale = h.roles_waiting.length - fresh.length;
-  const warn = fresh.length > 0;
+  const forMe = h.asks.filter((a) => a.human === me).reduce((n, a) => n + a.n, 0);
   const summary = {
-    status: bad ? (rolePct < 90 ? `roles ${rolePct} % shown` : "push failed") : warn ? `${fresh.length} new unread` : "nothing new",
-    state: bad ? "bad" : warn ? "warn" : "ok",
+    status: forMe ? `${forMe} question${forMe === 1 ? "" : "s"} for you` : "nothing needs you",
+    state: forMe ? "waiting" : "ok",
     line: `hub ${h.version}: ${h.messages} messages in 24 h; ${h.machines.reduce((n, m) => n + m.sessions, 0)} sessions present, ${h.live_sessions} active in the last day`.slice(0, 120),
     figures: [
       { label: "messages", value: h.messages },
       { label: "roles shown", value: `${rolePct} %`, tone: rolePct < 90 ? "bad" : "muted" },
-      { label: "nobody reading", value: h.nobody_reading, tone: h.nobody_reading ? "warn" : "muted" },
+      { label: "nobody reading", value: h.nobody_reading, tone: "muted" },
       { label: "questions open", value: asked, tone: asked ? "info" : "muted" },
     ],
   };
@@ -1884,8 +1893,10 @@ export async function boardFeed(): Promise<string[]> {
   if (res.status === 401) throw new Error(TOKEN_REFUSED);
   const h = (await res.json().catch(() => null)) as (BoardHealth & { error?: string }) | null;
   if (!h || h.error) throw new Error(h?.error ?? `the hub answered ${res.status}`);
+  const me = await fetch(`${c.url.replace(/\/$/, "")}/api/whoami`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(10_000) })
+    .then((r) => r.json() as Promise<{ human?: string }>).then((w) => w.human).catch(() => undefined);
   const done: string[] = [];
-  for (const [key, [type, props]] of Object.entries(boardWidgets(h))) {
+  for (const [key, [type, props]] of Object.entries(boardWidgets(h, me))) {
     vineaRun(["push", c.board.id, key, "--type", type], JSON.stringify(props));
     done.push(key);
   }

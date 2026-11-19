@@ -113,8 +113,9 @@ describe("boardWidgets: the health board's attention card", () => {
     expect(items).toHaveLength(1);
     expect(items[0].state).toBe("warn");
     expect(items[0].detail).toContain("who:");
-    expect(summary(h).state).toBe("warn");
-    expect(summary(h).status).toBe("1 new unread");
+    // Agents' unread mail is the maintainer's work: the headline stays quiet (Max, 2026-11-18).
+    expect(summary(h).state).toBe("ok");
+    expect(summary(h).status).toBe("nothing needs you");
   });
 
   test("known old things collapse into one muted line", () => {
@@ -125,8 +126,16 @@ describe("boardWidgets: the health board's attention card", () => {
     expect(items[0].label).toStartWith("known, nothing to do");
     expect(items[0].detail).toContain("13 old mailbox(es)");
     expect(items.every((i: { label: string }) => i.label.length <= 80)).toBe(true);
-    expect(summary(h).state).not.toBe("warn");
-    expect(summary(h).status).toBe("nothing new");
+    expect(summary(h).state).toBe("ok");
+    expect(summary(h).status).toBe("nothing needs you");
+  });
+
+  test("the headline speaks only for the reader's own questions", () => {
+    const h = { asks: [{ human: "ana", n: 2, oldest: now - 3_600_000 }, { human: "ben", n: 5, oldest: now - 3_600_000 }], pushes: { sent: 1, failed: 1 } };
+    const forAna = plugin.boardWidgets({ ...base, ...h } as never, "ana").summary[1] as { state: string; status: string };
+    expect(forAna).toMatchObject({ state: "waiting", status: "2 questions for you" });
+    const forCarl = plugin.boardWidgets({ ...base, ...h } as never, "carl").summary[1] as { state: string; status: string };
+    expect(forCarl).toMatchObject({ state: "ok", status: "nothing needs you" });
   });
 
   test("open questions are an info line", () => {
@@ -156,5 +165,15 @@ describe("a role that moves on one Mac leaves the losing tab's labels", () => {
 
   test("nothing gained, nothing rewritten", () => {
     expect(plugin.staleTabs(records, "tab-me", "prj_a", [], now)).toEqual([]);
+  });
+});
+
+describe("ringsFor: which event frames wake a session", () => {
+  test("a message, a role just taken, and a reconnect with mail waiting ring; a quiet reconnect does not", () => {
+    expect(plugin.ringsFor('event: message\ndata: {"unread":1}')).toBe(true);
+    expect(plugin.ringsFor('event: role\ndata: {"kind":"role","unread":3}')).toBe(true);
+    expect(plugin.ringsFor('event: hello\ndata: {"unshown":2}')).toBe(true);
+    expect(plugin.ringsFor('event: hello\ndata: {"unshown":0}')).toBe(false);
+    expect(plugin.ringsFor(": beat")).toBe(false);
   });
 });

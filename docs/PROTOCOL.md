@@ -524,7 +524,8 @@ data: {"kind":"message","recipient":"session:agt_…#abcdefgh","message_id":12,"
   every frame, so a role taken later rings too. Fields are the sender, summary, type and priority, never the body.
   Low-priority messages get no frame, and `hello`'s `unshown` leaves them out.
   Ids are not rewritten to names here.
-- `role` frames (`{"kind":"role","recipient":…,"unread":n}`) come when a session claims a role. Clients may ignore them.
+- `role` frames (`{"kind":"role","recipient":…,"unread":n}`) come when a session claims a role. A client that wakes its
+  session should treat one as a ring: mail may have waited for the role's holder (the plugin does since 0.23.5).
 - A line `: beat` every 25 seconds keeps proxies open and keeps the session or agent counted as seen.
 - While a stream is open, the session or agent shows as online and as "wakes on messages" in `presence`.
 - Clients must ignore frame types and fields they do not know.
