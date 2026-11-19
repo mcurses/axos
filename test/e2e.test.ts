@@ -180,6 +180,11 @@ test("a low-priority message rings no bell and does not hold a stop; a note to a
   expect((await (await fetch(`${base}/api/unshown`, { headers: h })).json())).toMatchObject({ unshown: 0 });
   expect((await hook({ stop: true })).context).toBe("");
   expect((await hook({})).context).toContain("fyi: docs moved");
+  // Out of its usage limit (its StopFailure hook): a wake-up hands it nothing, the mail waits; a real hook reads it.
+  await hook({ event: "failure", error: "rate_limit", text: "You've hit your limit · resets 3am (UTC)" });
+  hub.send(dev1, { project: SHOP, to: ["session:shop-quiet"], type: "note", summary: "while it was out" });
+  expect((await hook({ wake: true })).context).toBe("");
+  expect((await hook({})).context).toContain("while it was out");
 
   const c = await connect(tokens.dev3!, { "x-axos-session": sid, "x-axos-project": "shop" });
   expect((await call(c, "ack", { ids: [fyi.id], outcome: "forwarded", note: "passed to <lane 3>\nsecond line" })).text).toContain("Acked 1 of 1");

@@ -4,6 +4,7 @@
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/axos.ts\" hook prompt", "timeout": 10 }] }],
     "PostToolUse": [{ "hooks": [{ "type": "command", "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/axos.ts\" hook tool", "timeout": 10 }] }],
     "Stop": [{ "hooks": [{ "type": "command", "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/axos.ts\" hook stop", "timeout": 10 }] }],
+    "StopFailure": [{ "hooks": [{ "type": "command", "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/axos.ts\" hook failure", "timeout": 10 }] }],
     "SessionEnd": [{ "hooks": [{ "type": "command", "command": "bun \"${CLAUDE_PLUGIN_ROOT}/bin/axos.ts\" hook end", "timeout": 5 }] }]
   }
 }

@@ -322,11 +322,11 @@ function headers(id: Identity): Record<string, string> {
   return h;
 }
 
-async function hookCall(id: Identity, event: string, stop = false): Promise<{ context?: string; error?: string; labels?: string[] }> {
+async function hookCall(id: Identity, event: string, stop = false, extra: Record<string, unknown> = {}): Promise<{ context?: string; error?: string; labels?: string[] }> {
   const res = await fetch(`${id.c.url.replace(/\/$/, "")}/api/hook`, {
     method: "POST",
     headers: { ...headers(id), "Content-Type": "application/json" },
-    body: JSON.stringify({ event, stop: stop || undefined, roles: id.roles ?? undefined, roles_managed: id.roles !== null }),
+    body: JSON.stringify({ event, stop: stop || undefined, roles: id.roles ?? undefined, roles_managed: id.roles !== null, ...extra }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   if (res.status === 401) return { error: "token" };
@@ -539,7 +539,8 @@ function wakeupOffText(): string {
 }
 
 async function hook(kind: string): Promise<void> {
-  const input = (await Bun.stdin.json().catch(() => ({}))) as { session_id?: string; cwd?: string; stop_hook_active?: boolean; session_title?: string; prompt?: string };
+  const input = (await Bun.stdin.json().catch(() => ({}))) as { session_id?: string; cwd?: string; stop_hook_active?: boolean; session_title?: string; prompt?: string;
+    error?: string; error_details?: string; last_assistant_message?: string };
   const id = identity(input.session_id, input.cwd, input.session_title);
   // Only a person's prompts are recorded: a headless run (the owner tick, scripts) sets AXOS_NO_PROMPT_LOG.
   if (kind === "prompt" && id && !id.quiet && id.project && typeof input.prompt === "string" && !process.env.AXOS_NO_PROMPT_LOG &&
@@ -567,6 +568,17 @@ async function hook(kind: string): Promise<void> {
   // Not configured, a quiet role, or a folder outside every project: no cost. A folder outside every project whose
   // session has sent through AXOS (to a person, through the project the two share) reads its own mailbox from then on.
   if (!id || id.quiet || (!id.project && !usedAxos(id.sessionId))) return;
+  // A turn that ended on an API error (StopFailure): the hub learns the error and the line Claude Code showed, so a
+  // session out of its usage limit reads as one that cannot read until the reset, not as "connected". Nothing returns.
+  if (kind === "failure") {
+    // Only the errors the hub acts on, and of the line only its "resets …" part: the rest may be the model's own text
+    // (a truncated answer, code), which has no business on a hub another person may run (review 2026-11-19, 3).
+    if (!["rate_limit", "billing_error", "account_on_hold", "authentication_failed", "oauth_org_not_allowed"].includes(input.error ?? "")) return;
+    const line = [input.last_assistant_message, input.error_details].filter((x) => typeof x === "string").join("\n");
+    const text = /resets [^\n]{1,60}/i.exec(line)?.[0] ?? "";
+    await hookCall(id, "failure", false, { error: input.error, text }).catch(() => {});
+    return;
+  }
   const state = readJson<{ last_check?: number; unreachable?: boolean; labels?: string[] }>(stateFile(id.sessionId)) ?? {};
   if (kind === "tool") {
     const every = (id.c.check_every_s ?? 30) * 1000;
@@ -716,11 +728,11 @@ async function forward(id: Identity, msg: { id?: unknown; method?: string; param
 // A ring carries no message: the client reads its inbox. Reconnects with backoff; without an identity it waits.
 const BELL_SETTLE_MS = Number(process.env.AXOS_BELL_SETTLE_MS ?? 1500);
 
-// Which frames ring: a message; a reconnect with mail waiting; and a role this session just took, whose mail may have
+// Which frames ring: a message; a reconnect with mail waiting; the hub's wake at a usage limit's reset; and a role this session just took, whose mail may have
 // waited for its holder (message 9381 sat unshown for a day after a main seat moved between two sessions of one window:
 // the new holder was never woken). The ring asks the hub before it notifies, so a role with nothing waiting stays quiet.
 export function ringsFor(frame: string): boolean {
-  if (/^event: (message|role)$/m.test(frame)) return true;
+  if (/^event: (message|role|wake)$/m.test(frame)) return true;
   return /^event: hello$/m.test(frame) && Number(/"unshown":(\d+)/.exec(frame)?.[1] ?? 0) > 0;
 }
 
@@ -790,7 +802,8 @@ function bell(): Promise<void> {
       const id = currentIdentity();
       if (!id || id.quiet || (!id.project && !usedAxos(id.sessionId))) return;
       try {
-        const r = await hookCall(id, "check");
+        // wake: the hub hands nothing to a session that cannot take a turn now (out of its usage limit); it waits.
+        const r = await hookCall(id, "check", false, { wake: true });
         if (r.context) channel(r.context);
       } catch { /* hub away: the stream reconnects and rings again when it is back */ }
       return;

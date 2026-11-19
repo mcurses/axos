@@ -182,6 +182,7 @@ function handleEvents(hub: Hub, req: Request, agent: AgentRow, conn: Connection)
 //   start  — session began (or resumed/cleared): a three-line orientation, roles mirrored from a local role system
 //   check  — before a prompt, after tool calls, at stop: messages not yet shown to this session
 //   end    — session closed: roles and leases are given up, role mail stays with the role
+//   failure — a turn ended on an API error (StopFailure): a usage limit or account error marks the session unable to read
 async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connection): Promise<Response> {
   if (req.method !== "POST") return new Response("method not allowed\n", { status: 405 });
   if (!conn.session) return json({ error: "x-axos-session header is required" }, 400);
@@ -189,9 +190,17 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
   if (raw.length > 65_536) return json({ error: "hook body too large" }, 413);
   let parsed: unknown = {};
   try { parsed = JSON.parse(raw || "{}") ?? {}; } catch { return json({ error: "hook body is not JSON" }, 400); }
-  const body = parsed as { event?: string; stop?: boolean; roles?: (string | { role: string; reason?: string; description?: string })[]; roles_managed?: boolean };
+  const body = parsed as { event?: string; stop?: boolean; wake?: boolean; error?: string; text?: string; roles?: (string | { role: string; reason?: string; description?: string })[]; roles_managed?: boolean };
   const session = conn.session;
   hub.hooked(session);
+  if (body.event === "failure") {
+    hub.turnFailed(session, typeof body.error === "string" ? body.error : "unknown", typeof body.text === "string" ? body.text.slice(0, 500) : "");
+    return json({ context: "" });
+  }
+  // A wake-up (the plugin's bell, no turn yet) hands nothing to a session that cannot take a turn: the mail stays
+  // unshown and waits for it. Any real hook shows the session working again.
+  if (body.wake && hub.dark(session)) return json({ context: "" });
+  if (!body.wake) hub.turnWorked(session);
   const actor = { id: agent.id, session };
   const rolesOf = (sender: string, p: string) => hub.senderShownTo(agent.human, sender) ? hub.rolesHeldBy(sender, p) : [];
   const nameOf = (sender: string) => sender.startsWith("session:") && hub.senderShownTo(agent.human, sender) ? hub.session(sender.slice(8))?.name ?? null : null;
@@ -320,7 +329,7 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
         hub.endSession(session, "the session closed");
         return json({ context: "" });
       default:
-        return json({ error: "event must be start, check or end" }, 400);
+        return json({ error: "event must be start, check, failure or end" }, 400);
     }
   } catch (e) {
     if (e instanceof AxosError) return json({ error: hub.display(e.message, { agent: agent.id }) }, 400);

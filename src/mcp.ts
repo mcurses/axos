@@ -140,7 +140,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       }));
     }
     lines.push("", "## Live sessions");
-    lines.push(...hub.presence(pr).map((a) => `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.online ? "online" : "away"}, seen ${ago(a.last_seen, now)}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`));
+    lines.push(...hub.presence(pr).map((a) => `- ${hub.label(a.address)}${a.address === me ? " (you)" : ""}: ${a.cannot_read ? (a.human === agent.human ? `${a.cannot_read}, seen ${ago(a.last_seen, now)}` : "away") : `${a.online ? "online" : "away"}, seen ${ago(a.last_seen, now)}`}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}`));
     const ls = hub.leases(pr);
     lines.push("", "## Leases");
     lines.push(...(ls.live.length ? ls.live.map((l) => `- ${l.resource}: ${hub.label(l.holder)} until ${when(l.expires_at)}${l.note ? ` — ${l.note}` : ""}`) : ["(none)"]));
@@ -533,7 +533,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   }, tool(({ project: p }) => {
     const now = hub.now();
     return hub.presence(project(p)).map((a) =>
-      `- ${a.address.startsWith("agent:") ? "machine " : ""}${hub.label(a.address)}${a.address === me ? " (you)" : ""}${mine(a) && a.folder ? ` in ${a.folder}` : ""}: ${a.online ? "online" : "away"}${a.wake === "wakes" ? " (wakes on messages)" : a.wake === "no" ? " (listening, but does not wake on messages)" : a.wake === "unknown" ? " (listening; whether it wakes is not known)" : ""}, seen ${ago(a.last_seen, now)}, ${a.unread ? `${a.unread} to handle (${a.unseen} not read yet)` : "nothing to handle"}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}${mine(a) && a.same_tree.length ? `; shares one working tree with ${a.same_tree.join(", ")}: edits may collide` : ""}`,
+      `- ${a.address.startsWith("agent:") ? "machine " : ""}${hub.label(a.address)}${a.address === me ? " (you)" : ""}${mine(a) && a.folder ? ` in ${a.folder}` : ""}: ${a.cannot_read ? (mine(a) ? `online, but ${a.cannot_read}` : "away") : a.online ? "online" : "away"}${a.cannot_read && !mine(a) ? "" : a.wake === "wakes" ? " (wakes on messages)" : a.wake === "no" ? " (listening, but does not wake on messages)" : a.wake === "unknown" ? " (listening; whether it wakes is not known)" : ""}${a.cannot_read && !mine(a) ? "" : `, seen ${ago(a.last_seen, now)}`}, ${a.unread ? `${a.unread} to handle (${a.unseen} not read yet)` : "nothing to handle"}${a.roles.length ? `, ${a.roles.join(", ")}` : ""}${mine(a) && a.same_tree.length ? `; shares one working tree with ${a.same_tree.join(", ")}: edits may collide` : ""}`,
     ).join("\n") || "Nobody is live.";
   }));
 

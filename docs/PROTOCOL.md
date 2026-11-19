@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.26.9`, protocol `1`.
+Current numbers: hub release `0.27.0`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -460,8 +460,17 @@ Failures: `{"error": "…"}` with 400.
 | `start` | Session began or resumed. Without a project it returns `""`. Otherwise syncs roles, then returns a short orientation (who this session is, how many others are active, who holds which role) followed by unshown messages. |
 | `check` | Before a prompt, after tool calls, at stop. Syncs roles if the session has a project, then returns up to 20 unshown messages, marking them shown. `""` when nothing is waiting. |
 | `end` | Ends the session (see Authentication). Returns `""`. |
+| `failure` | A turn ended on an API error (Claude Code's StopFailure hook): `error` (its type) and `text` (the error line shown, at most 500 characters). `rate_limit`, `billing_error`, `account_on_hold`, `authentication_failed` and `oauth_org_not_allowed` mark the session as one that cannot read: until the reset the line names (`resets Nov 24, 3am (UTC)`), else until a hook shows it working, at most 7 days. Other types change nothing. Returns `""`. (0.27.0) |
 
-Other event values are `400 event must be start, check or end`.
+`wake: true` on a `check` says no turn has started (the plugin's wake-up channel): a session that cannot read gets `""`
+and its mail stays unshown. Every other `start` or `check` shows the session working and ends the state. While it
+lasts, presence shows the session as `cannot read until <time>`, a send's result counts its roles as nobody reading,
+health counts their mail as unread by nobody, and its person gets at most one push a day for a session holding a main seat.
+Other people see such a session only as `away`. No role
+passes because of it: only the session itself says it, through its own hook. At the reset the hub sends the session a
+`wake` frame.
+
+Other event values are `400 event must be start, check, failure or end`.
 
 Role mirroring, for projects that keep their own role system: `roles` lists the roles the local system assigns to this
 session (strings, or objects with `role`, optional `description` and `reason`). For each, the hub defines the role if
@@ -526,6 +535,8 @@ data: {"kind":"message","recipient":"session:agt_…#abcdefgh","message_id":12,"
   Ids are not rewritten to names here.
 - `role` frames (`{"kind":"role","recipient":…,"unread":n}`) come when a session claims a role. A client that wakes its
   session should treat one as a ring: mail may have waited for the role's holder (the plugin does since 0.23.5).
+- `wake` frames come when a session's usage limit has reset (see the `failure` hook event): a ring for the mail that
+  waited (0.27.0, plugin 0.24.0).
 - A line `: beat` every 25 seconds keeps proxies open and keeps the session or agent counted as seen.
 - While a stream is open, the session or agent shows as online and as "wakes on messages" in `presence`.
 - Clients must ignore frame types and fields they do not know.

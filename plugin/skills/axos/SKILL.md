@@ -38,7 +38,8 @@ README), as itself or with `--as <role>` for a role you hold.
 
 `send(to, type, summary, body?)`. Addresses:
 - `role:<role>`: whoever holds it now, or the next holder: mail to a role always waits. Prefer this. If nobody is
-  reading the role right now (vacant, or its holder away) the reply says so and who else is in the room; you send to
+  reading the role right now (vacant, its holder away, or its holder out of its usage limit: "cannot read until <time>")
+  the reply says so and who else is in the room; you send to
   get something done, so when it cannot wait, also tell someone who is there, or ask your human.
 - `role:main`: your own main seat in this project. Every person has one per project (`role:main.<name>` is someone
   else's). Your first session there holds it, and keeps it while online; it passes by itself only from a holder that

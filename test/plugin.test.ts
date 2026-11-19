@@ -172,6 +172,7 @@ describe("ringsFor: which event frames wake a session", () => {
   test("a message, a role just taken, and a reconnect with mail waiting ring; a quiet reconnect does not", () => {
     expect(plugin.ringsFor('event: message\ndata: {"unread":1}')).toBe(true);
     expect(plugin.ringsFor('event: role\ndata: {"kind":"role","unread":3}')).toBe(true);
+    expect(plugin.ringsFor('event: wake\ndata: {"kind":"wake","unread":3}')).toBe(true);
     expect(plugin.ringsFor('event: hello\ndata: {"unshown":2}')).toBe(true);
     expect(plugin.ringsFor('event: hello\ndata: {"unshown":0}')).toBe(false);
     expect(plugin.ringsFor(": beat")).toBe(false);

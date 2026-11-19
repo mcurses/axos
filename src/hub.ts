@@ -35,6 +35,8 @@ export interface SessionRow {
   profile: string | null;
   cwd: string | null;            // the name of the session's folder (its checkout's top folder), never the path
   tree: string | null;           // a fingerprint of that checkout on its machine, never the path
+  dark_since?: number | null;    // its last turn ended on a usage limit or an account error; null when it works
+  dark_until?: number | null;    // that limit's reset, when known
   started_at: number;
   last_seen: number;
   ended_at: number | null;
@@ -170,7 +172,7 @@ export interface LandingRow {
 }
 
 export interface HubEvent {
-  kind: "message" | "role";
+  kind: "message" | "role" | "wake";
   recipient?: string;
   message_id?: number;
   from?: string;
@@ -248,6 +250,12 @@ export const UNUSED_MACHINE_MS = 14 * 86_400_000;
 const TAKEOVER_NO_PAUSE_MS = 3_600_000;
 // A holder on another machine counts as away (taken over without asking the human) only after this much silence.
 const CROSS_MACHINE_AWAY_MS = 3_600_000;
+// A session that cannot take a turn (its last one ended on a usage limit or an account error) and named no reset: read
+// as such for at most this long, unless a hook shows it working again.
+const DARK_MAX_MS = 7 * 86_400_000;
+// The errors of Claude Code's StopFailure hook that leave a session unable to read for a while. The rest (a server
+// error, an overlong answer, a bad request) pass with the next turn.
+const DARK_ERRORS = new Set(["rate_limit", "billing_error", "account_on_hold", "authentication_failed", "oauth_org_not_allowed"]);
 // What another tool asks of a main session is that tool's own hook's to say (meum's since 2026-11-05, suite owner 3500).
 const MAIN_DESCRIPTION = "main session here: calls to the whole project reach this person here; their first session holds it, claim_role main moves it";
 
@@ -1520,11 +1528,65 @@ export class Hub {
     return row?.last_seen ?? null;
   }
 
-  // A holder's reach in words: "connected", "seen 3m ago" or "away, seen 2h ago".
-  whereabouts(holder: string): string {
+  // A holder's reach in words: "connected", "seen 3m ago", "away, seen 2h ago", or "cannot read until …". Another
+  // person (viewer given) learns only "away" for the last: an account's usage is its person's own business.
+  whereabouts(holder: string, viewer?: string): string {
+    const d = this.dark(holder);
+    // Plain "away" for another person: no seen-age, which a heartbeating session would give away (review 2026-11-19, 1).
+    if (d) return viewer === undefined || this.humanOfHolder(holder) === viewer ? darkText(d) : "away";
     if (this.streams.has(holder)) return "connected";
     const seen = `seen ${ago(this.lastSeen(holder), this.now())}`;
     return this.isOnline(holder) ? seen : `away, ${seen}`;
+  }
+
+  // A session that cannot read now: its last turn ended on a usage limit or an account error. Only the session's own
+  // StopFailure hook says so, so no one else can make a holder look gone. Readers treat it as away (the sender is told,
+  // health counts its mail as unread by nobody); seats do not: no role passes because of it.
+  dark(holder: string): { since: number; until: number | null } | null {
+    if (!holder.includes("#")) return null;
+    const r = this.db.query("SELECT dark_since, dark_until FROM sessions WHERE key = ? AND ended_at IS NULL").get(holder) as
+      { dark_since: number | null; dark_until: number | null } | null;
+    if (!r?.dark_since) return null;
+    return (r.dark_until ?? r.dark_since + DARK_MAX_MS) > this.now() ? { since: r.dark_since, until: r.dark_until } : null;
+  }
+
+  // Can a holder take a message now and act on it: online and not out of its limit.
+  canRead(holder: string): boolean {
+    return this.isOnline(holder) && !this.dark(holder);
+  }
+
+  // The session's turn ended on an API error (its StopFailure hook). A usage limit or account error marks it unable to
+  // read, until the reset the error line named, if any; its person hears it once per main seat and limit window.
+  turnFailed(key: string, error: string, text: string): void {
+    if (!DARK_ERRORS.has(error)) return;
+    const s = this.session(key);
+    if (!s || s.ended_at !== null || s.kind !== "session") return;
+    const t = this.now();
+    const until = parseReset(text, t);
+    // A lapsed state (no reset named, over DARK_MAX_MS ago) starts a new window rather than continuing the old one.
+    this.db.query(`UPDATE sessions SET dark_since = CASE WHEN dark_since IS NULL OR COALESCE(dark_until, dark_since + ?1) <= ?2 THEN ?2 ELSE dark_since END,
+      dark_until = ?3 WHERE key = ?4`).run(DARK_MAX_MS, t, until, key);
+    this.event(`session:${key}`, "session.dark", s.project, { error, ...(until ? { until } : {}) });
+    const human = this.humanOfHolder(key);
+    if (!human) return;
+    const told = (this.db.query("SELECT dark_told FROM sessions WHERE key = ?").get(key) as { dark_told: number | null }).dark_told;
+    // At most one push a day per session, whatever reset its lines name (review 2026-11-19, 2).
+    if (told !== null && t - told < 86_400_000) return;
+    const seats = (this.db.query("SELECT project FROM roles WHERE holder = ? AND role = ?").all(key, mainRole(human)) as { project: string }[]).map((r) => r.project);
+    if (!seats.length) return;
+    this.db.query("UPDATE sessions SET dark_told = ? WHERE key = ?").run(t, key);
+    const names = seats.map((p) => this.projectName(p)).join(", ");
+    const state = until ? `cannot read until ${when(until)}` : `cannot take a turn (${error.replace(/_/g, " ")})`;
+    // At most once a day, never per message (a rotator once sent 77 notes on a state like this).
+    void this.pushToHuman(human, `${names}: the main session ${state}`,
+      `${this.label(`session:${key}`)} holds the main seat; mail to it waits${until ? " until then" : ""}. Another session of yours can take it with claim_role main.`, "", undefined, { sequence: `axos-dark-${key}` });
+  }
+
+  // A hook that shows the session working again (a prompt, a tool, a stop): it reads again.
+  turnWorked(key: string): void {
+    if (this.db.query("UPDATE sessions SET dark_since = NULL, dark_until = NULL WHERE key = ? AND dark_since IS NOT NULL").run(key).changes) {
+      this.event(`session:${key}`, "session.reads", this.session(key)?.project ?? null, {});
+    }
   }
 
   // ---------------------------------------------------------------- sessions
@@ -1749,6 +1811,9 @@ export class Hub {
         id: s.key, address: `session:${s.key}`, name: s.name, profile: s.profile, human: agent.human, last_seen: s.last_seen as number | null,
         bell: this.streams.has(s.key), wake: this.wake(s.key), online: this.streams.has(s.key) || t - s.last_seen < this.onlineWindowMs,
         unread: this.unreadCount(`session:${s.key}`), unseen: this.unshownCount([`session:${s.key}`]), roles: rolesOf(s.key),
+        // Out of its usage limit (or an account error): present, but it cannot read until then.
+        // Its person's own business: callers show it only to that person (others read "away").
+        cannot_read: ((d) => d ? darkText(d) : null)(this.dark(s.key)),
         // Its folder's name, and the other present sessions of the same machine in the same checkout (Elli, 2026-11-05:
         // two sessions in one working tree, nothing said so). Callers show these only to the session's own person.
         folder: s.cwd, same_tree: s.tree ? present.filter((x) => x.key !== s.key && x.agent_id === s.agent_id && x.tree === s.tree).map((x) => x.name ?? x.key) : [] as string[],
@@ -1765,6 +1830,7 @@ export class Hub {
         id: r.id, address: `agent:${r.id}`, name: null as string | null, profile: null as string | null, human: r.human, last_seen: r.last_seen,
         bell: this.streams.has(r.id), wake: this.wake(r.id), online: this.streams.has(r.id) || (r.last_seen !== null && t - r.last_seen < this.onlineWindowMs),
         unread: this.unreadCount(`agent:${r.id}`), unseen: this.unshownCount([`agent:${r.id}`]), roles: rolesOf(r.id),
+        cannot_read: null as string | null,
         folder: null as string | null, same_tree: [] as string[],
       }));
     // A project of two people lists only the sessions that work in it, not every machine of each (security review 7).
@@ -1940,7 +2006,7 @@ export class Hub {
         if (opts.noAsk) throw new AxosError(`role '${role}' is held by ${this.label(prev)}, online on another machine; claim_role from a session asks your human`);
         return { took_over_from: null, asked: this.askTakeover(agentId, project, role, prev, me, reason) };
       }
-      if (!reason) throw new AxosError(`role '${role}' is held by ${this.label(prev)} (${this.whereabouts(prev)}); a takeover on this machine needs force: the reason, shown to the holder`);
+      if (!reason) throw new AxosError(`role '${role}' is held by ${this.label(prev)} (${this.whereabouts(prev, this.humanOf(agentId) ?? "")}); a takeover on this machine needs force: the reason, shown to the holder`);
     }
     const t = this.now();
     // A claim is a request from the claimer: it counts as being seen, like every call does on the way in.
@@ -2581,13 +2647,12 @@ export class Hub {
     const outsideRole = (r: string) => { const p = r.slice(5, r.lastIndexOf("/")); return p !== input.project && !this.linkedProjects(input.project).includes(p); };
     const holderText = (r: string) => {
       const h = this.roleHolder(r)!;
-      if (masked.has(r)) return this.isOnline(h) ? "connected" : "away";
-      if (outsideRole(r)) return this.isOnline(h) ? "connected" : "away";
-      return `${this.labelFor(h, human, r.slice(5).split("/")[0] !== input.project)}, ${this.whereabouts(h)}`;
+      if (masked.has(r) || outsideRole(r)) return this.canRead(h) ? "connected" : "away";
+      return `${this.labelFor(h, human, r.slice(5).split("/")[0] !== input.project)}, ${this.whereabouts(h, human)}`;
     };
     // A role nobody is reading right now (vacant, or its holder away): the mail waits, and the sender is told so, with
     // who else is in the room, so it can also turn to someone who is there.
-    const unattended = [...recipients.keys()].filter((r) => r.startsWith("role:") && !masked.has(r) && !(this.roleHolder(r) && this.isOnline(this.roleHolder(r)!)))
+    const unattended = [...recipients.keys()].filter((r) => r.startsWith("role:") && !masked.has(r) && !(this.roleHolder(r) && this.canRead(this.roleHolder(r)!)))
       .map((r) => this.room(input.project, r, human, actor.kind === "agent" ? actor.session ?? actor.id : ""));
     // An agent's mailbox nobody has opened lately: the mail waits, and the sender knows it may wait for good.
     const stale = [...recipients.keys()].filter((r) => r.startsWith("agent:") && !this.agentReachable(r.slice(6))).map((r) => {
@@ -2745,13 +2810,13 @@ export class Hub {
     const holder = this.roleHolder(roleAddr);
     // Reached as a role open to the whole hub, without a link: that one role's state and nothing of the project (F1).
     if (!own && !this.linkedProjects(from).includes(p)) {
-      return `${roleAddr} is ${holder ? `held, its holder ${this.isOnline(holder) ? "connected" : "away"}` : "held by nobody"}: the message waits there.`;
+      return `${roleAddr} is ${holder ? `held, its holder ${this.canRead(holder) ? "connected" : "away"}` : "held by nobody"}: the message waits there.`;
     }
-    const state = holder ? `held by ${this.labelFor(holder, viewerHuman, !own)} (${this.whereabouts(holder)})` : "held by nobody";
+    const state = holder ? `held by ${this.labelFor(holder, viewerHuman, !own)} (${this.whereabouts(holder, viewerHuman)})` : "held by nobody";
     const room = own
       ? this.liveSessions(p).filter((x) => x.key !== me && x.key !== holder)
-        .map((x) => `${this.label(x.key)} (${this.rolesHeldBy(`session:${x.key}`, p).join(", ") || "no role"}; ${this.whereabouts(x.key)})`)
-      : this.roles(p).filter((r) => r.holder && r.role !== role).map((r) => `role:${p}/${r.role} (${this.labelFor(r.holder!, viewerHuman, true)}; ${this.whereabouts(r.holder!)})`);
+        .map((x) => `${this.label(x.key)} (${this.rolesHeldBy(`session:${x.key}`, p).join(", ") || "no role"}; ${this.whereabouts(x.key, viewerHuman)})`)
+      : this.roles(p).filter((r) => r.holder && r.role !== role).map((r) => `role:${p}/${r.role} (${this.labelFor(r.holder!, viewerHuman, true)}; ${this.whereabouts(r.holder!, viewerHuman)})`);
     return `${roleAddr} is ${state}: the message waits there. ${own ? "In the room" : `Roles held in ${p}`}: ${room.join("; ") || (own ? "nobody else" : "none")}.`;
   }
 
@@ -3572,6 +3637,11 @@ export class Hub {
     if (!this.sweeps) return;
     const t = this.now();
     this.sendDue(t);
+    // A usage limit has reset: the session reads again, and is woken for the mail that waited.
+    for (const x of this.db.query("SELECT key FROM sessions WHERE ended_at IS NULL AND dark_since IS NOT NULL AND COALESCE(dark_until, dark_since + ?) <= ?").all(DARK_MAX_MS, t) as { key: string }[]) {
+      this.turnWorked(x.key);
+      this.emit(`session:${x.key}`, { kind: "wake" });
+    }
     for (const x of this.db.query("SELECT key FROM sessions WHERE ended_at IS NULL AND kind = 'session' AND last_seen < ?").all(t - SESSION_LIVE_MS) as { key: string }[]) {
       this.endSession(x.key, "silent for 7 days");
     }
@@ -3705,7 +3775,7 @@ export class Hub {
       `SELECT r.project, r.role, r.holder, COUNT(*) AS n, MIN(m.created_at) AS oldest FROM roles r
          JOIN deliveries d ON d.recipient = 'role:' || r.project || '/' || r.role JOIN messages m ON m.id = d.message_id
         WHERE d.acked_at IS NULL GROUP BY r.project, r.role ORDER BY oldest`)
-      .filter((r) => !r.holder || !this.isOnline(r.holder))
+      .filter((r) => !r.holder || !this.canRead(r.holder))
       .map((r) => ({ ...r, state: r.holder ? `held by ${this.label(r.holder, true)}, ${this.whereabouts(r.holder)}` : "held by nobody" }));
     // Humans with high-priority mail unhandled on their page for over a day.
     const unread_humans = all<{ human: string; n: number; oldest: number }>(
@@ -3805,6 +3875,7 @@ export class Hub {
         const slash = rest.lastIndexOf("/");
         const role = this.db.query("SELECT holder FROM roles WHERE project = ? AND role = ?").get(rest.slice(0, slash), rest.slice(slash + 1)) as { holder: string | null } | null;
         if (!role?.holder) return "role held by nobody";
+        if (this.dark(role.holder)) return "role's holder cannot read (usage limit or account error)";
         if (!this.isOnline(role.holder)) return "role's holder is away";
         const h = this.session(role.holder);
         if (!h) return "role's holder is present without a wake-up stream; waits for its next prompt";
@@ -3891,6 +3962,44 @@ export function iso(ms: number): string {
 
 // A time in text for people and models: the hub's zone (AXOS_TZ, else the system's), to the minute, zone named.
 const ZONE = process.env.AXOS_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+// The reset a usage-limit line names, e.g. "You've hit your Fable limit · resets Nov 24, 3am (UTC)" or "resets 7:30pm
+// (Europe/Berlin)": a time within the next eight days, or null when the line names none that can be read.
+export function parseReset(text: string, now: number): number | null {
+  const m = /resets\s+(?:([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([^)]{1,40})\))?/i.exec(text);
+  if (!m) return null;
+  const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  let hour = Number(m[3]);
+  const minute = Number(m[4] ?? 0);
+  if (m[5]) hour = (hour % 12) + (m[5].toLowerCase() === "pm" ? 12 : 0);
+  if (hour > 23 || minute > 59) return null;
+  const zone = m[6]?.trim() || "UTC";
+  // Wall-clock time in a zone to an instant: guess it as UTC, then correct by the zone's offset at that instant.
+  const at = (y: number, mo: number, d: number): number | null => {
+    const guess = Date.UTC(y, mo, d, hour, minute);
+    try {
+      const p = new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" }).formatToParts(new Date(guess));
+      const g = (k: string) => Number(p.find((x) => x.type === k)?.value);
+      return guess - (Date.UTC(g("year"), g("month") - 1, g("day"), g("hour") % 24, g("minute")) - guess);
+    } catch { return null; }
+  };
+  const today = new Date(now);
+  let out: number | null;
+  if (m[1]) {
+    const mo = months.indexOf(m[1].toLowerCase());
+    if (mo < 0) return null;
+    out = at(today.getUTCFullYear(), mo, Number(m[2]));
+    if (out !== null && out < now - 86_400_000) out = at(today.getUTCFullYear() + 1, mo, Number(m[2]));
+  } else {
+    out = at(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+    for (let i = 0; out !== null && out <= now && i < 2; i++) out = at(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + i + 1);
+  }
+  return out !== null && out > now && out - now < 8 * 86_400_000 ? out : null;
+}
+
+export function darkText(d: { since: number; until: number | null }): string {
+  return d.until ? `cannot read until ${when(d.until)} (usage limit)` : `cannot take a turn since ${when(d.since)} (usage limit or account error)`;
+}
+
 export function when(ms: number): string {
   const parts = new Intl.DateTimeFormat("en-GB", { timeZone: ZONE, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short" })
     .formatToParts(new Date(ms));

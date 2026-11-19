@@ -4,7 +4,7 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDb } from "../src/db.ts";
-import { AxosError, Hub } from "../src/hub.ts";
+import { AxosError, Hub, parseReset } from "../src/hub.ts";
 import { ntfyNotifier, type Notifier } from "../src/notify.ts";
 import type { PushDevice, WebPush, WebPushPayload } from "../src/webpush.ts";
 import { renderDigest, renderMessage } from "../src/render.ts";
@@ -3370,4 +3370,96 @@ describe("thread for a reader outside the message's project (security review of 
     hub.linkProjects(X, Y);
     expect(hub.receiptAddress(ANA, `role:${Y}/owner`)).toBe(`role:${Y}/owner`);
   });
+});
+
+describe("a session out of its usage limit", () => {
+  test("the reset is read from the line Claude Code shows", () => {
+    const now = Date.parse("2026-11-19T22:00:00Z");
+    expect(parseReset("You've hit your Fable limit · resets Nov 24, 3am (UTC)", now)).toBe(Date.parse("2026-11-24T03:00:00Z"));
+    expect(parseReset("limit · resets 7:30pm (Europe/Berlin)", Date.parse("2026-11-19T12:00:00Z"))).toBe(Date.parse("2026-11-19T18:30:00Z"));
+    expect(parseReset("resets 3am (UTC)", now)).toBe(Date.parse("2026-11-20T03:00:00Z")); // past today: tomorrow
+    expect(parseReset("API Error: Rate limit reached", now)).toBeNull();
+    expect(parseReset("resets Nov 24, 3am (Mars/Olympus)", now)).toBeNull();
+  });
+
+  test("it reads as unable to read until the reset: senders are told, its person once, the seat stays; it reads again at the reset", () => {
+    const a1 = opened(DEV1, { client_session: "d1d1d1d1-0000-0000-0000-000000000000", project: SHOP, name: "s-d1" });
+    hub.streamOpened(a1, true);
+    const holder = () => hub.roles(SHOP).find((r) => r.role === "main.alice")!.holder;
+    expect(holder()).toBe(a1);
+    // A passing error is no state.
+    hub.turnFailed(a1, "server_error", "API Error: overloaded");
+    expect(hub.dark(a1)).toBeNull();
+    hub.turnFailed(a1, "rate_limit", "You've hit your Fable limit · resets Oct 27, 3am (UTC)");
+    expect(hub.dark(a1)).toEqual({ since: t, until: Date.parse("2026-10-27T03:00:00Z") });
+    expect(hub.whereabouts(a1)).toContain("cannot read until");
+    expect(pushes.length).toBe(1);
+    expect(pushes[0]!.title).toContain("the main session cannot read until");
+    // A sender to the seat learns it, though the holder is connected.
+    const r = hub.send(B, note(["role:main.alice"]));
+    expect(r.unattended.join("\n")).toContain("cannot read until");
+    // The next failed turn in the same window tells nobody again; the seat stays with it.
+    hub.turnFailed(a1, "rate_limit", "You've hit your Fable limit · resets Oct 27, 3am (UTC)");
+    expect(pushes.length).toBe(1);
+    opened(DEV3, { client_session: "d2d2d2d2-0000-0000-0000-000000000000", project: SHOP, name: "s-d2" });
+    expect(holder()).toBe(a1);
+    expect(hub.presence(SHOP).find((x) => x.id === a1)!.cannot_read).toContain("cannot read until");
+    // At the reset it reads again.
+    t = Date.parse("2026-10-27T03:00:30Z");
+    hub.sweep();
+    expect(hub.dark(a1)).toBeNull();
+  });
+
+  test("a hook that shows it working clears the state; without a reset time it stays until then", () => {
+    const a1 = opened(DEV1, { client_session: "d3d3d3d3-0000-0000-0000-000000000000", project: SHOP, name: "s-d3" });
+    hub.turnFailed(a1, "billing_error", "API Error: billing");
+    expect(hub.whereabouts(a1)).toContain("cannot take a turn since");
+    t += 3 * 86_400_000;
+    expect(hub.dark(a1)).not.toBeNull();
+    hub.turnWorked(a1);
+    expect(hub.dark(a1)).toBeNull();
+  });
+});
+
+test("another person learns only 'away' of a session out of its usage limit, never the reset", () => {
+  const a1 = opened(DEV1, { client_session: "d4d4d4d4-0000-0000-0000-000000000000", project: GAME, name: "g-d4" });
+  hub.streamOpened(a1, true);
+  hub.turnFailed(a1, "rate_limit", "You've hit your limit · resets Oct 27, 3am (UTC)");
+  const r = hub.send(S, { project: GAME, to: ["role:main.alice"], type: "note", summary: "for alice's main" });
+  const text = shown(r.unattended.join("\n"), { agent: SC });
+  expect(text).toContain("away");
+  expect(text).not.toContain("cannot read");
+  expect(hub.whereabouts(a1, "bob")).toBe("away");
+  expect(hub.whereabouts(a1, "alice")).toContain("cannot read until");
+});
+
+test("a usage-limit window that lapsed starts anew; its person is pushed at most once a day, whatever the reset lines say", () => {
+  const a1 = opened(DEV1, { client_session: "d5d5d5d5-0000-0000-0000-000000000000", project: SHOP, name: "s-d5" });
+  for (let i = 0; i < 6; i++) hub.turnFailed(a1, "rate_limit", `resets Oct ${26 + (i % 2)}, 3am (UTC)`);
+  expect(pushes.length).toBe(1);
+  hub.turnFailed(a1, "billing_error", "API Error: billing");
+  // Past the 7-day cap of a window without a reset (backdated: a session silent that long would have ended).
+  hub.db.query("UPDATE sessions SET dark_since = ?, dark_until = NULL, dark_told = ? WHERE key = ?").run(t - 8 * 86_400_000, t - 8 * 86_400_000, a1);
+  expect(hub.dark(a1)).toBeNull();
+  hub.turnFailed(a1, "billing_error", "API Error: billing");
+  expect(hub.dark(a1)).toEqual({ since: t, until: null });
+  hub.db.query("UPDATE sessions SET dark_since = ? WHERE key = ?").run(t - 8 * 86_400_000, a1);
+  hub.sweep();
+  expect(hub.db.query("SELECT dark_since FROM sessions WHERE key = ?").get(a1)).toEqual({ dark_since: null });
+  expect(pushes.length).toBe(2);
+});
+
+test("a database from before 0.27.0 gets the session columns for the usage-limit state in place", () => {
+  const path = join(tmpdir(), `axos-dark-${process.pid}-${Date.now()}.db`);
+  try {
+    const old = openDb(path);
+    for (const c of ["dark_since", "dark_until", "dark_told"]) old.exec(`ALTER TABLE sessions DROP COLUMN ${c}`);
+    old.close();
+    const db = openDb(path);
+    const cols = (db.query("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name);
+    expect(cols).toEqual(expect.arrayContaining(["dark_since", "dark_until", "dark_told"]));
+    db.close();
+  } finally {
+    rmSync(path, { force: true });
+  }
 });

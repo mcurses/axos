@@ -106,7 +106,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   roles_at_end  TEXT,                          -- the roles it held when it ended, one per line: '<project id>\t<role>\t<since>' ('' none; NULL ended before 0.26.8)
   kind          TEXT NOT NULL DEFAULT 'session', -- 'script': a named script of the agent (axos send --name), no model behind it
   wakes         INTEGER,                       -- what its last event stream said: 1 the host wakes on a ring, 0 it does not, NULL unknown
-  tree          TEXT                           -- a fingerprint of the session's checkout on its machine (never the path): two sessions with one share a working tree
+  tree          TEXT,                          -- a fingerprint of the session's checkout on its machine (never the path): two sessions with one share a working tree
+  dark_since    INTEGER,                       -- its last turn ended on a usage limit or an account error (its own StopFailure hook); NULL when it works
+  dark_until    INTEGER,                       -- the limit's reset, when the error line named one
+  dark_told     INTEGER                        -- when its person was last pushed about it (at most once a day)
 );
 CREATE TABLE IF NOT EXISTS messages (
   id            INTEGER PRIMARY KEY,
@@ -360,6 +363,7 @@ function migrate(db: Database): void {
   if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roles'").get()) db.exec("UPDATE roles SET description = substr(description, 1, instr(description, '. As main, keep the project''s meum') - 1) WHERE instr(description, '. As main, keep the project''s meum') > 0");
   column("roles", "open", "INTEGER DEFAULT 0");
   column("sessions", "tree", "TEXT");
+  for (const col of ["dark_since", "dark_until", "dark_told"]) column("sessions", col, "INTEGER");
   column("roles", "quiet", "INTEGER DEFAULT 0");
   column("messages", "deliver_at", "INTEGER");
   column("messages", "scheduled_json", "TEXT");
