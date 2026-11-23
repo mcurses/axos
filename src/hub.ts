@@ -1579,7 +1579,7 @@ export class Hub {
     const state = until ? `cannot read until ${when(until)}` : `cannot take a turn (${error.replace(/_/g, " ")})`;
     // At most once a day, never per message (a rotator once sent 77 notes on a state like this).
     void this.pushToHuman(human, `${names}: the main session ${state}`,
-      `${this.label(`session:${key}`)} holds the main seat; mail to it waits${until ? " until then" : ""}. Another session of yours can take it with claim_role main.`, "", undefined, { sequence: `axos-dark-${key}` });
+      `${this.label(`session:${key}`)} holds the main seat; mail to it waits${until ? " until then" : ""}. Another session of yours can take it with claim_role main.`, "", undefined, { sequence: `axos-dark-${key.replace(/[^A-Za-z0-9_-]/g, "_")}`.slice(0, 32) });
   }
 
   // A hook that shows the session working again (a prompt, a tool, a stop): it reads again.
@@ -3596,7 +3596,8 @@ export class Hub {
       let ok = 0;
       for (const d of devices) {
         try {
-          const r = await this.webPush!.send(d, payload, { ttl: 86_400, urgency: priority === "high" ? "high" : priority === "low" ? "low" : "normal", topic: opts.sequence?.slice(0, 32) });
+          const r = await this.webPush!.send(d, payload, { ttl: 86_400, urgency: priority === "high" ? "high" : priority === "low" ? "low" : "normal", // A Web Push topic is at most 32 URL-safe Base64 characters; anything else fails the send (2026-11-22, three pushes lost).
+            topic: opts.sequence?.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 32) });
           if (r === "gone") {
             this.db.query("DELETE FROM push_devices WHERE endpoint = ?").run(d.endpoint);
             this.event(`human:${human}`, "push.device_gone", null, { label: d.label });

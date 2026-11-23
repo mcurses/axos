@@ -2512,6 +2512,17 @@ describe("the page's own pushes", () => {
     DEV1 = wp.addAgent("alice", "dev1", [SHOP]).id;
   });
 
+  test("the push about a main session out of its limit reaches a device: its topic is URL-safe (lost three on 2026-11-22)", async () => {
+    wp.pushSubscribe("alice", device(1), "iPhone, home screen");
+    const k = wp.openSession(DEV1, { client_session: "e1e1e1e1-0000-0000-0000-000000000000", project: SHOP, name: "shop-e1" });
+    wp.hooked(k);
+    expect(wp.dark(k)).toBeNull();
+    wp.turnFailed(k, "rate_limit", "resets Oct 27, 3am (UTC)");
+    await Bun.sleep(5);
+    expect(sent.length).toBe(1);
+    expect(sent[0].topic).toMatch(/^[A-Za-z0-9_-]{1,32}$/);
+  });
+
   test("the VAPID pair is made once and kept in the database", () => {
     const db = openDb(":memory:");
     const first = new Hub(db, { webPush: () => ({ async send() { return "ok"; } }), publicUrl: "https://axos.example" });
