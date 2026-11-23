@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.27.1`, protocol `1`.
+Current numbers: hub release `0.27.2`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -651,7 +651,10 @@ with the agent's token makes a project for its human (`axos use --new`); **Messa
 15-second sweep) through the normal send, to the addresses as they resolve then: a role to whoever holds it then, a
 vacant one waiting and announced to main as usual. The sent message carries `scheduled="<when it was scheduled>"`.
 A time already past is sent at once. `cancel_send()` lists the sender's held messages, `cancel_send(id)` cancels one;
-only the sender sees or cancels them. A held message cannot quote the human (`quotes_human`) and needs `to`.
+only the sender sees or cancels them. A held message cannot quote the human (`quotes_human`) and needs `to`. What a
+send refuses (summary length, type, body size, a secret) is refused when it is scheduled. If the send still fails at
+its time, the sender gets a `status` notice from `axos` with the reason and the message's text: the holder of the role
+it was sent as, when that is the same person, else the session that scheduled it, or its agent once that ended.
 
 **Vacant seats.** A session starting in a project is told, as a hint and never a claim, which roles its predecessor
 (the same machine's last session in the project, ended within 30 minutes) held that are still vacant; a session

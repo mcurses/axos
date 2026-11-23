@@ -974,6 +974,31 @@ describe("a message for later (deliver_at)", () => {
     expect(() => hub.send(A, { ...note(["role:planner"], "far"), deliver_at: t + 31 * 86_400_000 })).toThrow("at most 30 days");
     expect(() => hub.send(A, { ...note(["role:nobody-here"], "x"), deliver_at: t + 60_000 })).toThrow("no role");
   });
+
+  test("what send would refuse later is refused now; an old over-long one goes out folded; a failure tells its sender", () => {
+    hub.defineRole(SHOP, "planner");
+    const long = "x".repeat(320);
+    expect(() => hub.send(A, { ...note(["role:planner"], long), deliver_at: t + 3_600_000 })).toThrow("over the limit of 300");
+    // A row held before the check (2026-11-23): its summary moves whole into the body, a shortened one on top.
+    const old = hub.send(A, { ...note(["role:planner"], "short"), body: "detail", deliver_at: t + 3_600_000 });
+    const row = hub.db.query("SELECT scheduled_json FROM messages WHERE id = ?").get(old.id) as { scheduled_json: string };
+    const j = JSON.parse(row.scheduled_json); j.input.summary = long;
+    hub.db.query("UPDATE messages SET scheduled_json = ? WHERE id = ?").run(JSON.stringify(j), old.id);
+    // One that cannot be sent at its time (a type no longer accepted) comes back to its sender.
+    const bad = hub.send(A, { ...note(["role:planner"], "will fail"), deliver_at: t + 3_600_000 });
+    const row2 = hub.db.query("SELECT scheduled_json FROM messages WHERE id = ?").get(bad.id) as { scheduled_json: string };
+    const j2 = JSON.parse(row2.scheduled_json); j2.input.type = "bogus";
+    hub.db.query("UPDATE messages SET scheduled_json = ? WHERE id = ?").run(JSON.stringify(j2), bad.id);
+    t += 61 * 60_000;
+    hub.sweep();
+    const got = hub.inbox(`role:${SHOP}/planner`);
+    expect(got.map((m) => m.summary)).toEqual([`${"x".repeat(299)}…`]);
+    expect(got[0]!.body).toBe(`${long}\n\ndetail`);
+    const back = hub.inbox(hub.mailboxes(A)).filter((m) => m.sender === "axos" && m.summary.includes("was not sent"));
+    expect(back.length).toBe(1);
+    expect(back[0]!.summary).toContain("type must be one of");
+    expect(back[0]!.body).toContain("will fail");
+  });
 });
 
 describe("vacant seats after a restart", () => {

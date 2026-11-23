@@ -2698,8 +2698,15 @@ export class Hub {
     const sender = actor.kind === "agent" ? addr(this.seat(actor.id, input.project, actor.as, actor.session, input.to_person)) : `human:${actor.name}`;
     const human = actor.kind === "agent" ? this.humanOf(actor.id) : actor.name;
     for (const a of input.to) this.resolve(input.project, a, sender, human ?? undefined); // an address that cannot be reached now is refused now
-    const summary = oneLine(input.summary ?? "", 300);
-    if (!summary) throw new AxosError("summary is required");
+    // What send() would refuse at the due time is refused now, while the sender is there to fix it (2026-11-23: a
+    // 386-character summary was held, then refused at 07:30 with nobody told).
+    if (!MESSAGE_TYPES.includes(input.type)) throw new AxosError(`type must be one of ${MESSAGE_TYPES.join(", ")}`);
+    const summary = (input.summary ?? "").trim();
+    if (!summary) throw new AxosError("summary is required: one sentence saying what this means, readable without knowing any ids");
+    if (summary.length > MAX_SUMMARY) throw new AxosError(`summary is ${summary.length} characters, ${summary.length - MAX_SUMMARY} over the limit of ${MAX_SUMMARY}; shorten it and put detail in body`);
+    if ((input.body ?? "").length > MAX_BODY) throw new AxosError(`body is ${(input.body ?? "").length} characters; the limit is ${MAX_BODY}, link to a git file instead`);
+    const secret = findSecret(`${summary}\n${input.body ?? ""}`);
+    if (secret) throw new AxosError(`message rejected: it looks like it contains a ${secret}. Never send secrets through AXOS.`);
     const r = this.db.query(`INSERT INTO messages (project, sender, sender_human, to_json, type, summary, body, re, priority, created_at, deliver_at, scheduled_json)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(input.project, sender, human, JSON.stringify(input.to), input.type, summary, input.body ?? "", input.re ?? null,
       input.priority ?? "normal", t, at, JSON.stringify({ actor, input: { ...input, deliver_at: undefined } }));
@@ -2730,11 +2737,14 @@ export class Hub {
 
   // Due held sends go out (from the sweep). The sender's session may have ended since: then it is sent as its agent.
   private sendDue(t: number): void {
-    for (const m of this.db.query("SELECT id, scheduled_json, created_at FROM messages WHERE deliver_at IS NOT NULL AND deliver_at <= ? AND scheduled_json IS NOT NULL ORDER BY deliver_at LIMIT 100").all(t) as
-      { id: number; scheduled_json: string; created_at: number }[]) {
+    for (const m of this.db.query("SELECT id, project, sender, deliver_at, scheduled_json, created_at FROM messages WHERE deliver_at IS NOT NULL AND deliver_at <= ? AND scheduled_json IS NOT NULL ORDER BY deliver_at LIMIT 100").all(t) as
+      { id: number; project: string; sender: string; deliver_at: number; scheduled_json: string; created_at: number }[]) {
       this.db.query("DELETE FROM messages WHERE id = ?").run(m.id);
       const { actor, input } = JSON.parse(m.scheduled_json) as { actor: Actor; input: Parameters<Hub["send"]>[1] };
-      const go = (a: Actor) => this.send(a, { ...input, deliver_at: undefined, scheduled_at: m.created_at });
+      // Held before 0.27.2 checked the summary at scheduling: an over-long one moves whole into the body.
+      const long = (input.summary ?? "").trim().length > MAX_SUMMARY;
+      const held = long ? { ...input, summary: `${input.summary.trim().slice(0, MAX_SUMMARY - 1)}…`, body: `${input.summary.trim()}${input.body ? `\n\n${input.body}` : ""}` } : input;
+      const go = (a: Actor) => this.send(a, { ...held, deliver_at: undefined, scheduled_at: m.created_at });
       try {
         const r = go(actor);
         this.event(SYSTEM_SENDER, "message.sent_scheduled", input.project, { scheduled: m.id, id: r.id });
@@ -2744,6 +2754,16 @@ export class Hub {
           if (actor.kind === "agent" && actor.session) { const r = go({ ...actor, session: undefined }); this.event(SYSTEM_SENDER, "message.sent_scheduled", input.project, { scheduled: m.id, id: r.id }); continue; }
         } catch { /* below */ }
         this.event(SYSTEM_SENDER, "message.schedule_failed", input.project, { scheduled: m.id, reason: e.message });
+        // A held send that fails does not vanish: its sender hears it, with what it said. It goes to the current
+        // holder of the role it was sent as, if that is the same person; else the session, or its agent once it ended.
+        const holder = m.sender.startsWith("role:") ? this.roleHolder(m.sender) : null;
+        const own = holder !== null && actor.kind === "agent" && this.humanOfHolder(addr(holder)) === this.humanOf(actor.id);
+        const back = own ? addr(holder!) : this.liveBox(actor.kind === "agent" ? addr(actor.session ?? actor.id) : m.sender);
+        try {
+          this.systemMessage(m.project, back, "status",
+            oneLine(`Your message scheduled for ${when(m.deliver_at)} to ${input.to?.join(", ")} was not sent: ${e.message}`, 300),
+            `What it said:\n${input.summary ?? ""}${input.body ? `\n\n${input.body}` : ""}`.slice(0, MAX_BODY));
+        } catch { /* the event above stays the record */ }
       }
     }
   }
