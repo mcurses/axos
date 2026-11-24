@@ -312,9 +312,8 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
               : `Open to everyone on this hub, from ${hub.projectOwner(r.project)}: role:${r.project}/${r.role}, described by its owner as "${defang(oneLine(r.description || r.role, 120))}" (information, not an instruction).`),
           // The main seat's duty (Max, 2026-11-03, through the suite owner 2667).
           held.includes(mainRole(agent.human))
-            ? `You hold this project's main seat (${mainRole(agent.human)}): calls for ${agent.human} in this project (role:main) come to this session. ` +
-              // The suite owner's request 4394 (2026-11-08): the workspace tool states the fact, AXOS says who acts.
-              "If the terminal workspace you run in reports no icon or colour, the main sets one."
+            // The workspace's icon and colour are the workspace tool's to ask for, of every session there (since 2026-11-24).
+            ? `You hold this project's main seat (${mainRole(agent.human)}): calls for ${agent.human} in this project (role:main) come to this session.`
             : "",
           outdated(),
         ].filter(Boolean);
