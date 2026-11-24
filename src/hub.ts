@@ -1500,6 +1500,13 @@ export class Hub {
 
   // A session that only sends: it has had mail for over an hour and never read or handled any of it, and it has sent.
   // One operator's account rotator and file-queue filer are programs that open the MCP server for one send and exit.
+  // A never-reading session whose client named it with a generated id (not a word like "usage-rotator") and that has no
+  // AXOS hooks is a model in an app that shows mail only when it calls inbox, not a program (seen 2026-11-24).
+  unhookedClient(key: string): boolean {
+    const s = this.session(key);
+    return !!s && s.hooked_at === null && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.client_session ?? "");
+  }
+
   neverReads(key: string): boolean {
     const r = this.db.query(
       `SELECT COALESCE(SUM(d.shown_at IS NOT NULL OR (d.acked_at IS NOT NULL AND COALESCE(d.outcome, '') <> 'expired')), 0) AS read,
@@ -2668,7 +2675,9 @@ export class Hub {
     });
     // A session that only sends (a program that opens the MCP server for one send): a reply to it is read by nobody.
     const sendOnly = [...recipients.keys()].filter((r) => r.startsWith("session:") && this.session(r.slice(8))?.kind === "session" && this.neverReads(r.slice(8)))
-      .map((r) => `${this.label(r)} has never read a message: it looks like a program that only sends, so this waits unread. If it spoke for a role, the role is the one to answer; if it needed no reply, ack its message done instead.`);
+      .map((r) => this.unhookedClient(r.slice(8))
+        ? `${this.label(r)} has never read a message: it runs without AXOS's hooks (another app, or an older plugin), so it sees mail only when it calls inbox. If it is waiting on this, tell its person; a role it holds is the steadier address.`
+        : `${this.label(r)} has never read a message: it looks like a program that only sends, so this waits unread. If it spoke for a role, the role is the one to answer; if it needed no reply, ack its message done instead.`);
     // A request to a whole project reaches every receiver as its own, and nothing tells them who took it: two live
     // sessions both started on one (meum-05's report, 2026-11-02, messages 2250 and 2260). The sender is told.
     const many = oneTaker
@@ -3877,7 +3886,8 @@ export class Hub {
         const s = this.session(rest);
         if (!s) return "session unknown";
         if (s.kind === "script") return "a script's mailbox: read only when `axos inbox --name` runs";
-        if (onlySends(s.key)) return "a session that only sends: it has never read a message (a program, not a model)";
+        if (onlySends(s.key)) return this.unhookedClient(s.key) ? "a session without AXOS's hooks: it has never read a message and sees mail only when it calls inbox"
+          : "a session that only sends: it has never read a message (a program, not a model)";
         if (s.ended_at !== null) return s.ended_at < r.created_at + 3_600_000 ? "session ended within the hour after the send" : "session ended before reading";
         if (this.dormant(s)) return "session closed without ending (no sign for a day)";
         if (s.wakes === 0) return "session's host does not wake on messages; waits for its next prompt";

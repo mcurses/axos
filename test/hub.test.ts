@@ -2319,18 +2319,28 @@ describe("mailboxes nobody reads", () => {
   });
 
   test("a session that only sends is named as such: to its senders and in the undelivered check", () => {
-    const bot = hub.openSession(DEV3, { client_session: "66666666-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "rotator", profile: "dev3" });
+    const bot = hub.openSession(DEV3, { client_session: "usage-rotator-shop", project: SHOP, name: "rotator", profile: "dev3" });
     const req = hub.send({ kind: "agent", id: DEV3, human: "alice", session: bot }, note(["agent:alice/dev1"], "hand off to account two")).id;
     hub.send(A, { ...note([`session:${bot}`], "done"), re: req });
     expect(hub.neverReads(bot)).toBe(false); // not an hour yet
     t += 2 * 3_600_000;
-    hub.openSession(DEV3, { client_session: "66666666-de4e-4733-bf41-1e0e45605f16", project: SHOP, name: "rotator", profile: "dev3" });
+    hub.openSession(DEV3, { client_session: "usage-rotator-shop", project: SHOP, name: "rotator", profile: "dev3" });
     expect(hub.neverReads(bot)).toBe(true);
     expect(hub.send(A, note([`session:${bot}`], "and again")).unattended.join(" ")).toMatch(/has never read a message: it looks like a program that only sends/);
     expect(hub.undelivered(t - DAY).items.find((i) => i.recipient === `session:${bot}`)!.cause).toMatch(/only sends/);
     const first = hub.inbox(hub.mailboxes({ id: DEV3, session: bot }))[0]!.id;
     hub.markShown([`session:${bot}`], [first]);
     expect(hub.neverReads(bot)).toBe(false);
+    // A model in an app without AXOS's hooks (a generated session id, never hooked) is not called a program.
+    const app = hub.openSession(DEV3, { client_session: "9B441992-DEAB-45DC-A1AF-6DC1D640D829", project: SHOP });
+    const asked = hub.send({ kind: "agent", id: DEV3, human: "alice", session: app }, note(["agent:alice/dev1"], "please review")).id;
+    hub.send(A, { ...note([`session:${app}`], "reviewed"), re: asked });
+    t += 2 * 3_600_000;
+    hub.openSession(DEV3, { client_session: "9B441992-DEAB-45DC-A1AF-6DC1D640D829", project: SHOP });
+    const said = hub.send(A, note([`session:${app}`], "one more")).unattended.join(" ");
+    expect(said).toMatch(/without AXOS's hooks/);
+    expect(said).not.toMatch(/program/);
+    expect(hub.undelivered(t - DAY).items.find((i) => i.recipient === `session:${app}`)!.cause).toMatch(/without AXOS's hooks/);
   });
 
   test("a program that only sends does not keep its person's main seat: the next session of theirs takes it", () => {
