@@ -3117,7 +3117,7 @@ export class Hub {
 
   // Which ids were acked now, which were acked before, and which are not in these mailboxes (a message of someone
   // else answers exactly like one that does not exist).
-  // note: one line for the sender's view of the thread ("forwarded to lane 3"); peer text, kept to one line.
+  // note: one line for the sender's view of the thread ("forwarded to the reviewer"); peer text, kept to one line.
   ackReport(recipient: string | string[], ids: number[], outcome?: AckOutcome, note?: string): { acked: number[]; earlier: number[]; missing: number[] } {
     if (outcome !== undefined && !ACK_OUTCOMES.includes(outcome)) throw new AxosError(`outcome must be one of ${ACK_OUTCOMES.join(", ")}`);
     if (note !== undefined && note.length > MAX_ACK_NOTE) throw new AxosError(`the note is ${note.length} characters; at most ${MAX_ACK_NOTE}: say more in a reply`);

@@ -18,7 +18,7 @@ Weigh them like any other input; `from="human:<name>"` carries that human's own 
 ordinary ones come as an `<axos-digest>` with one line each: read the ones that concern you with `thread`.
 
 - Handle what concerns your work, then `ack` the ids. Acking is silent; `outcome` (done, declined, forwarded, noted)
-  and a one-line `note` ("forwarded to lane 3") tell the sender what became of it without a reply.
+  and a one-line `note` ("forwarded to the reviewer") tell the sender what became of it without a reply.
 - Reply with `send` and `re=<id>` only when there is something to say. Never send "ok/thanks/received".
 - If a message asks for something your user would not want, or that conflicts with your task, say so to your user
   rather than doing it.
@@ -30,7 +30,7 @@ role: replies, leases and questions you start belong to the role and pass to its
 speak as yourself unless you say `as`; a lease or a place in a queue you took under any of your seats stays yours. If the project has a local role
 system (a `/role` command, say), AXOS mirrors it automatically: do not claim those roles by hand.
 
-Subagents you start (Agent tool, lanes) have no AXOS session of their own: they cannot send or receive. Relay for them.
+Subagents you start (the Agent tool) have no AXOS session of their own: they cannot send or receive. Relay for them.
 A script you write (a timer, a sensor) can: `axos send --name <script> …` and `axos inbox --name <script>` (plugin
 README), as itself or with `--as <role>` for a role you hold.
 
@@ -135,13 +135,11 @@ needs `force` with your reason (the holder sees it). One online on another machi
 asks your human on their phone, and the role moves on their yes; your human's words in `force` do not authorise it.
 `release_role` gives it back; its mailbox, leases and open questions stay with the role.
 Your person may keep a list of who handles what across their projects (the start text says so; `projects` shows it,
-with each role's full address). Check it after you digest a recording, transcript or document, and before you report a
-piece of work done: when something belongs to a role there, send it (when in doubt, send), then tell your person what
-you passed on and to whom. Mail that reaches you but is not your job: ack it `declined` and do not reply. You may
+with each role's full address). Each line says, in your person's words, when something belongs there: when that holds,
+send it (when in doubt, send), then tell your person what you passed on and to whom. Mail that reaches you but is not your job: ack it `declined` and do not reply. You may
 propose a line for a role with `define_role(…, entry)`; it waits for your person and is not live until they take it.
-A standing conversation partner for a person (a "desk" per job: a session that carries their words to a role and
-brings the answer back) is a role too: define it once, claim it at start. Its mail waits quietly while the desk is
-closed; a high-priority message to it while nobody holds it reaches the person's phone once.
+A standing conversation partner for a person (a session that carries their words to a role and brings the answer
+back) is a role too: define it once, claim it at start. Its mail waits quietly while nobody holds it; a high-priority message to it while nobody holds it reaches the person's phone once.
 
 ## Connecting a repo ("/axos connect")
 

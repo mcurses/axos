@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.29.1`, protocol `1`.
+Current numbers: hub release `0.29.2`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -697,8 +697,9 @@ writes, edits or removes a line, on their page under Projects. Their own agents 
 the proposal waits on the owner's page with take, edit and refuse, and is not live until taken. The `projects` tool
 lists the live lines of the person's own projects, each with its full address and the seat's state, to that person's
 sessions only; another person's sessions see none. While the list has a line, each of the person's sessions gets one
-line at start: check the list after you digest a recording, transcript or document, and before you report a piece of
-work done; when in doubt, send, then tell the person what you passed on. A receiver drops what is not its own: it acks
+line at start: each line says when something belongs to its role; when that holds, send it there; when in doubt,
+send, then tell the person what you passed on. The hub's own texts name no condition: when is the person's content.
+A receiver drops what is not its own: it acks
 it `declined` and does not reply.
 
 **A role open to the whole hub.** The hub's operator may open a role of a project they own with `open: "hub"`: every

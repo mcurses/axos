@@ -155,7 +155,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   // Who handles what: the human's own list, for their own sessions only.
   const whoHandlesWhat = () => {
     const list = hub.liveEntriesOf(agent.human);
-    return list.length ? `\n\n## Who handles what (${agent.human}'s own words; check it after you digest a recording, transcript or document, and before you report a piece of work done)\n` +
+    return list.length ? `\n\n## Who handles what (${agent.human}'s own words: when something belongs to a role, send it there)\n` +
       list.map((e) => `- role:${e.project}/${e.role} (${e.seat}): ${defang(e.entry)}`).join("\n") +
       `\nWhen in doubt, send it there; a receiver drops what is not its own. Then tell ${agent.human} what you passed on and to whom.` : "";
   };
@@ -305,7 +305,7 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     inputSchema: strict({
       ids: z.array(z.number().int()).min(1),
       outcome: z.enum(ACK_OUTCOMES).optional().describe("What became of it, shown to the sender in thread: done | declined | forwarded | noted"),
-      note: z.string().optional().describe("One line for the sender's thread view, e.g. 'forwarded to lane 3' (at most 200 characters); saves a reply"),
+      note: z.string().optional().describe("One line for the sender's thread view, e.g. 'forwarded to the reviewer' (at most 200 characters); saves a reply"),
       project: projectArg, as: asArg,
     }),
   }, tool(({ ids, outcome, note, project: p, as }) => {
