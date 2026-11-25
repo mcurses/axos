@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.30.2`, protocol `1`.
+Current numbers: hub release `0.30.3`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -701,7 +701,7 @@ another person's sessions see none. At start, each of the person's sessions gets
 the person's text and followed by its role's address (at most 30; the rest are named by count); the `projects` tool
 lists the full lines with the seat's state. When a condition holds, the session sends it to that role (when in doubt,
 it sends). A send from one of the person's sessions to such a role in another project is a pass-on: the send result
-asks the sender to tell its person in one line what it passed on and to whom. The hub's own texts name no condition.
+asks the sender to tell its person in one line what it passed on and to whom (not for a reply, `re`). The hub's own texts name no condition.
 A receiver drops what is not its own: it acks it `declined` and does not reply.
 
 **A role open to the whole hub.** The hub's operator may open a role of a project they own with `open: "hub"`: every

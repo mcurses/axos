@@ -260,7 +260,8 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     }
     parts.push(...r.unattended);
     // A pass-on to a role on the person's list: the sender tells its person (until the levels are settled, 2026-11-25).
-    const passed = hub.passedOn(r.id, agent.human, sentIn);
+    // A reply continues a thread; only a new message passes something on (2026-11-25).
+    const passed = a.re === undefined ? hub.passedOn(r.id, agent.human, sentIn) : [];
     if (passed.length) parts.push(`${passed.join(", ")} ${passed.length === 1 ? "is" : "are"} on ${agent.human}'s list of who handles what: tell ${agent.human} in one line what you passed on and to whom.`);
     return parts.join(" ");
   }));

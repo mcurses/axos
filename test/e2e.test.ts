@@ -363,6 +363,15 @@ test("the plugin's hooks: start orients in a few lines, check shows new messages
   expect(hub.entriesOf("alice").find((e) => e.role === "main.alice")).toMatchObject({ description: "alice's main seat", proposal: "Decisions for alice go here.", proposal_when: "only alice can decide it" });
   expect((await call(dev1, "define_role", { role: "nope", entry: "x" })).text).toContain("give its description to create it");
   hub.refuseProposal("alice", SHOP, "main.alice");
+  // Sending to a listed role in another project asks for the one line to the person; a reply does not pass anything on.
+  const side = hub.addProject("alice/side");
+  hub.defineRole(side, "keeper", "keeps the side notes");
+  hub.setEntry("alice", side, "keeper", "Side notes go here.", "a side note turns up");
+  const passed = await call(dev1, "send", { project: "shop", to: "role:alice/side/keeper", summary: "A side note turned up." });
+  expect(passed.text).toContain("is on alice's list of who handles what");
+  const sentId = Number(passed.text.match(/Sent message (\d+)/)![1]);
+  expect((await call(dev1, "send", { project: "shop", re: sentId, to: "role:alice/side/keeper", summary: "One more detail on it." })).text).not.toContain("list of who handles what");
+  hub.setEntry("alice", side, "keeper", "");
   hub.setEntry("alice", SHOP, "frontend-coordinator", "");
   await dev1.close();
 });
