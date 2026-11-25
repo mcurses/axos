@@ -28,7 +28,10 @@ export interface Me { operator: boolean; password: boolean; logins: { id: number
 export interface Pending { id: number; kind: "share" | "link" | "join"; from: string; project: string; created_at: number }
 // A role another person opened to the whole hub: it takes messages from anyone on it, from any project.
 export interface OpenRole { address: string; owner: string; description: string }
-export interface WhoEntry { project: string; role: string; entry: string; proposal: string; proposed_by: string | null; seat: string }
+export interface WhoEntry {
+  project: string; role: string; description: string; when: string; entry: string; proposal: string; proposal_when: string; proposed_by: string | null; seat: string;
+  passed?: { week: number; last: { id: number; at: number; from: string; summary: string; state: string } | null };
+}
 
 export interface State { human: string; me: Me; people: Person[]; invites: Invite[]; pending: Pending[]; push: { key: string | null; devices: { label: string; created_at: number; last_ok: number | null }[] }; now: number; types: string[]; asks: Ask[]; inbox: InboxMessage[]; sent: SentMessage[]; projects: Project[]; open_roles: OpenRole[]; who?: WhoEntry[] }
 

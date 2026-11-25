@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ACK_OUTCOMES, addr, AxosError, decisionOf, Hub, when, MESSAGE_TYPES, PRIORITIES, type Actor, type AgentRow } from "./hub.ts";
+import { ACK_OUTCOMES, addr, AxosError, decisionOf, Hub, quotedPeer, when, MESSAGE_TYPES, PRIORITIES, type Actor, type AgentRow } from "./hub.ts";
 import { ago, defang, FRAME_NOTE, FRAME_NOTE_SHORT, renderMessages } from "./render.ts";
 import { VERSION } from "./version.ts";
 
@@ -155,8 +155,8 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
   // Who handles what: the human's own list, for their own sessions only.
   const whoHandlesWhat = () => {
     const list = hub.liveEntriesOf(agent.human);
-    return list.length ? `\n\n## Who handles what (${agent.human}'s own words: when something belongs to a role, send it there)\n` +
-      list.map((e) => `- role:${e.project}/${e.role} (${e.seat}): ${defang(e.entry)}`).join("\n") +
+    return list.length ? `\n\n## Who handles what (${agent.human}'s own words, quoted: when the condition holds, send it to that role)\n` +
+      list.map((e) => `- role:${e.project}/${e.role} (${e.seat}): ${e.when ? `when ${defang(quotedPeer(e.when, 120))}: ` : ""}${defang(quotedPeer(e.entry, 500))}`).join("\n") +
       `\nWhen in doubt, send it there; a receiver drops what is not its own. Then tell ${agent.human} what you passed on and to whom.` : "";
   };
 
@@ -259,6 +259,9 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
         `Their page${hub.publicUrl ? ` (${hub.publicUrl}/ui)` : ""} shows people, projects and questions; added to a phone's home screen it is the app.`);
     }
     parts.push(...r.unattended);
+    // A pass-on to a role on the person's list: the sender tells its person (until the levels are settled, 2026-11-25).
+    const passed = hub.passedOn(r.id, agent.human, sentIn);
+    if (passed.length) parts.push(`${passed.join(", ")} ${passed.length === 1 ? "is" : "are"} on ${agent.human}'s list of who handles what: tell ${agent.human} in one line what you passed on and to whom.`);
     return parts.join(" ");
   }));
 
@@ -346,20 +349,23 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
 
   server.registerTool("define_role", {
     description: "Create a role in the project (or update its description): a job one session does at a time, e.g. reviewer, deployer, coordinator.",
-    inputSchema: strict({ project: projectArg, role: z.string(), description: z.string().describe("One sentence: what the holder does"),
+    inputSchema: strict({ project: projectArg, role: z.string(), description: z.string().optional().describe("One sentence: what the holder does. Needed to create a role; left out, an existing role keeps its own"),
       quiet: z.boolean().optional().describe("true: while vacant, this role's mail is never shown to the project's main session (a role whose work must not reach a chat session)"),
       entry: z.string().optional().describe("Only for your own human's projects: propose their line for who handles what at this role (when to send something here, what, and what happens to it). It goes live only when your human takes it on their page"),
+      when: z.string().optional().describe("With entry: the condition, short, in your human's words (when something belongs at this role); every session of theirs sees the conditions at start"),
       open: z.union([z.boolean(), z.literal("hub")]).optional().describe("Only the project's owner: true names this role, with its description, at the start of every session of theirs (a feedback address; their sessions reach any role of their own projects anyway); \"hub\" (the hub's operator only) lets every person's sessions on the hub do so, and nothing else of the project; the description is shown to those sessions at start. false closes it.") }),
-  }, tool(({ project: p, role, description, open, quiet, entry }) => {
+  }, tool(({ project: p, role, description, open, quiet, entry, when }) => {
     const pr = project(p);
     if (!hub.isMember(agent.id, pr)) throw new AxosError(`you are not in project '${pr}'`);
     // Refused before anything changes (security review of 0.29.0, N3).
     if (entry !== undefined && hub.projectOwner(pr) !== agent.human) throw new AxosError("only the project owner's own agents propose who handles what there");
+    if (when !== undefined && entry === undefined) throw new AxosError("when goes with entry: the condition of the line you propose");
+    if (description === undefined && !hub.roles(pr).some((r) => r.role === role)) throw new AxosError(`there is no role '${role}' in ${pr} yet: give its description to create it`);
     hub.defineRole(pr, role, description, false, agent.human);
-    if (entry !== undefined) hub.proposeEntry(agent.id, pr, role, entry, me);
+    if (entry !== undefined) hub.proposeEntry(agent.id, pr, role, entry, me, when);
     if (open !== undefined) hub.setRoleOpen(agent.human, pr, role, open);
     if (quiet !== undefined) hub.setRoleQuiet(pr, role, quiet);
-    return `Role ${role} in ${pr}: ${description}${entry !== undefined ? `. Your line for who handles what waits on ${agent.human}'s page until they take it` : ""}${open === true ? ". Open: every session of yours reaches it from any project." : open === false ? ". Closed to sessions outside the project." : ""}`;
+    return `Role ${role} in ${pr}${description !== undefined ? `: ${description}` : ""}${entry !== undefined ? `. Your line for who handles what waits on ${agent.human}'s page until they take it` : ""}${open === true ? ". Open: every session of yours reaches it from any project." : open === false ? ". Closed to sessions outside the project." : ""}`;
   }));
 
   server.registerTool("claim_role", {

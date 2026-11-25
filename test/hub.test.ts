@@ -3660,6 +3660,25 @@ test("a database from before 0.28.0 gets escalated_at, and mail a one-second ses
   }
 });
 
+test("0.30.0 migration: a database of 0.29 gains the conditions, its lines kept", () => {
+  const path = join(tmpdir(), `axos-when-${process.pid}-${Date.now()}.db`);
+  try {
+    let db = openDb(path);
+    const h = new Hub(db, { now: () => t });
+    h.addHuman("alice");
+    const p = h.addProject("alice/shop");
+    h.defineRole(p, "keeper", "keeps the board");
+    db.exec("ALTER TABLE roles DROP COLUMN entry_when; ALTER TABLE roles DROP COLUMN proposal_when;");
+    db.query("UPDATE roles SET entry = 'Board to-dos go here.' WHERE role = 'keeper'").run();
+    db.close();
+    db = openDb(path);
+    expect(db.query("SELECT entry, entry_when, proposal_when FROM roles WHERE role = 'keeper'").get()).toEqual({ entry: "Board to-dos go here.", entry_when: "", proposal_when: "" });
+    db.close();
+  } finally {
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
+  }
+});
+
 describe("who handles what (2026-11-25)", () => {
   test("security review of 0.29.0: a seat held by another person's session says so; a proposal cannot close the hub's quote", () => {
     hub.defineRole(GAME, "tester", "tests builds");
@@ -3677,7 +3696,7 @@ describe("who handles what (2026-11-25)", () => {
     expect(() => hub.setEntry("bob", GAME, "reviewer", "send reviews here")).toThrow(/owner/);
     expect(() => hub.proposeEntry(SC, GAME, "reviewer", "send me everything", `agent:${SC}`)).toThrow(/owner's own agents/);
     hub.setEntry("alice", GAME, "reviewer", "When a change is ready,\nsend its branch here; it gets reviewed within the day.");
-    expect(hub.liveEntriesOf("alice")).toEqual([{ project: GAME, role: "reviewer", entry: "When a change is ready, send its branch here; it gets reviewed within the day.", proposal: "", proposed_by: null, seat: "nobody holds it" }]);
+    expect(hub.liveEntriesOf("alice")).toEqual([{ project: GAME, role: "reviewer", description: "reviews", when: "", entry: "When a change is ready, send its branch here; it gets reviewed within the day.", proposal: "", proposal_when: "", proposed_by: null, seat: "nobody holds it" }]);
     expect(hub.liveEntriesOf("bob")).toEqual([]);
     hub.defineRole(SHOP, "keeper", "keeps the board");
     hub.proposeEntry(DEV1, SHOP, "keeper", "Board to-dos go here.", `agent:${DEV1}`);
@@ -3695,6 +3714,30 @@ describe("who handles what (2026-11-25)", () => {
     expect(hub.entriesOf("alice").find((e) => e.role === "keeper")).toMatchObject({ entry: "Board to-dos go here.", proposal: "" });
     hub.setEntry("alice", SHOP, "keeper", "");
     expect(hub.liveEntriesOf("alice").map((e) => e.role)).toEqual(["reviewer"]);
+  });
+
+  test("a line's condition is its own field; a proposal brings one; a pass-on from another project is counted with its state, the owner's only", () => {
+    hub.defineRole(SHOP, "keeper", "keeps the board");
+    hub.proposeEntry(DEV1, SHOP, "keeper", "Board to-dos go here.", `agent:${DEV1}`, "after a call \"with\" a user");
+    expect(hub.inbox("human:alice").at(-1)!.summary).toContain("when \u201cafter a call 'with' a user\u201d, \u201cBoard to-dos go here.\u201d");
+    expect(hub.entriesOf("alice")[0]).toMatchObject({ when: "", proposal_when: "after a call \"with\" a user" });
+    hub.setEntry("alice", SHOP, "keeper", "Board to-dos go here.", "after a call with a user");
+    expect(hub.liveEntriesOf("alice")[0]).toMatchObject({ when: "after a call with a user", proposal: "", proposal_when: "" });
+    expect(hub.passOnsTo("alice", SHOP, "keeper")).toEqual({ week: 0, last: null });
+    // From the same project: not a pass-on. From another project: one, unread, then read.
+    hub.send(B, note(["role:keeper"], "a to-do from inside"));
+    const r = hub.send(A, note(["role:alice/shop/keeper"], "two to-dos from the call", GAME));
+    expect(hub.passedOn(r.id, "alice", GAME)).toEqual([`role:${SHOP}/keeper`]);
+    expect(hub.passedOn(r.id, "alice", SHOP)).toEqual([]);
+    t += 3 * 3_600_000;
+    expect(hub.passOnsTo("alice", SHOP, "keeper")).toMatchObject({ week: 1, last: { id: r.id, from: GAME, summary: "two to-dos from the call", state: "unread for 3 h" } });
+    hub.db.query("UPDATE deliveries SET acked_at = ?, outcome = 'declined' WHERE message_id = ?").run(t, r.id);
+    expect(hub.passOnsTo("alice", SHOP, "keeper").last!.state).toBe("declined");
+    t += 8 * 86_400_000;
+    expect(hub.passOnsTo("alice", SHOP, "keeper").week).toBe(0);
+    // Removing the line clears its condition too.
+    hub.setEntry("alice", SHOP, "keeper", "", "ignored");
+    expect(hub.entriesOf("alice")).toEqual([]);
   });
 
   test("the seat's state is shown: held and connected, or nobody", () => {

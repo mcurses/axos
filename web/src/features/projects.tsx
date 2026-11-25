@@ -198,10 +198,13 @@ export function PendingRequests({ pending, projects, onChange }: { pending: { id
   );
 }
 
-// Who handles what: the person's own words for their agents, one line per role, across their projects. Only they edit
-// it here; an agent's proposal waits here until they take, edit or refuse it.
-export function WhoHandlesWhat({ who, projects, onChange }: { who: WhoEntry[]; projects: Project[]; onChange: () => void }) {
-  const [edit, setEdit] = useState<{ project: string; role: string; text: string } | null>(null);
+// Who handles what: the person's own words for their agents, one card per role, grouped by project: who, when, what,
+// how they hear of a pass-on, whether someone is there, and what was last passed on. Only they edit it here; an agent's
+// proposal waits on top until they take, edit or refuse it.
+type Draft = { project: string; role: string; when: string; text: string };
+
+export function WhoHandlesWhat({ who, projects, now, onChange }: { who: WhoEntry[]; projects: Project[]; now: number; onChange: () => void }) {
+  const [edit, setEdit] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
   const act = async (action: "entry" | "entry/refuse", body: Record<string, unknown>, done: string) => {
     setBusy(true);
@@ -214,34 +217,69 @@ export function WhoHandlesWhat({ who, projects, onChange }: { who: WhoEntry[]; p
         <option value={"\t"}>pick a role…</option>
         {roles.map((r) => <option key={`${r.project}/${r.role}`} value={`${r.project}\t${r.role}`}>{r.project} · {r.role}</option>)}
       </select>
-      <textarea className="min-h-20 rounded-md border bg-background px-2 py-1 text-sm" maxLength={500} placeholder="When …, send … here; it will …" value={edit.text} onChange={(e) => setEdit({ ...edit, text: e.target.value })} />
+      <label className="flex flex-col gap-1 text-xs text-muted-foreground">When (your sessions see this at every start)
+        <Input maxLength={120} placeholder="after a meeting with a user" value={edit.when} onChange={(e) => setEdit({ ...edit, when: e.target.value })} /></label>
+      <label className="flex flex-col gap-1 text-xs text-muted-foreground">What to send, and what happens to it
+        <textarea className="min-h-20 rounded-md border bg-background px-2 py-1 text-sm text-foreground" maxLength={500} placeholder="Send the decisions and open questions; they get sorted into the plan." value={edit.text} onChange={(e) => setEdit({ ...edit, text: e.target.value })} /></label>
       <div className="flex gap-2"><Button type="submit" size="sm" disabled={busy || !edit.role}>Save</Button><Button type="button" size="sm" variant="ghost" onClick={() => setEdit(null)}>Cancel</Button></div>
     </form>
   );
+  const editing = (e: WhoEntry) => edit?.project === e.project && edit.role === e.role;
+  const proposals = who.filter((e) => e.proposal);
+  const groups = [...new Set(who.filter((e) => e.entry).map((e) => e.project))];
+  const row = (label: string, children: React.ReactNode) => (
+    <div className="grid grid-cols-[7.5rem_1fr] gap-2"><span className="text-muted-foreground text-xs">{label}</span><span>{children}</span></div>
+  );
   return (
     <section className="flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-3"><div><h2 className="font-medium">Who handles what</h2><p className="text-muted-foreground text-xs">Your words for your agents: what to send where, across your projects. Your sessions read this list; only you change it.</p></div>
-        {!edit && <Button size="sm" variant="outline" onClick={() => setEdit({ project: "", role: "", text: "" })}><PlusIcon /> Add</Button>}</div>
-      {edit && !who.some((e) => e.project === edit.project && e.role === edit.role) && form}
-      <ul className="flex flex-col gap-3 text-sm">
-        {who.map((e) => (
-          <li key={`${e.project}/${e.role}`} className="flex flex-col gap-1 border-b pb-3">
-            <span><span className="font-medium">{e.project} · {e.role}</span> <span className="text-muted-foreground text-xs">{e.seat}</span></span>
-            {edit?.project === e.project && edit.role === e.role ? form : <>
-              {e.entry && <p>{e.entry}</p>}
-              {e.proposal && <p className="text-muted-foreground"><Badge variant="secondary" className="mr-1">Proposed{e.proposed_by ? ` by ${splitLabel(e.proposed_by).name}` : ""}</Badge>{e.proposal}</p>}
-              <div className="flex flex-wrap gap-2 text-xs">
-                {e.proposal && <><Button size="sm" disabled={busy} onClick={() => act("entry", { project: e.project, role: e.role, text: e.proposal }, "Taken.")}>Take it</Button>
-                  <Button size="sm" variant="outline" disabled={busy} onClick={() => setEdit({ project: e.project, role: e.role, text: e.proposal })}>Edit</Button>
-                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => act("entry/refuse", { project: e.project, role: e.role }, "Refused.")}>No</Button></>}
-                {e.entry && !e.proposal && <><Button size="sm" variant="outline" disabled={busy} onClick={() => setEdit({ project: e.project, role: e.role, text: e.entry })}>Edit</Button>
-                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => act("entry", { project: e.project, role: e.role, text: "" }, "Removed.")}>Remove</Button></>}
-              </div>
-            </>}
-          </li>
-        ))}
-        {!who.length && !edit && <li className="text-muted-foreground">Nothing yet. Your agents then decide on their own where things go.</li>}
-      </ul>
+      <div className="flex items-center justify-between gap-3"><div><h2 className="font-medium">Who handles what</h2><p className="text-muted-foreground text-xs">Your words for your agents: when something goes where, across your projects. Your sessions read this list; only you change it.</p></div>
+        {!edit && <Button size="sm" variant="outline" onClick={() => setEdit({ project: "", role: "", when: "", text: "" })}><PlusIcon /> Add</Button>}</div>
+      {edit && !who.some(editing) && form}
+      {proposals.map((e) => (
+        <Card key={`p:${e.project}/${e.role}`} className="border-dashed">
+          <CardHeader><CardTitle className="text-sm"><Badge variant="secondary" className="mr-1">Proposed{e.proposed_by ? ` by ${splitLabel(e.proposed_by).name}` : ""}</Badge>{e.project} · {e.role}</CardTitle>
+            {e.description && <CardDescription>{e.description}</CardDescription>}</CardHeader>
+          <CardContent className="flex flex-col gap-2 text-sm">
+            {editing(e) ? form : <>
+              {row("When", e.proposal_when || <span className="text-muted-foreground">no condition written</span>)}
+              {row("What", e.proposal)}
+              {e.entry && row("Now live", <span className="text-muted-foreground">{e.when ? `${e.when}: ` : ""}{e.entry}</span>)}
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" disabled={busy} onClick={() => act("entry", { project: e.project, role: e.role, when: e.proposal_when, text: e.proposal }, "Taken.")}>Take it</Button>
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => setEdit({ project: e.project, role: e.role, when: e.proposal_when, text: e.proposal })}>Edit</Button>
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => act("entry/refuse", { project: e.project, role: e.role }, "Refused.")}>No</Button>
+              </div></>}
+          </CardContent>
+        </Card>
+      ))}
+      {groups.map((g) => (
+        <div key={g} className="flex flex-col gap-2">
+          <h3 className="text-muted-foreground text-xs font-medium uppercase tracking-wide">{g}</h3>
+          {who.filter((e) => e.entry && e.project === g).map((e) => (
+            <Card key={`${e.project}/${e.role}`}>
+              <CardHeader><CardTitle className="text-sm">{e.description || e.role}</CardTitle>
+                <CardDescription className="font-mono text-xs">role:{e.project}/{e.role}</CardDescription></CardHeader>
+              <CardContent className="flex flex-col gap-2 text-sm">
+                {editing(e) && !e.proposal ? form : <>
+                  {row("When", e.when || <span className="text-muted-foreground">no condition written</span>)}
+                  {row("What", e.entry)}
+                  {row("You hear of it", <span className="text-muted-foreground">a line in the chat of the session that passed it on</span>)}
+                  {row("Now", <span className="flex items-center gap-2"><Dot on={e.seat.startsWith("held, ") && !/away|cannot read/.test(e.seat)} />{e.seat}</span>)}
+                  {row("Last passed on", e.passed?.last
+                    ? <span>{ago(e.passed.last.at, now)} from {e.passed.last.from}: {e.passed.last.summary} <Badge variant="outline" className="ml-1">{e.passed.last.state}</Badge></span>
+                    : <span className="text-muted-foreground">nothing yet</span>)}
+                  {row("This week", `${e.passed?.week ?? 0} passed on`)}
+                  {!e.proposal && <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" disabled={busy} onClick={() => setEdit({ project: e.project, role: e.role, when: e.when, text: e.entry })}>Edit</Button>
+                    <Button size="sm" variant="ghost" disabled={busy} onClick={() => act("entry", { project: e.project, role: e.role, text: "" }, "Removed.")}>Remove</Button>
+                  </div>}
+                </>}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ))}
+      {!who.length && !edit && <p className="text-muted-foreground text-sm">Nothing yet. Your agents then decide on their own where things go.</p>}
     </section>
   );
 }

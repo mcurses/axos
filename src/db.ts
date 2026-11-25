@@ -90,6 +90,8 @@ CREATE TABLE IF NOT EXISTS roles (
   entry         TEXT NOT NULL DEFAULT '',      -- who handles what: the project owner's own words for senders (what to send here, when, what happens)
   proposal      TEXT NOT NULL DEFAULT '',      -- an entry an agent of the owner proposed; live only when the owner takes it
   proposed_by   TEXT,                          -- the proposing session's or agent's address
+  entry_when    TEXT NOT NULL DEFAULT '',      -- the entry's condition, in the owner's words: when something belongs here
+  proposal_when TEXT NOT NULL DEFAULT '',      -- the proposal's condition
   PRIMARY KEY (project, role)
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -329,6 +331,8 @@ function migrate(db: Database): void {
   if (rolesNow && rolesNow.sql.includes("lapsed_holder")) db.exec("ALTER TABLE roles DROP COLUMN lapsed_holder; ALTER TABLE roles DROP COLUMN lapsed_at;");
   // 0.29.0: who handles what, the project owner's text for senders on a role, and an agent's proposal of one.
   if (rolesNow && !rolesNow.sql.includes("entry")) db.exec("ALTER TABLE roles ADD COLUMN entry TEXT NOT NULL DEFAULT ''; ALTER TABLE roles ADD COLUMN proposal TEXT NOT NULL DEFAULT ''; ALTER TABLE roles ADD COLUMN proposed_by TEXT;")
+  // 0.30.0: an entry's condition is its own field, the person's words, so the hub's texts name none.
+  if (rolesNow && !rolesNow.sql.includes("entry_when")) db.exec("ALTER TABLE roles ADD COLUMN entry_when TEXT NOT NULL DEFAULT ''; ALTER TABLE roles ADD COLUMN proposal_when TEXT NOT NULL DEFAULT '';")
   const deliveries = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'deliveries'").get() as { sql: string } | null;
   if (deliveries && !deliveries.sql.includes("shown_at")) db.exec("ALTER TABLE deliveries ADD COLUMN shown_at INTEGER");
   if (deliveries && !deliveries.sql.includes("outcome")) db.exec("ALTER TABLE deliveries ADD COLUMN outcome TEXT");

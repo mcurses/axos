@@ -109,7 +109,7 @@ export default function App() {
         </TabsContent>
         <TabsContent value="projects" className="screen-stack">
           <NewProject onChange={refresh} />
-          <WhoHandlesWhat who={state.who ?? []} projects={state.projects.filter((p) => !p.pair && p.owner === state.human)} onChange={refresh} />
+          <WhoHandlesWhat who={state.who ?? []} now={state.now} projects={state.projects.filter((p) => !p.pair && p.owner === state.human)} onChange={refresh} />
           {state.projects.filter((p) => !p.pair).map((p) => <ProjectCard key={p.id} p={p} now={state.now} me={state.human} people={state.people.map((x) => x.name)} operator={state.me.operator} onChange={refresh} />)}
           {!state.projects.some((p) => !p.pair) && <p className="text-muted-foreground text-sm">No projects yet. In a repo, tell Claude Code "connect this folder to AXOS".</p>}
         </TabsContent>

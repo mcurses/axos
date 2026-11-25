@@ -189,7 +189,7 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
         hub.setRepo(pid(str("project")), str("repo"), { human });
         return json({ ok: true });
       } else if (url.pathname === "/ui/api/entry") {
-        hub.setEntry(human, pid(str("project")), str("role"), str("text"));
+        hub.setEntry(human, pid(str("project")), str("role"), str("text"), str("when"));
         return json({ ok: true });
       } else if (url.pathname === "/ui/api/entry/refuse") {
         hub.refuseProposal(human, pid(str("project")), str("role"));
@@ -332,6 +332,7 @@ function state(hub: Hub, human: string, mark = true) {
     description: oneLine(r.description || r.role, 200),
   }));
   // Who handles what: this person's own list across their projects, with any proposal from one of their agents.
-  const who = hub.entriesOf(human).map((e) => ({ ...e, proposed_by: e.proposed_by ? hub.label(e.proposed_by) : null }));
+  const who = hub.entriesOf(human).map((e) => ({ ...e, proposed_by: e.proposed_by ? hub.label(e.proposed_by) : null,
+    passed: ((x) => ({ week: x.week, last: x.last && { ...x.last, from: hub.projectName(x.last.from) ?? x.last.from } }))(hub.passOnsTo(human, e.project, e.role)) }));
   return { human, me, people, invites, pending, push, now: hub.now(), types: MESSAGE_TYPES, asks, inbox, sent, projects, open_roles, who };
 }

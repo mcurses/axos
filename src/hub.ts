@@ -26,6 +26,18 @@ export type Priority = (typeof PRIORITIES)[number];
 // human_words: the client checked that a send with quotes_human carries words the human typed (the plugin's header).
 export type Actor = { kind: "agent"; id: string; human: string; as?: string; session?: string; human_words?: boolean } | { kind: "human"; name: string };
 
+// A line of a person's list of who handles what (entriesOf): the role, its seat in words, the person's condition and text.
+export interface Entry {
+  project: string; role: string; description: string; when: string; entry: string;
+  proposal: string; proposal_when: string; proposed_by: string | null; seat: string;
+}
+
+// What was last passed on to such a role from the person's sessions in another project, and how many this week.
+export interface PassOns {
+  week: number;
+  last: { id: number; at: number; from: string; summary: string; state: string } | null;
+}
+
 export interface SessionRow {
   key: string;
   agent_id: string;
@@ -285,6 +297,8 @@ const UNREAD_MS = 86_400_000;
 const UNREAD_WINDOW_MS = 7 * 86_400_000;
 const UNREAD_PAGE_MS = 86_400_000;
 const ENTRY_MAX = 500;
+const WHEN_MAX = 120;      // an entry's condition, shown alone at every session start
+export const CONDITIONS_MAX = 30; // conditions in the start text; the rest through projects (provisional, 2026-11-25)
 // A session with no open stream and no sign for a day is dormant: most often a window that crashed or was closed without
 // its end hook. It still receives its mail and keeps its roles until the 7-day sweep ends it; it is only no longer listed
 // as present (presence, health). The discoverability critic and health, 2026-11-04.
@@ -349,7 +363,7 @@ const NEXT_WINDOW_MS = 30 * 60_000;
 
 // Peer text inside one of the hub's own lines: in typographic quotes, cut short, any quote of its own turned, so it
 // cannot close the hub's quote and go on in the hub's voice (security reviews of 0.28.0, F4, and 0.29.0, N2).
-function quotedPeer(x: string, max: number): string {
+export function quotedPeer(x: string, max: number): string {
   return `\u201c${oneLine(x, max).replace(/["\u201c\u201d\u201e\u201f\u2033\u2036\uff02\u00ab\u00bb]/g, "'")}\u201d`;
 }
 
@@ -2203,39 +2217,43 @@ export class Hub {
   // owner takes it. The list reaches the owner's own sessions only (2026-11-25: other people's agents see none until
   // the owner decides they may), so it says nothing about a project to anyone outside it.
 
-  setEntry(human: string, project: string, role: string, text: string): void {
+  setEntry(human: string, project: string, role: string, text: string, when = ""): void {
     if (this.projectOwner(project) !== human) throw new AxosError("only the project's owner writes who handles what there");
     if (!this.db.query("SELECT 1 FROM roles WHERE project = ? AND role = ?").get(project, role)) throw new AxosError(`no role '${role}' in that project`);
     const entry = oneLine(text, ENTRY_MAX);
-    this.db.query("UPDATE roles SET entry = ?, proposal = '', proposed_by = NULL WHERE project = ? AND role = ?").run(entry, project, role);
+    this.db.query("UPDATE roles SET entry = ?, entry_when = ?, proposal = '', proposal_when = '', proposed_by = NULL WHERE project = ? AND role = ?")
+      .run(entry, entry ? oneLine(when, WHEN_MAX) : "", project, role);
     this.event(`human:${human}`, entry ? "role.entry_set" : "role.entry_removed", project, { role });
   }
 
   // An agent proposes an entry; the owner takes, edits or refuses it on their page. Only the owner's own agents: another
   // person's text must not become words the owner's sessions read as the owner's.
-  proposeEntry(agentId: string, project: string, role: string, text: string, by: string): void {
+  proposeEntry(agentId: string, project: string, role: string, text: string, by: string, when = ""): void {
     const owner = this.projectOwner(project);
     if (this.humanOf(agentId) !== owner) throw new AxosError("only the project owner's own agents propose who handles what there");
     if (!this.db.query("SELECT 1 FROM roles WHERE project = ? AND role = ?").get(project, role)) throw new AxosError(`no role '${role}' in '${project}'`);
     const proposal = oneLine(text, ENTRY_MAX);
     if (!proposal) throw new AxosError("the proposal is empty");
-    this.db.query("UPDATE roles SET proposal = ?, proposed_by = ? WHERE project = ? AND role = ?").run(proposal, by, project, role);
+    const cond = oneLine(when, WHEN_MAX);
+    this.db.query("UPDATE roles SET proposal = ?, proposal_when = ?, proposed_by = ? WHERE project = ? AND role = ?").run(proposal, cond, by, project, role);
     this.event(by, "role.entry_proposed", project, { role });
-    this.systemMessage(project, `human:${owner}`, "note", `${this.label(by)} proposes a line for who handles what at role:${project}/${role}: ${quotedPeer(proposal, 160)}`,
+    this.systemMessage(project, `human:${owner}`, "note", `${this.label(by)} proposes a line for who handles what at role:${project}/${role}: ` +
+      `${cond ? `when ${quotedPeer(cond, 80)}, ` : ""}${quotedPeer(proposal, 160)}`,
       "Nothing changes until you take it. Under Projects, Who handles what, take it, edit it or refuse it.", "low");
   }
 
   refuseProposal(human: string, project: string, role: string): void {
     if (this.projectOwner(project) !== human) throw new AxosError("only the project's owner decides who handles what there");
-    this.db.query("UPDATE roles SET proposal = '', proposed_by = NULL WHERE project = ? AND role = ?").run(project, role);
+    this.db.query("UPDATE roles SET proposal = '', proposal_when = '', proposed_by = NULL WHERE project = ? AND role = ?").run(project, role);
     this.event(`human:${human}`, "role.proposal_refused", project, { role });
   }
 
   // The owner's list, in their projects: every role with an entry or a proposal, and its seat in words.
-  entriesOf(human: string): { project: string; role: string; entry: string; proposal: string; proposed_by: string | null; seat: string }[] {
-    const rows = this.db.query(`SELECT r.project, r.role, r.entry, r.proposal, r.proposed_by, r.holder FROM roles r JOIN projects p ON p.id = r.project
+  entriesOf(human: string): Entry[] {
+    const rows = this.db.query(`SELECT r.project, r.role, r.description, r.entry, r.entry_when AS "when", r.proposal, r.proposal_when, r.proposed_by, r.holder
+        FROM roles r JOIN projects p ON p.id = r.project
         WHERE p.owner = ? AND (r.entry <> '' OR r.proposal <> '') ORDER BY r.project, r.role`).all(human) as
-      { project: string; role: string; entry: string; proposal: string; proposed_by: string | null; holder: string | null }[];
+      (Omit<Entry, "seat"> & { holder: string | null })[];
     return rows.map(({ holder, ...r }) => ({ ...r, seat: !holder ? "nobody holds it"
       // Another person's session holding the role reads what is sent there: say so (security review of 0.29.0, N1).
       : this.humanOfHolder(holder) !== human ? `held by a session of ${this.humanOfHolder(holder) ?? "someone else"}, not yours` : `held, ${this.whereabouts(holder, human)}` }));
@@ -2244,6 +2262,27 @@ export class Hub {
   // What a session of this human reads: the live entries only.
   liveEntriesOf(human: string) {
     return this.entriesOf(human).filter((e) => e.entry);
+  }
+
+  // A pass-on: a message from one of the person's sessions in another project to a role on their list. Read for the
+  // person's own overview only, so it says nothing about anyone else's mail.
+  passOnsTo(human: string, project: string, role: string): PassOns {
+    const at = `role:${project}/${role}`, since = this.now() - 7 * 86_400_000;
+    const where = "FROM deliveries d JOIN messages m ON m.id = d.message_id WHERE d.recipient = ? AND m.sender_human = ? AND m.project <> ?";
+    const week = (this.db.query(`SELECT count(*) AS n ${where} AND m.created_at >= ?`).get(at, human, project, since) as { n: number }).n;
+    const row = this.db.query(`SELECT m.id, m.created_at, m.project, m.summary, d.acked_at, d.shown_at, d.outcome ${where} ORDER BY m.id DESC LIMIT 1`)
+      .get(at, human, project) as { id: number; created_at: number; project: string; summary: string; acked_at: number | null; shown_at: number | null; outcome: string | null } | null;
+    if (!row) return { week, last: null };
+    const hours = Math.floor((this.now() - row.created_at) / 3_600_000);
+    const state = row.acked_at ? (row.outcome ?? "read") : row.shown_at ? "seen, not yet handled" : hours ? `unread for ${hours} h` : "unread";
+    return { week, last: { id: row.id, at: row.created_at, from: row.project, summary: oneLine(row.summary, 200), state } };
+  }
+
+  // The roles on the person's list that a message of theirs just reached from another project: the sender then tells
+  // its person in one line (how the person hears of a pass-on until the levels are settled).
+  passedOn(messageId: number, human: string, sentIn: string): string[] {
+    const reached = new Set((this.db.query("SELECT recipient FROM deliveries WHERE message_id = ?").all(messageId) as { recipient: string }[]).map((d) => d.recipient));
+    return this.liveEntriesOf(human).filter((e) => e.project !== sentIn && reached.has(`role:${e.project}/${e.role}`)).map((e) => `role:${e.project}/${e.role}`);
   }
 
   roleUnread(project: string, role: string): number {

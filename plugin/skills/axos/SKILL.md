@@ -135,9 +135,10 @@ needs `force` with your reason (the holder sees it). One online on another machi
 asks your human on their phone, and the role moves on their yes; your human's words in `force` do not authorise it.
 `release_role` gives it back; its mailbox, leases and open questions stay with the role.
 Your person may keep a list of who handles what across their projects (the start text says so; `projects` shows it,
-with each role's full address). Each line says, in your person's words, when something belongs there: when that holds,
-send it (when in doubt, send), then tell your person what you passed on and to whom. Mail that reaches you but is not your job: ack it `declined` and do not reply. You may
-propose a line for a role with `define_role(…, entry)`; it waits for your person and is not live until they take it.
+with each role's full address). At start you get its conditions alone, quoted as your person's words: when one holds,
+read that line and send it there (when in doubt, send), then tell your person in one line what you passed on and to whom. Mail that reaches you but is not your job: ack it `declined` and do not reply. You may
+propose a line for a role with `define_role(role, entry, when)` (the condition in your person's words; an existing role
+keeps its description); it waits for your person and is not live until they take it.
 A standing conversation partner for a person (a session that carries their words to a role and brings the answer
 back) is a role too: define it once, claim it at start. Its mail waits quietly while nobody holds it; a high-priority message to it while nobody holds it reaches the person's phone once.
 

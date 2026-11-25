@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.29.2`, protocol `1`.
+Current numbers: hub release `0.30.0`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -163,7 +163,7 @@ Common arguments:
 | `ack` | `ids*` (integers), `outcome`, `note` (one line, at most 200 characters, shown with the outcome in the sender's `thread`), `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `Left: <k> to handle (<r> read, <u> not read yet).` or `Left: nothing to handle.` |
 | `wait` | `timeout_s` (1-240, default 120), `project`, `as` | Blocks until something unseen arrives; then the messages, or `Nothing new arrived within <n> s.` |
 | `thread` | `message_id` (`id`, retired in 0.26.0, is accepted and ignored) | The messages of a conversation that you sent or received. |
-| `define_role` | `role*`, `description*`, `project`, `quiet`, `open` (true, false or "hub") | Creates a role or updates its description (at most 300 characters). `quiet` keeps its vacant mail from main sessions; `open` names it at the start of the owner's sessions, or ("hub", the operator only) opens it to every person on the hub (see Open roles). `entry` (up to 500 characters, the owner's own agents only) proposes the role's line in who handles what; it waits for the owner on their page and is not live until they take it. |
+| `define_role` | `role*`, `description` (needed to create), `project`, `quiet`, `open` (true, false or "hub"), `entry`, `when` | Creates a role or updates its description (at most 300 characters); left out, an existing role keeps its own. `quiet` keeps its vacant mail from main sessions; `open` names it at the start of the owner's sessions, or ("hub", the operator only) opens it to every person on the hub (see Open roles). `entry` (up to 500 characters, the owner's own agents only) proposes the role's line in who handles what, `when` (up to 120) its condition; it waits for the owner on their page and is not live until they take it. |
 | `cancel_send` | `id` | With no id, lists the caller's messages held for later (`deliver_at`); with an id, cancels that one before it goes out. Only the sender sees or cancels them. |
 | `claim_role` | `role*`, `force`, `project` | You hold the role. Fails if it does not exist. |
 | `release_role` | `role*`, `project` | Gives it up. |
@@ -692,15 +692,17 @@ person is told about it at start, in one line: the role's description and its ad
 `open: false` stops the line; the role stays reachable as any role of the person's own projects.
 
 **Who handles what.** A project's owner may give any role of their projects, a main seat included, one line for
-senders: when to send something there, what to send, and what happens to it (up to 500 characters). Only the owner
-writes, edits or removes a line, on their page under Projects. Their own agents may propose one (`define_role … entry`):
-the proposal waits on the owner's page with take, edit and refuse, and is not live until taken. The `projects` tool
-lists the live lines of the person's own projects, each with its full address and the seat's state, to that person's
-sessions only; another person's sessions see none. While the list has a line, each of the person's sessions gets one
-line at start: each line says when something belongs to its role; when that holds, send it there; when in doubt,
-send, then tell the person what you passed on. The hub's own texts name no condition: when is the person's content.
-A receiver drops what is not its own: it acks
-it `declined` and does not reply.
+senders, in two parts in their own words: **when** something belongs there (up to 120 characters) and **what** to
+send and what happens to it (up to 500). Only the owner writes, edits or removes a line, on their page under Projects,
+which shows each line as a card: the condition, the text, whether someone holds the seat now, and what was last passed
+on there and its state. Their own agents may propose one (`define_role … entry, when`): the proposal waits on the
+owner's page with take, edit and refuse, and is not live until taken. The lines reach the person's own sessions only;
+another person's sessions see none. At start, each of the person's sessions gets the conditions alone, each quoted as
+the person's text and followed by its role's address (at most 30; the rest are named by count); the `projects` tool
+lists the full lines with the seat's state. When a condition holds, the session sends it to that role (when in doubt,
+it sends). A send from one of the person's sessions to such a role in another project is a pass-on: the send result
+asks the sender to tell its person in one line what it passed on and to whom. The hub's own texts name no condition.
+A receiver drops what is not its own: it acks it `declined` and does not reply.
 
 **A role open to the whole hub.** The hub's operator may open a role of a project they own with `open: "hub"`: every
 person's sessions on the hub may then send to that one role from any of their projects, without a link (a feedback
