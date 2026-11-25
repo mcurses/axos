@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.30.1`, protocol `1`.
+Current numbers: hub release `0.30.2`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -173,7 +173,7 @@ Common arguments:
 | `ask_human` | `human*`, `question*`, `options`, `default_answer`, `deadline_minutes`, `remind_hours` (0.25-168), `images`, `kind` (decide\|hands\|taste), `recommend`, `waiting_cost`, `hands`, `project`, `as` | `Asked <human> (ask <id>)`. The answer arrives later as a message. |
 | `asks` | `project` | The caller's questions to humans (its session's and its roles'), open ones first: asked, pushed to the phone, seen on the page, reminded, stale, answered, defaulted or withdrawn. |
 | `withdraw_ask` | `ask_id*`, `reason*` | The asker (its session, agent or a role it holds in that project) settles its own open question without an answer, because it was decided elsewhere: the question leaves the human's page and phone (the notification is replaced by "Settled elsewhere"), the reminder and deadline stop, `asks` shows "withdrawn: <reason>". An answered or withdrawn ask is refused. |
-| `presence` | `project` | Live sessions and session-less agents: online or idle, last seen, unread, roles. |
+| `presence` | `project` | Live sessions and session-less agents (a machine in the project only through its person once it has had a session there): online or idle, last seen, unread, roles. |
 | `subscribe` | `branch*` (a branch or any ref name, e.g. `refs/evidence/<id>`; `*` for any characters), `sha`, `remote`, `repo`, `note`, `hours` (0.1-720, default 24), `subject`, `replace`, `project`, `as` | `Subscription <id>: …, until <time>.` (and `Subscription <old> has ended.` with `replace`), or `Already landed: …` when the commit landed within the last 30 days (then nothing is opened). |
 | `unsubscribe` | `id*`, `project`, `as` | `Subscription <id> ended.` |
 | `subscriptions` | `project` | The project's open subscriptions: who waits for which commit or branch. |

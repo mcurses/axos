@@ -894,6 +894,17 @@ describe("presence", () => {
     hub.streamClosed(DEV3);
     expect(hub.presence(SHOP).find((a) => a.id === DEV3)!.online).toBe(false);
   });
+
+  test("a machine in the project only through its person is listed once it has had a session there", () => {
+    const own = hub.addProject("alice/notes");
+    hub.touch(DEV3);
+    expect(hub.presence(own).map((a) => a.id)).not.toContain(DEV3);
+    hub.endSession(hub.openSession(DEV3, { client_session: "e1e1e1e1-de4e-4733-bf41-1e0e45605f16", project: own, name: "notes-1" }));
+    expect(hub.presence(own).map((a) => a.id)).toContain(DEV3);
+    // A machine invited by membership is listed without one.
+    hub.touch(DEV1);
+    expect(hub.presence(SHOP).map((a) => a.id)).toContain(DEV1);
+  });
 });
 
 describe("what counts as the human's word (2026-11-03 trust fix)", () => {

@@ -1864,8 +1864,11 @@ export class Hub {
     const agents = (this.db.query(
       `SELECT DISTINCT a.id, a.human, a.last_seen FROM agents a
          LEFT JOIN memberships m ON m.agent_id = a.id LEFT JOIN human_projects h ON h.human = a.human
-        WHERE a.revoked = 0 AND (m.project = ? OR h.project = ?) ORDER BY a.id`,
-    ).all(project, project) as { id: string; human: string; last_seen: number | null }[])
+        WHERE a.revoked = 0 AND (m.project = ?1
+          -- A machine that is in the project only through its person is listed once it has had a session there, not in
+          -- every project of theirs (2026-11-25); mail addressed to it still reaches it.
+          OR (h.project = ?1 AND EXISTS (SELECT 1 FROM sessions s WHERE s.agent_id = a.id AND s.project = ?1))) ORDER BY a.id`,
+    ).all(project) as { id: string; human: string; last_seen: number | null }[])
       .filter((a) => !withSessions.has(a.id) && a.last_seen !== null && t - a.last_seen < SESSION_LIVE_MS)
       .map((r) => ({
         id: r.id, address: `agent:${r.id}`, name: null as string | null, profile: null as string | null, human: r.human, last_seen: r.last_seen,
