@@ -87,6 +87,9 @@ CREATE TABLE IF NOT EXISTS roles (
   expires_at    INTEGER,                       -- unused since 0.17.0 (roles no longer lapse); kept for old rows
   quiet         INTEGER DEFAULT 0,             -- never shown to the main session while vacant (a role whose work must not reach a chat session)
   open          INTEGER DEFAULT 0,             -- any session of the project owner's human may send to it from any project (a feedback address)
+  entry         TEXT NOT NULL DEFAULT '',      -- who handles what: the project owner's own words for senders (what to send here, when, what happens)
+  proposal      TEXT NOT NULL DEFAULT '',      -- an entry an agent of the owner proposed; live only when the owner takes it
+  proposed_by   TEXT,                          -- the proposing session's or agent's address
   PRIMARY KEY (project, role)
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -144,6 +147,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
   shown_at      INTEGER,                       -- put into a session's context by a hook
   outcome       TEXT,                          -- what the reader said when acking: done | declined | forwarded | noted; or 'expired', set by the hub
   note          TEXT,                          -- and its one line about it, e.g. 'forwarded to lane 3'
+  escalated_at  INTEGER,                       -- a role's mail unread past its limit: when its sender was told
   PRIMARY KEY (message_id, recipient)
 );
 CREATE INDEX IF NOT EXISTS deliveries_unread ON deliveries(recipient, acked_at);
@@ -323,10 +327,23 @@ function migrate(db: Database): void {
   const rolesNow = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'roles'").get() as { sql: string } | null;
   // 0.16.1 remembered the holder a role's silence had freed; roles no longer lapse, so the columns go again.
   if (rolesNow && rolesNow.sql.includes("lapsed_holder")) db.exec("ALTER TABLE roles DROP COLUMN lapsed_holder; ALTER TABLE roles DROP COLUMN lapsed_at;");
+  // 0.29.0: who handles what, the project owner's text for senders on a role, and an agent's proposal of one.
+  if (rolesNow && !rolesNow.sql.includes("entry")) db.exec("ALTER TABLE roles ADD COLUMN entry TEXT NOT NULL DEFAULT ''; ALTER TABLE roles ADD COLUMN proposal TEXT NOT NULL DEFAULT ''; ALTER TABLE roles ADD COLUMN proposed_by TEXT;")
   const deliveries = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'deliveries'").get() as { sql: string } | null;
   if (deliveries && !deliveries.sql.includes("shown_at")) db.exec("ALTER TABLE deliveries ADD COLUMN shown_at INTEGER");
   if (deliveries && !deliveries.sql.includes("outcome")) db.exec("ALTER TABLE deliveries ADD COLUMN outcome TEXT");
   if (deliveries && !/\bnote\b/.test(deliveries.sql)) db.exec("ALTER TABLE deliveries ADD COLUMN note TEXT");
+  // 0.28.0: unread role mail is escalated; and once, mail a session was shown in its last minute without acking or
+  // answering it goes back to unread (a one-second headless run had absorbed a request).
+  if (deliveries && !deliveries.sql.includes("escalated_at")) {
+    db.exec("ALTER TABLE deliveries ADD COLUMN escalated_at INTEGER");
+    const sessions = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get() as { sql: string } | null;
+    // Once, for sessions that ended in the last week only (F6), in one transaction.
+    if (sessions?.sql.includes("roles_at_end")) db.transaction(() => {
+      for (const x of db.query("SELECT key, ended_at, roles_at_end FROM sessions WHERE ended_at > ? AND roles_at_end <> ''").all(Date.now() - 7 * 86_400_000) as { key: string; ended_at: number; roles_at_end: string }[])
+        for (const l of x.roles_at_end.split("\n")) { const [p, r, since] = l.split("\t"); if (p && r) unshowAbsorbed(db, x.key, `role:${p}/${r}`, x.ended_at, since ? Number(since) : null); }
+    })();
+  }
   const messages = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get() as { sql: string } | null;
   if (messages && !messages.sql.includes("sender_human")) db.exec("ALTER TABLE messages ADD COLUMN sender_human TEXT");
   const leases = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'leases'").get() as { sql: string } | null;
@@ -481,4 +498,26 @@ function migrateToIds(db: Database): void {
     if (bad.length) throw new Error(`migration: ${bad.length} rows break foreign keys: ${JSON.stringify(bad.slice(0, 3))}`);
   }).immediate();
   db.exec("PRAGMA foreign_keys = ON;");
+}
+
+// A session that ends within a minute of being shown mail was no reader of it (2026-11-25).
+export const NO_READER_MS = 60_000;
+
+// Role mail shown to a session in its last minute before `end`, neither acked nor answered by it: back to unread.
+// Role mail a session was shown in its last minute, neither acked nor answered (from the session, its agent or the
+// role), goes back to unread, but only when the session held the role for less than a minute: a run that took the seat
+// and ended at once read nothing, and only what was shown after it took the seat (security review of 0.28.0, F5). Each change is recorded as an event, with the
+// delivery and the old shown time, so it can be undone and health can account for it (F6).
+export function unshowAbsorbed(db: Database, key: string, role: string, end: number, since: number | null): number {
+  if (since === null || end - since >= NO_READER_MS) return 0;
+  const agent = `agent:${key.split("#")[0]}`;
+  const rows = db.query(`SELECT message_id, shown_at FROM deliveries WHERE recipient = ? AND acked_at IS NULL AND shown_at BETWEEN ? AND ?
+    AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.re = deliveries.message_id AND r.sender IN (?, ?, ?))`)
+    .all(role, since, end, `session:${key}`, role, agent) as { message_id: number; shown_at: number }[];
+  if (!rows.length) return 0;
+  for (const r of rows) db.query("UPDATE deliveries SET shown_at = NULL WHERE recipient = ? AND message_id = ?").run(role, r.message_id);
+  const project = role.slice(5, role.lastIndexOf("/"));
+  db.query("INSERT INTO events (at, actor, kind, project, data_json) VALUES (?, 'axos', 'role.unshown_absorbed', ?, ?)")
+    .run(end, project, JSON.stringify({ role: role.slice(role.lastIndexOf("/") + 1), session: key, deliveries: rows.map((r) => [r.message_id, r.shown_at]) }));
+  return rows.length;
 }

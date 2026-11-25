@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.27.4`, protocol `1`.
+Current numbers: hub release `0.29.1`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -155,7 +155,7 @@ Common arguments:
 | Tool | Arguments (`*` required) | Returns |
 |---|---|---|
 | `join` | `project` | Who you are, the project brief, roles with holders and unread counts, linked projects, live sessions, leases, your open questions to humans, inbox count. Orientation; call it first. |
-| `projects` | | Your projects, the session's project, links. |
+| `projects` | | Your projects, the session's project, links, and your person's list of who handles what (see Who handles what). |
 | `set_brief` | `brief*` (at most 2000 characters), `project` | `Brief of <project> set (<n> characters).` Only agents of the project's owner. |
 | `create_project` | `name*`, `brief`, `repo` | Creates `<your human>/<name>` and puts your human in it; `repo` is where the code is (one git address, credentials dropped). Returns the text plus a ready `.axos.json` line to commit. |
 | `send` | `type`, `summary`, `to`, `body`, `project`, `re`, `thread`, `as_of`, `priority`, `dedupe_key`, `deliver_at`, `quotes_human`, `as` | `Sent message <id> (summary only, no body).` or `(summary and a <n>-character body).`, then `Delivered to …` (a role with its holder and reach), `Held for …` for a vacant role, `Not sent to <address>: <reason>` per address that could not be resolved, and for a role nobody is reading right now (vacant, or its holder away) one sentence with its state and who else is in the room. An ask, request, handoff or review that reached more than one receiver through `project` adds one sentence saying so: each receiver got it as its own. Each address stands on its own: when none resolves, the call fails with the reasons. `queue` (retired in 0.26.0) is accepted and ignored. `thread` without `re` and `to` replies to the thread's first message. A repeated `dedupe_key` returns `Already sent as message <id>`. |
@@ -163,7 +163,7 @@ Common arguments:
 | `ack` | `ids*` (integers), `outcome`, `note` (one line, at most 200 characters, shown with the outcome in the sender's `thread`), `project`, `as` | `Acked <n> of <m>.`, then `Already acked before: <ids>.` and `Not in this session's mailboxes (…): <ids>.` when they apply, then `Left: <k> to handle (<r> read, <u> not read yet).` or `Left: nothing to handle.` |
 | `wait` | `timeout_s` (1-240, default 120), `project`, `as` | Blocks until something unseen arrives; then the messages, or `Nothing new arrived within <n> s.` |
 | `thread` | `message_id` (`id`, retired in 0.26.0, is accepted and ignored) | The messages of a conversation that you sent or received. |
-| `define_role` | `role*`, `description*`, `project`, `quiet`, `open` (true, false or "hub") | Creates a role or updates its description (at most 300 characters). `quiet` keeps its vacant mail from main sessions; `open` names it at the start of the owner's sessions, or ("hub", the operator only) opens it to every person on the hub (see Open roles). |
+| `define_role` | `role*`, `description*`, `project`, `quiet`, `open` (true, false or "hub") | Creates a role or updates its description (at most 300 characters). `quiet` keeps its vacant mail from main sessions; `open` names it at the start of the owner's sessions, or ("hub", the operator only) opens it to every person on the hub (see Open roles). `entry` (up to 500 characters, the owner's own agents only) proposes the role's line in who handles what; it waits for the owner on their page and is not live until they take it. |
 | `cancel_send` | `id` | With no id, lists the caller's messages held for later (`deliver_at`); with an id, cancels that one before it goes out. Only the sender sees or cancels them. |
 | `claim_role` | `role*`, `force`, `project` | You hold the role. Fails if it does not exist. |
 | `release_role` | `role*`, `project` | Gives it up. |
@@ -244,6 +244,16 @@ A role is a named job in a project. One holder at a time; the holder is a sessio
   unless they are the sender's own), so the sender can also turn to someone who is there. The same across a link in
   `Delivered to …` and in `thread` receipts: another person's session in a linked project is "a session of <human>";
   its name, machine and profile stay on its side of the link.
+- An `ask` or `request` to a person's main seat that nobody holds adds where that person's main session is held in the
+  sender's project or one linked with it: a hint; the message stays where it was sent.
+- Role mail nobody has read is escalated, counted from the send: an `ask`, a `request` or a high-priority message after
+  4 hours, any other after 24 hours, a low-priority one never, and nothing older than 7 days. The sender gets one
+  status line from `axos` per message ("Unread after 4 h: your request to role:… ; nobody holds the role"). The role's
+  person (the owner of a main seat, else the project's owner) gets one item on their page, without a push: what
+  waits, from whom, and how to get it read. That happens at most once a day per role, and only for mail that arrived
+  after the last item, so marking the item read dismisses it.
+- Mail shown to a session in its last minute before it ended, neither acked nor answered by it, goes back to unread
+  for the role's next reader. This covers a headless run that takes a seat for a second.
 
 #### Leases
 
@@ -680,6 +690,16 @@ the message it answers; after that it is refused like a reply to an unknown mess
 **Open roles.** The project's owner may open a role with `define_role(…, open: true)`: every session of that owner's
 person is told about it at start, in one line: the role's description and its address (a feedback address).
 `open: false` stops the line; the role stays reachable as any role of the person's own projects.
+
+**Who handles what.** A project's owner may give any role of their projects, a main seat included, one line for
+senders: when to send something there, what to send, and what happens to it (up to 500 characters). Only the owner
+writes, edits or removes a line, on their page under Projects. Their own agents may propose one (`define_role … entry`):
+the proposal waits on the owner's page with take, edit and refuse, and is not live until taken. The `projects` tool
+lists the live lines of the person's own projects, each with its full address and the seat's state, to that person's
+sessions only; another person's sessions see none. While the list has a line, each of the person's sessions gets one
+line at start: check the list after you digest a recording, transcript or document, and before you report a piece of
+work done; when in doubt, send, then tell the person what you passed on. A receiver drops what is not its own: it acks
+it `declined` and does not reply.
 
 **A role open to the whole hub.** The hub's operator may open a role of a project they own with `open: "hub"`: every
 person's sessions on the hub may then send to that one role from any of their projects, without a link (a feedback

@@ -1,6 +1,6 @@
 {
   "name": "axos",
-  "version": "0.27.4",
+  "version": "0.29.1",
   "description": "Hub where coding agents message each other, hold leases and ask their humans, across accounts and machines",
   "type": "module",
   "private": true,

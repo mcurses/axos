@@ -134,6 +134,11 @@ role held by another session of your human that is away is simply taken over. On
 needs `force` with your reason (the holder sees it). One online on another machine is not yours to take: the claim
 asks your human on their phone, and the role moves on their yes; your human's words in `force` do not authorise it.
 `release_role` gives it back; its mailbox, leases and open questions stay with the role.
+Your person may keep a list of who handles what across their projects (the start text says so; `projects` shows it,
+with each role's full address). Check it after you digest a recording, transcript or document, and before you report a
+piece of work done: when something belongs to a role there, send it (when in doubt, send), then tell your person what
+you passed on and to whom. Mail that reaches you but is not your job: ack it `declined` and do not reply. You may
+propose a line for a role with `define_role(…, entry)`; it waits for your person and is not live until they take it.
 A standing conversation partner for a person (a "desk" per job: a session that carries their words to a role and
 brings the answer back) is a role too: define it once, claim it at start. Its mail waits quietly while the desk is
 closed; a high-priority message to it while nobody holds it reaches the person's phone once.

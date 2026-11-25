@@ -343,6 +343,18 @@ test("the plugin's hooks: start orients in a few lines, check shows new messages
 
   await hook(sid, "shop-zz", { event: "end" });
   expect(hub.roles(SHOP).find((r) => r.role === "frontend-coordinator")!.holder).toBeNull();
+
+  // Who handles what: no line while the list is empty; one line, and the projects tool's block, once the owner wrote one.
+  expect(start.context).not.toContain("who handles what");
+  expect((await call(dev1, "projects", {})).text).not.toContain("Who handles what");
+  hub.setEntry("alice", SHOP, "frontend-coordinator", "A canvas or toolbar change: send the branch here.");
+  const again = await hook("cccccccc-1111-2222-3333-444444444444", "shop-yy", { event: "start" });
+  expect(again.context).toContain("alice keeps a list of who handles what across their projects (1 entry; the projects tool shows it).");
+  const listed = (await call(dev1, "projects", {})).text;
+  expect(listed).toContain("- role:alice/shop/frontend-coordinator (nobody holds it): A canvas or toolbar change: send the branch here.");
+  expect(listed).not.toMatch(/prj_|agt_/);
+  await hook("cccccccc-1111-2222-3333-444444444444", "shop-yy", { event: "end" });
+  hub.setEntry("alice", SHOP, "frontend-coordinator", "");
   await dev1.close();
 });
 

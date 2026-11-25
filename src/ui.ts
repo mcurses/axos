@@ -188,6 +188,12 @@ export async function handleUi(hub: Hub, req: Request, url: URL): Promise<Respon
       } else if (url.pathname === "/ui/api/project/repo") {
         hub.setRepo(pid(str("project")), str("repo"), { human });
         return json({ ok: true });
+      } else if (url.pathname === "/ui/api/entry") {
+        hub.setEntry(human, pid(str("project")), str("role"), str("text"));
+        return json({ ok: true });
+      } else if (url.pathname === "/ui/api/entry/refuse") {
+        hub.refuseProposal(human, pid(str("project")), str("role"));
+        return json({ ok: true });
       } else if (url.pathname === "/ui/api/project/share") {
         return json({ id: hub.shareProject(human, pid(str("project")), str("human").trim().toLowerCase()) });
       } else if (url.pathname === "/ui/api/project/link") {
@@ -325,5 +331,7 @@ function state(hub: Hub, human: string, mark = true) {
     address: `role:${hub.projectName(r.project) ?? r.project}/${r.role}`, owner: hub.projectOwner(r.project),
     description: oneLine(r.description || r.role, 200),
   }));
-  return { human, me, people, invites, pending, push, now: hub.now(), types: MESSAGE_TYPES, asks, inbox, sent, projects, open_roles };
+  // Who handles what: this person's own list across their projects, with any proposal from one of their agents.
+  const who = hub.entriesOf(human).map((e) => ({ ...e, proposed_by: e.proposed_by ? hub.label(e.proposed_by) : null }));
+  return { human, me, people, invites, pending, push, now: hub.now(), types: MESSAGE_TYPES, asks, inbox, sent, projects, open_roles, who };
 }

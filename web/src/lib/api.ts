@@ -28,8 +28,9 @@ export interface Me { operator: boolean; password: boolean; logins: { id: number
 export interface Pending { id: number; kind: "share" | "link" | "join"; from: string; project: string; created_at: number }
 // A role another person opened to the whole hub: it takes messages from anyone on it, from any project.
 export interface OpenRole { address: string; owner: string; description: string }
+export interface WhoEntry { project: string; role: string; entry: string; proposal: string; proposed_by: string | null; seat: string }
 
-export interface State { human: string; me: Me; people: Person[]; invites: Invite[]; pending: Pending[]; push: { key: string | null; devices: { label: string; created_at: number; last_ok: number | null }[] }; now: number; types: string[]; asks: Ask[]; inbox: InboxMessage[]; sent: SentMessage[]; projects: Project[]; open_roles: OpenRole[] }
+export interface State { human: string; me: Me; people: Person[]; invites: Invite[]; pending: Pending[]; push: { key: string | null; devices: { label: string; created_at: number; last_ok: number | null }[] }; now: number; types: string[]; asks: Ask[]; inbox: InboxMessage[]; sent: SentMessage[]; projects: Project[]; open_roles: OpenRole[]; who?: WhoEntry[] }
 
 export class NotLoggedIn extends Error {}
 
@@ -40,7 +41,7 @@ export async function loadState(): Promise<State> {
   return res.json();
 }
 
-export async function post(action: "answer" | "ack" | "send" | "push/subscribe" | "push/unsubscribe" | "invite" | "invite/withdraw" | "invite/dismiss" | "login-link" | "login/remove" | "logout-all" | "machine/revoke" | "password" | "invite/decide" | "project/new" | "project/share" | "project/link" | "project/leave" | "project/remove" | "project/unlink" | "project/repo", body: Record<string, unknown>): Promise<unknown> {
+export async function post(action: "answer" | "ack" | "send" | "push/subscribe" | "push/unsubscribe" | "invite" | "invite/withdraw" | "invite/dismiss" | "login-link" | "login/remove" | "logout-all" | "machine/revoke" | "password" | "invite/decide" | "project/new" | "project/share" | "project/link" | "project/leave" | "project/remove" | "project/unlink" | "project/repo" | "entry" | "entry/refuse", body: Record<string, unknown>): Promise<unknown> {
   const res = await fetch(`/ui/api/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const out = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new Error(out.error ?? `the hub answered ${res.status}`);

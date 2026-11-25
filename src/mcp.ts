@@ -152,13 +152,22 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     return lines.join("\n");
   }));
 
+  // Who handles what: the human's own list, for their own sessions only.
+  const whoHandlesWhat = () => {
+    const list = hub.liveEntriesOf(agent.human);
+    return list.length ? `\n\n## Who handles what (${agent.human}'s own words; check it after you digest a recording, transcript or document, and before you report a piece of work done)\n` +
+      list.map((e) => `- role:${e.project}/${e.role} (${e.seat}): ${defang(e.entry)}`).join("\n") +
+      `\nWhen in doubt, send it there; a receiver drops what is not its own. Then tell ${agent.human} what you passed on and to whom.` : "";
+  };
+
   server.registerTool("projects", {
-    description: "The projects you can work in, and the one this session belongs to.",
+    description: "The projects you can work in, the one this session belongs to, and your human's list of who handles what across them.",
     inputSchema: strict({}),
   }, tool(() => {
     const mine = hub.projectsOf(agent.id);
     const links = (p: string) => hub.linkedProjects(p);
     return `${mine.length ? mine.map((p) => `- ${p}${p === conn.project ? " (this session)" : ""}${hub.isPair(p) ? ` (direct messages with ${hub.projectHumans(p).filter((h) => h !== agent.human).join(", ") || "nobody: the other person has left"}; no folder)` : ""}${hub.repo(p) ? ` (code: \`${hub.repo(p)}\`)` : ""}${links(p).length ? `, linked with ${links(p).join(", ")}` : ""}`).join("\n") : "No projects yet; create_project opens one."}` +
+      whoHandlesWhat() +
       (conn.project ? "" : "\nThis session is not tied to a project: its folder is not connected and has no trusted .axos.json. Your human runs \`axos use <owner>/<project>\` in it (no invitation or link needed for their own projects); see the axos skill, 'connect'.");
   }));
 
@@ -339,14 +348,18 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     description: "Create a role in the project (or update its description): a job one session does at a time, e.g. reviewer, deployer, coordinator.",
     inputSchema: strict({ project: projectArg, role: z.string(), description: z.string().describe("One sentence: what the holder does"),
       quiet: z.boolean().optional().describe("true: while vacant, this role's mail is never shown to the project's main session (a role whose work must not reach a chat session)"),
+      entry: z.string().optional().describe("Only for your own human's projects: propose their line for who handles what at this role (when to send something here, what, and what happens to it). It goes live only when your human takes it on their page"),
       open: z.union([z.boolean(), z.literal("hub")]).optional().describe("Only the project's owner: true names this role, with its description, at the start of every session of theirs (a feedback address; their sessions reach any role of their own projects anyway); \"hub\" (the hub's operator only) lets every person's sessions on the hub do so, and nothing else of the project; the description is shown to those sessions at start. false closes it.") }),
-  }, tool(({ project: p, role, description, open, quiet }) => {
+  }, tool(({ project: p, role, description, open, quiet, entry }) => {
     const pr = project(p);
     if (!hub.isMember(agent.id, pr)) throw new AxosError(`you are not in project '${pr}'`);
+    // Refused before anything changes (security review of 0.29.0, N3).
+    if (entry !== undefined && hub.projectOwner(pr) !== agent.human) throw new AxosError("only the project owner's own agents propose who handles what there");
     hub.defineRole(pr, role, description, false, agent.human);
+    if (entry !== undefined) hub.proposeEntry(agent.id, pr, role, entry, me);
     if (open !== undefined) hub.setRoleOpen(agent.human, pr, role, open);
     if (quiet !== undefined) hub.setRoleQuiet(pr, role, quiet);
-    return `Role ${role} in ${pr}: ${description}${open === true ? ". Open: every session of yours reaches it from any project." : open === false ? ". Closed to sessions outside the project." : ""}`;
+    return `Role ${role} in ${pr}: ${description}${entry !== undefined ? `. Your line for who handles what waits on ${agent.human}'s page until they take it` : ""}${open === true ? ". Open: every session of yours reaches it from any project." : open === false ? ". Closed to sessions outside the project." : ""}`;
   }));
 
   server.registerTool("claim_role", {

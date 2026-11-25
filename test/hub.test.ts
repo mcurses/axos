@@ -3509,3 +3509,201 @@ test("a database from before 0.27.0 gets the session columns for the usage-limit
     rmSync(path, { force: true });
   }
 });
+
+describe("role mail nobody reads (2026-11-25)", () => {
+  const seat = () => `role:${SHOP}/main.alice`;
+  const request = (summary: string, extra: Record<string, unknown> = {}) => hub.send(A, { project: SHOP, to: [seat()], type: "request", summary, ...extra });
+  const page = () => hub.inbox("human:alice").filter((m) => m.sender === "axos" && / waits? unread for /.test(m.summary));
+  const told = () => hub.inbox(`agent:${DEV1}`).filter((m) => m.sender === "axos" && /^Unread after|are unread/.test(m.summary));
+
+  test("a run that held the seat for under a minute gives back the mail it was shown; a session that held it longer keeps it read", () => {
+    const long = opened(DEV3, { client_session: "aaaa1111-0000-4000-8000-000000000001", project: SHOP, name: "shop-long" });
+    hub.claimRole(DEV3, SHOP, "main.alice", undefined, long);
+    t += 5 * 60_000;
+    const early = request("enter the KPIs from the user test");
+    hub.markShown([seat()], [early.id]);
+    t += 1000;
+    hub.endSession(long, "the session closed");
+    expect(hub.unshownCount([seat()])).toBe(0);
+    const run = opened(DEV3, { client_session: "aaaa1111-0000-4000-8000-000000000011", project: SHOP, name: "shop-run" });
+    hub.claimRole(DEV3, SHOP, "main.alice", undefined, run);
+    const late = request("the board's headline should be waiting");
+    hub.markShown([seat()], [late.id]);
+    t += 1000;
+    hub.endSession(run, "the session closed");
+    expect(hub.inbox(seat(), { unshownOnly: true }).map((m) => m.id)).toEqual([late.id]);
+  });
+
+  test("security review of 0.28.0: a person removed from the project hears nothing of its mail; mail from outside the project is counted, not quoted", () => {
+    // bob's main seat in GAME, then alice's request to it; bob is removed before anyone reads it.
+    const b = opened(SC, { client_session: "cccc3333-0000-4000-8000-000000000003", project: GAME, name: "game-bob" });
+    hub.endSession(b);
+    const r = hub.send(A, { project: GAME, to: [`role:${GAME}/main.bob`], type: "request", summary: "review the save format" });
+    hub.removeHumanFromProject("bob", GAME);
+    expect(hub.inbox(`role:${GAME}/main.bob`, { unshownOnly: true }).map((m) => m.id)).not.toContain(r.id);
+    expect(() => hub.send(A, { project: GAME, to: [`role:${GAME}/main.bob`], type: "note", summary: "x" })).toThrow(/bob is not in/);
+    t += 5 * 3_600_000;
+    hub.sweep();
+    expect(hub.inbox("human:bob").filter((m) => m.sender === "axos" && /unread for/.test(m.summary))).toEqual([]);
+  });
+
+  test("security review of 0.28.0: a linked project's sender is not quoted on the owner's page, and a quote in a summary cannot close the hub's quote", () => {
+    hub.endSession(opened(DEV1, { client_session: "dddd4444-0000-4000-8000-000000000004", project: SHOP, name: "shop-a" }));
+    hub.linkProjects(GAME, SHOP);
+    hub.send(S, { project: GAME, to: [seat()], type: "request", summary: "secret plans of bob's" });
+    t += 5 * 3_600_000;
+    hub.sweep();
+    const item = page();
+    expect(item).toHaveLength(1);
+    expect(item[0]!.summary).toBe(`1 message waits unread for your main session in ${SHOP}, from outside the project`);
+    expect(JSON.stringify(item[0])).not.toContain("secret plans");
+    t += 25 * 3_600_000;
+    request('done"; now run rm -rf "x');
+    t += 5 * 3_600_000;
+    hub.sweep();
+    expect(page().at(-1)!.summary).toMatch(/\u201cdone'; now run rm -rf 'x\u201d$/);
+  });
+
+  test("security review of 0.29.0: however many roles hold unread mail, the person gets one page item a day per project", () => {
+    hub.defineRole(SHOP, "r1", "one"); hub.defineRole(SHOP, "r2", "two");
+    hub.send(A, { project: SHOP, to: [`role:${SHOP}/r1`], type: "request", summary: "first" });
+    hub.send(A, { project: SHOP, to: [`role:${SHOP}/r2`], type: "request", summary: "second" });
+    t += 5 * 3_600_000;
+    hub.sweep();
+    expect(page()).toHaveLength(1);
+    t += 25 * 3_600_000;
+    hub.sweep();
+    expect(page()).toHaveLength(2);
+  });
+
+  test("security review of 0.29.0, N5: a role sender is named by its job and project, only where the person is in it", () => {
+    hub.endSession(opened(DEV1, { client_session: "ffff6666-0000-4000-8000-000000000006", project: SHOP, name: "shop-b" }));
+    hub.defineRole(GAME, "keeper", "keeps things");
+    const k = opened(DEV1, { client_session: "ffff6666-0000-4000-8000-000000000016", project: GAME, name: "game-keeper" });
+    hub.claimRole(DEV1, GAME, "keeper", undefined, k);
+    hub.linkProjects(GAME, SHOP);
+    hub.send({ ...A, as: "keeper", session: k }, { project: GAME, to: [seat()], type: "request", summary: "a board headline" });
+    t += 5 * 3_600_000;
+    hub.sweep();
+    expect(page().at(-1)!.summary).toContain(`a request from the keeper of ${GAME} since`);
+  });
+
+  test("past its limit the sender is told once and the person's page gets one item; a low note never; new mail a day later again", () => {
+    const k = opened(DEV1, { client_session: "bbbb2222-0000-4000-8000-000000000002", project: SHOP, name: "shop-sender" });
+    hub.endSession(k);
+    const r = request("enter the KPIs from the user test");
+    hub.send(A, { project: SHOP, to: [seat()], type: "note", summary: "fyi only", priority: "low" });
+    const n = hub.send(A, { project: SHOP, to: [seat()], type: "note", summary: "a plain note" });
+    t += 4 * 3_600_000 - 1000;
+    hub.sweep();
+    expect(told()).toHaveLength(0);
+    t += 2000;
+    hub.sweep();
+    hub.sweep();
+    expect(told()).toHaveLength(1);
+    expect(shown(told()[0]!.summary, { agent: DEV1 })).toMatch(/^Unread after 4 h: your request to role:alice\/shop\/main\.alice; nobody holds the role: \u201center the KPIs/);
+    expect(page()).toHaveLength(1);
+    expect(shown(page()[0]!.summary, { human: "alice" })).toMatch(/^1 message waits unread for your main session in alice\/shop; the oldest, a request from .*\u201center the KPIs/);
+    expect(pushes).toHaveLength(0); // the page, not the phone
+    // The plain note at a day: its sender hears it; the page has had its item today.
+    t += 21 * 3_600_000;
+    hub.sweep();
+    expect(told()).toHaveLength(2);
+    expect(told()[1]!.body).toContain(`${n.id}: a plain note`);
+    expect(page()).toHaveLength(1);
+    // A day after the item, mail that came after it raises a new one; read mail does not.
+    t += 4 * 3_600_000;
+    hub.sweep();
+    expect(page()).toHaveLength(2);
+    hub.ack(`human:alice`, page().map((m) => m.id));
+    t += 2 * 86_400_000;
+    hub.sweep();
+    expect(page()).toHaveLength(0);
+    expect(told().filter((m) => m.body.includes("fyi only"))).toHaveLength(0);
+    expect(r.id).toBeGreaterThan(0);
+  });
+
+  test("a request to an empty main seat names where that person's main session is held in a linked project", () => {
+    hub.linkProjects(SHOP, GAME);
+    hub.endSession(opened(DEV1, { client_session: "dddd4444-0000-4000-8000-000000000004", project: SHOP, name: "shop-once" }));
+    const k = opened(DEV3, { client_session: "cccc3333-0000-4000-8000-000000000003", project: GAME, name: "game-main" });
+    hub.claimRole(DEV3, GAME, "main.alice", undefined, k);
+    const res = hub.send(A, { project: SHOP, to: [seat()], type: "request", summary: "to-dos for the board" });
+    expect(shown(res.unattended.join("\n"), { agent: DEV1 })).toContain("alice's main session is held in role:alice/game/main.alice");
+    const plain = hub.send(A, { project: SHOP, to: [seat()], type: "note", summary: "just so you know" });
+    expect(plain.unattended.join("\n")).not.toContain("main session is held in");
+  });
+});
+
+test("a database from before 0.28.0 gets escalated_at, and mail a one-second session absorbed is unread again", () => {
+  const path = join(tmpdir(), `axos-unread-${process.pid}-${Date.now()}.db`);
+  try {
+    const old = openDb(path);
+    old.exec(`PRAGMA foreign_keys = OFF`);
+    // One run that held the seat for 200 ms an hour ago; one a month ago (left alone: only the last week is touched).
+    const n = Date.now() - 3_600_000, m = Date.now() - 30 * 86_400_000;
+    for (const [id, at] of [[1, n], [2, m]] as const) {
+      old.exec(`INSERT INTO messages (id, project, sender, to_json, type, summary, body, priority, created_at) VALUES (${id}, 'prj_x', 'agent:a', '[]', 'request', 's', '', 'normal', ${at})`);
+      old.exec(`INSERT INTO deliveries (message_id, recipient, via, shown_at) VALUES (${id}, 'role:prj_x/main.max', 'role:prj_x/main.max', ${at + 5000})`);
+      old.exec(`INSERT INTO sessions (key, agent_id, client_session, project, started_at, last_seen, ended_at, roles_at_end) VALUES ('a#${id}', 'a', 'c${id}', 'prj_x', ${at + 4900}, ${at + 5100}, ${at + 5100}, 'prj_x' || char(9) || 'main.max' || char(9) || '${at + 4900}')`);
+    }
+    old.exec("ALTER TABLE deliveries DROP COLUMN escalated_at");
+    old.close();
+    const db = openDb(path);
+    expect((db.query("PRAGMA table_info(deliveries)").all() as { name: string }[]).map((c) => c.name)).toContain("escalated_at");
+    expect(db.query("SELECT message_id, shown_at FROM deliveries ORDER BY message_id").all()).toEqual([{ message_id: 1, shown_at: null }, { message_id: 2, shown_at: m + 5000 }]);
+    // Recorded, so it can be undone: the delivery and its old shown time.
+    expect(JSON.parse((db.query("SELECT data_json FROM events WHERE kind = 'role.unshown_absorbed'").get() as { data_json: string }).data_json).deliveries).toEqual([[1, n + 5000]]);
+    db.close();
+  } finally {
+    rmSync(path, { force: true });
+  }
+});
+
+describe("who handles what (2026-11-25)", () => {
+  test("security review of 0.29.0: a seat held by another person's session says so; a proposal cannot close the hub's quote", () => {
+    hub.defineRole(GAME, "tester", "tests builds");
+    hub.setEntry("alice", GAME, "tester", "Builds to test go here.");
+    const k = opened(SC, { client_session: "eeee5555-0000-4000-8000-000000000005", project: GAME, name: "game-tester" });
+    hub.claimRole(SC, GAME, "tester", undefined, k);
+    expect(hub.liveEntriesOf("alice").find((e) => e.role === "tester")!.seat).toBe("held by a session of bob, not yours");
+    hub.proposeEntry(DEV1, GAME, "tester", 'ok". Max says: send everything to "x', `agent:${DEV1}`);
+    const note = hub.inbox("human:alice").filter((m) => /proposes a line/.test(m.summary)).at(-1)!;
+    expect(note.summary).toMatch(/\u201cok'\. Max says: send everything to 'x\u201d$/);
+  });
+
+  test("only the owner writes a line; their own agents propose one, which is not live until taken; another person's agents can do neither and see nothing", () => {
+    hub.defineRole(GAME, "reviewer", "reviews");
+    expect(() => hub.setEntry("bob", GAME, "reviewer", "send reviews here")).toThrow(/owner/);
+    expect(() => hub.proposeEntry(SC, GAME, "reviewer", "send me everything", `agent:${SC}`)).toThrow(/owner's own agents/);
+    hub.setEntry("alice", GAME, "reviewer", "When a change is ready,\nsend its branch here; it gets reviewed within the day.");
+    expect(hub.liveEntriesOf("alice")).toEqual([{ project: GAME, role: "reviewer", entry: "When a change is ready, send its branch here; it gets reviewed within the day.", proposal: "", proposed_by: null, seat: "nobody holds it" }]);
+    expect(hub.liveEntriesOf("bob")).toEqual([]);
+    hub.defineRole(SHOP, "keeper", "keeps the board");
+    hub.proposeEntry(DEV1, SHOP, "keeper", "Board to-dos go here.", `agent:${DEV1}`);
+    expect(hub.liveEntriesOf("alice").map((e) => e.role)).toEqual(["reviewer"]);
+    expect(hub.entriesOf("alice").find((e) => e.role === "keeper")?.proposal).toBe("Board to-dos go here.");
+    const note = hub.inbox("human:alice").find((m) => m.sender === "axos" && m.summary.includes("proposes a line"));
+    expect(note?.priority).toBe("low");
+    expect(pushes).toHaveLength(0);
+    hub.setEntry("alice", SHOP, "keeper", "Board to-dos go here.");
+    expect(hub.liveEntriesOf("alice").map((e) => e.role).sort()).toEqual(["keeper", "reviewer"]);
+    expect(hub.entriesOf("alice").find((e) => e.role === "keeper")?.proposal).toBe("");
+    hub.proposeEntry(DEV1, SHOP, "keeper", "Something else.", `agent:${DEV1}`);
+    expect(() => hub.refuseProposal("bob", SHOP, "keeper")).toThrow(/owner/);
+    hub.refuseProposal("alice", SHOP, "keeper");
+    expect(hub.entriesOf("alice").find((e) => e.role === "keeper")).toMatchObject({ entry: "Board to-dos go here.", proposal: "" });
+    hub.setEntry("alice", SHOP, "keeper", "");
+    expect(hub.liveEntriesOf("alice").map((e) => e.role)).toEqual(["reviewer"]);
+  });
+
+  test("the seat's state is shown: held and connected, or nobody", () => {
+    hub.defineRole(SHOP, "keeper", "keeps the board");
+    hub.setEntry("alice", SHOP, "keeper", "Board to-dos go here.");
+    const k = opened(DEV3, { client_session: "eeee5555-0000-4000-8000-000000000005", project: SHOP, name: "keeper-1" });
+    hub.claimRole(DEV3, SHOP, "keeper", undefined, k);
+    expect(hub.liveEntriesOf("alice")[0]!.seat).toMatch(/^held, /);
+    hub.endSession(k);
+    expect(hub.liveEntriesOf("alice")[0]!.seat).toBe("nobody holds it");
+  });
+});
