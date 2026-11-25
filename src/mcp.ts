@@ -360,8 +360,10 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
     // Refused before anything changes (security review of 0.29.0, N3).
     if (entry !== undefined && hub.projectOwner(pr) !== agent.human) throw new AxosError("only the project owner's own agents propose who handles what there");
     if (when !== undefined && entry === undefined) throw new AxosError("when goes with entry: the condition of the line you propose");
-    if (description === undefined && !hub.roles(pr).some((r) => r.role === role)) throw new AxosError(`there is no role '${role}' in ${pr} yet: give its description to create it`);
-    hub.defineRole(pr, role, description, false, agent.human);
+    const exists = hub.roles(pr).some((r) => r.role === role);
+    if (description === undefined && !exists) throw new AxosError(`there is no role '${role}' in ${pr} yet: give its description to create it`);
+    // Only a line for an existing role (a main seat included, which define_role cannot create): the role stays as it is.
+    if (description !== undefined || open !== undefined || quiet !== undefined) hub.defineRole(pr, role, description, false, agent.human);
     if (entry !== undefined) hub.proposeEntry(agent.id, pr, role, entry, me, when);
     if (open !== undefined) hub.setRoleOpen(agent.human, pr, role, open);
     if (quiet !== undefined) hub.setRoleQuiet(pr, role, quiet);

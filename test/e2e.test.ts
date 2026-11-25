@@ -357,6 +357,12 @@ test("the plugin's hooks: start orients in a few lines, check shows new messages
   expect(listed).toContain("- role:alice/shop/frontend-coordinator (nobody holds it): when \u201ca canvas 'or' toolbar change\u201d: \u201cSend the branch here; it gets reviewed.\u201d");
   expect(listed).not.toMatch(/prj_|agt_/);
   await hook("cccccccc-1111-2222-3333-444444444444", "shop-yy", { event: "end" });
+  // A line proposed for an existing role, a main seat included, leaves the role as it is.
+  hub.defineRole(SHOP, "main.alice", "alice's main seat", true);
+  expect((await call(dev1, "define_role", { role: "main.alice", entry: "Decisions for alice go here.", when: "only alice can decide it" })).text).toContain("waits on alice's page");
+  expect(hub.entriesOf("alice").find((e) => e.role === "main.alice")).toMatchObject({ description: "alice's main seat", proposal: "Decisions for alice go here.", proposal_when: "only alice can decide it" });
+  expect((await call(dev1, "define_role", { role: "nope", entry: "x" })).text).toContain("give its description to create it");
+  hub.refuseProposal("alice", SHOP, "main.alice");
   hub.setEntry("alice", SHOP, "frontend-coordinator", "");
   await dev1.close();
 });
