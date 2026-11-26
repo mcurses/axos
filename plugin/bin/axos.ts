@@ -55,7 +55,7 @@ interface Config {
   folders?: FolderRule[];
   check_every_s?: number; // how often PostToolUse looks for new messages during a long turn
   admin_ssh?: string; // the ssh host of the hub's server: `axos admin …` runs `axos …` there (the hub's admin command)
-  board?: { id: string; every_s: number }; // the hub's health board in vinea (axos board connect), fed every every_s
+  board?: { id: string; every_s: number }; // the hub's health board in a dashboard app (axos board connect), fed every every_s
 }
 
 const HOME = homedir();
@@ -450,10 +450,10 @@ export function headless(args: string | null): boolean {
   return args !== null && /(^|\s)(-p|--print)(\s|$)/.test(args);
 }
 
-// meum's tab labels (`meum tab labels <a> <b>… | none`): best effort, a one-second budget, never failing the hook.
-// Only inside a meum tab ($MEUM_TAB) with meum's CLI present. Returns what is now written (the old list when it failed).
-// At session start it writes even when unchanged: meum may have lost the chips, and the cache is stale after a resume or
-// compaction (Max, ruled through the suite owner 3613).
+// A terminal app's tab labels (`meum tab labels <a> <b>… | none`): best effort, a one-second budget, never failing the hook.
+// Only inside that app's tab ($MEUM_TAB) with its CLI present. Returns what is now written (the old list when it failed).
+// At session start it writes even when unchanged: the app may have lost the chips, and the cache is stale after a resume or
+// compaction (ruled through the suite owner 3613).
 async function meumLabels(labels: string[], last: string[] | undefined, force = false, own?: { session: string; project: string }): Promise<string[] | undefined> {
   const tab = process.env.MEUM_TAB;
   if (!tab) return last;
@@ -480,7 +480,7 @@ function meumCli(): string | undefined {
     ["/Applications/meum.app/Contents/Resources/bin/meum", `${HOME}/Applications/meum.app/Contents/Resources/bin/meum`].find((p) => existsSync(p));
 }
 
-// One `meum tab labels`, on this tab or the one named; a one-second budget. True when meum took it.
+// One `meum tab labels`, on this tab or the one named; a one-second budget. True when the app took it.
 async function meumTabLabels(cli: string, labels: string[], tab?: string): Promise<boolean> {
   try {
     const p = Bun.spawn([cli, "tab", "labels", ...(labels.length ? labels : ["none"]), ...(tab ? ["--tab", tab] : [])], { stdout: "ignore", stderr: "ignore" });
@@ -491,7 +491,7 @@ async function meumTabLabels(cli: string, labels: string[], tab?: string): Promi
   } catch { return false; }
 }
 
-// The labels AXOS last wrote on each meum tab of this Mac, one file per tab, shared by every profile (a role often
+// The labels AXOS last wrote on each terminal-app tab of this Mac, one file per tab, shared by every profile (a role often
 // moves between profiles). A record older than a week is ignored: that tab is most likely gone.
 export interface TabRecord { session: string; project: string; labels: string[]; at: number }
 const TABS_DIR = join(dirname(CONFIG_PATH), "tabs");
@@ -591,7 +591,7 @@ async function hook(kind: string): Promise<void> {
     // A refused token is not an outage: say it at session start, where a person can act on it.
     if (r.error === "token") context = kind === "start" ? `The AXOS hub (${id.c.url}) refused this machine's token: it was revoked or is wrong. AXOS is off here until your user asks the person who runs the hub for a new invite link and runs axos join --force <link>.` : "";
     else context = r.context ?? "";
-    // The session's roles on its meum tab, from the hub's view, written only when they change (the suite owner, 2667).
+    // The session's roles on its terminal-app tab, from the hub's view, written only when they change (the suite owner, 2667).
     if (Array.isArray(r.labels) && kind !== "end") state.labels = await meumLabels(r.labels, state.labels, kind === "start", id.project ? { session: id.sessionId, project: id.project } : undefined);
     if (state.unreachable && kind !== "end") context = ["AXOS hub is reachable again.", context].filter(Boolean).join("\n\n");
     state.unreachable = false;
@@ -686,7 +686,7 @@ async function forward(id: Identity, msg: { id?: unknown; method?: string; param
     extra["x-axos-human-words"] = "checked";
   }
   // The handshake and the tool list must not fail while the hub is briefly away (a laptop waking, a network still
-  // coming up): Claude Code gives a failed MCP server up for the whole session (vigil's report, 2026-11-05, a 45 s
+  // coming up): Claude Code gives a failed MCP server up for the whole session (a session's report, 2026-11-05, a 45 s
   // dark wake). So these retry for a while, then answer from the copy kept from the last time the hub answered; the
   // tools then work as soon as the hub is back.
   const cached = msg.method === "initialize" || msg.method === "tools/list";
@@ -891,7 +891,7 @@ async function trust(): Promise<void> {
   mkdirSync(dirname(TRUST_PATH), { recursive: true });
   writeFileSync(TRUST_PATH, `${JSON.stringify(all, null, 2)}\n`, { mode: 0o600 });
   console.log("Trusted. New sessions in this folder connect; running ones at their next prompt.");
-  // Not a member yet: the owner is asked to let this person in (Max, 2026-11-03: commit the file, a teammate clones,
+  // Not a member yet: the owner is asked to let this person in (2026-11-03: commit the file, a teammate clones,
   // connects, and the owner agrees in AXOS).
   const t = token(c);
   if (!t || !f.project) return;
@@ -1182,7 +1182,7 @@ function codexRinger(codex: string, thread: string, log: (line: string) => void)
   }, (e) => log(`${new Date().toISOString()} codex queue failed: ${e.message}`));
 }
 
-// Wake an idle Claude background session (`claude --bg`), where the development channel does not run (vigil's report,
+// Wake an idle Claude background session (`claude --bg`), where the development channel does not run (a session's report,
 // 2026-11-03, 2630): listen to that session's mailboxes and, when mail arrives while it is idle, resume it with a fixed
 // line. The session reads the message itself through its AXOS tools; no message text passes through here. A busy
 // session is left alone: its own hooks show it the mail at its next step (resuming a running one would start a copy).
@@ -1213,15 +1213,15 @@ async function claudeBell(args: string[]): Promise<void> {
     const st = await claudeState(claude, session);
     if (st.working) return log(`${new Date().toISOString()} working: its hooks will show the message at its next step`);
     // Resuming a session whose process still lives starts a copy under a new id; stopped first, it wakes as itself
-    // (vigil's test, 2639). Only "done" (then stopped) or "stopped" is woken.
+    // (a session's test, 2639). Only "done" (then stopped) or "stopped" is woken.
     if (st.alive) {
-      // `claude stop` takes the job's short id, not the session id (vigil's test, 2643).
+      // `claude stop` takes the job's short id, not the session id (a session's test, 2643).
       await Bun.spawn([claude, "stop", st.id ?? session], { stdout: "ignore", stderr: "ignore" }).exited;
       for (let i = 0; i < 60 && (await claudeState(claude, session)).alive; i++) await Bun.sleep(500);
       if ((await claudeState(claude, session)).alive) return log(`${new Date().toISOString()} could not stop it to wake it; the message waits`);
     }
     // No flags: a background session keeps its saved options, and any flag (or a resume too soon after the stop)
-    // starts a copy under a new id (vigil's runs, 2669). Success is "woke session <id>"; a copy is stopped, removed
+    // starts a copy under a new id (a session's runs, 2669). Success is "woke session <id>"; a copy is stopped, removed
     // and the resume tried again, three times at most.
     for (let attempt = 1; attempt <= 3; attempt++) {
       await Bun.sleep(settle);
@@ -1390,7 +1390,7 @@ function writeConfig(c: Config): void {
 }
 
 // `axos link` used to be the folder command; "link" is also two projects that may reach each other, and a person who
-// meant the second moved a folder into the other project (Max, 2026-11-02, three times in a day). It does nothing now.
+// meant the second moved a folder into the other project (2026-11-02, three times in a day). It does nothing now.
 function linkSaysWhich(cmd: string): never {
   console.error(`axos ${cmd} does nothing: "link" means two different things in AXOS.
 - The project this folder belongs to: axos use <owner>/<name> (axos use alone says where it is now; axos use --none disconnects it).
@@ -1446,7 +1446,7 @@ async function use(args: string[]): Promise<void> {
     : undefined;
   if (!here && git?.remotes.length && !pick) throw new Error(remoteName ? `no remote '${remoteName}' here` : `say which remote: --remote ${git.remotes.map((r) => r.name).join(" or --remote ")}`);
   // A bare `axos use` in a connected folder says where it is connected, instead of asking for a name: a folder that
-  // sat in the wrong project for a day was found only by disconnecting it (the meum session, 2026-11-02). An untrusted
+  // sat in the wrong project for a day was found only by disconnecting it (a session, 2026-11-02). An untrusted
   // .axos.json still goes through the confirmation below.
   if (!rest[0] && !isNew && !(file?.ref && !trusted(file.dir, file.ref))) {
     const cur = projectOf(c, cwd);
@@ -1534,7 +1534,7 @@ async function use(args: string[]): Promise<void> {
   if (rule.remote && !rule.remote.startsWith("file:")) await mePost(c, t, { op: "remember-remote", remote: rule.remote, project: project.id }).catch(() => {});
 
   const label = project.name ?? project.id;
-  // A re-pointed folder says what it left: a second link in the wrong folder is otherwise silent (vinea, 2026-11-02).
+  // A re-pointed folder says what it left: a second link in the wrong folder is otherwise silent (a project, 2026-11-02).
   if (before) console.log(`Moved: this ${rule.remote ? "repository" : "folder"} belonged to ${before}; it does not any more.`);
   console.log(rule.remote
     ? `Connected on this machine: every checkout of ${rule.remote} -> ${label}.`
@@ -1715,7 +1715,7 @@ function admin(args: string[]): number {
 }
 
 // `axos rename <new name>` in a connected folder renames its project; `axos rename <project> <new name>` names the
-// project, from any folder (Max, 2026-11-03: in a folder that had lost its project he typed the project's name). Only
+// project, from any folder (2026-11-03: in a folder that had lost its project a person typed the project's name). Only
 // the owner may. The id, mail, roles, leases and links stay; the old name keeps resolving; this machine's rules for the
 // project show the new name.
 async function rename(args: string[]): Promise<void> {
@@ -1785,12 +1785,12 @@ async function whoami(): Promise<void> {
   }, null, 2));
 }
 
-// ---------------------------------------------------------------- the hub's board in vinea
+// ---------------------------------------------------------------- the hub's board in a dashboard app
 
-// The hub's health board (the suite's rule: a tool's dashboard is a vinea board the tool ships). `axos board connect`
-// applies plugin/board.json to <you>/<hub>/axos with the vinea command; `axos board feed` pushes the numbers once, from
-// the hub's /api/health (the operator's only); a running process of yours (the vinea bridge) calls the same feed every
-// few minutes. vinea's address and token stay in vinea's config: AXOS only runs `vinea`.
+// The hub's health board (the suite's rule: a tool's dashboard is a board the tool ships). `axos board connect`
+// applies plugin/board.json to <you>/<hub>/axos with the dashboard app's command; `axos board feed` pushes the numbers once, from
+// the hub's /api/health (the operator's only); a running process of yours (the dashboard bridge) calls the same feed every
+// few minutes. The app's address and token stay in its own config: AXOS only runs its command.
 
 const BOARD_DEFINITION = join(dirname(import.meta.path), "..", "board.json");
 const BOARD_EVERY_S = 300;
@@ -1829,8 +1829,8 @@ interface BoardHealth {
 
 // {key: [component, props]} for the board, from the hub's health numbers.
 // The Summary's state speaks only for what waits for the board's reader (me): their unanswered questions. Agents' unread
-// mail, a vacant role and a failed push are the maintainer's work and stay in the attention card (Max, 2026-11-18:
-// "the vinea line appears only if something really needs my attention. otherwise its just noise"; suite owner 9176).
+// mail, a vacant role and a failed push are the maintainer's work and stay in the attention card (2026-11-18:
+// "the dashboard line appears only if something really needs my attention. otherwise its just noise"; suite owner 9176).
 export function boardWidgets(h: BoardHealth, me?: string): Record<string, [string, unknown]> {
   const pct = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 100);
   const age = (ms: number) => { const m = Math.round((h.now - ms) / 60_000); return m < 120 ? `${m} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} days`; };
@@ -1869,7 +1869,7 @@ export function boardWidgets(h: BoardHealth, me?: string): Record<string, [strin
   ].filter(Boolean);
   if (parts.length) items.push({ label: "known, nothing to do", state: "muted", detail: `${parts.join(", ")} · who: the AXOS maintainer's daily check; dormant sessions end by themselves`.slice(0, 160) });
   if (!items.length) items.push({ label: "nothing waits on anyone", state: "ok" });
-  for (const it of items) it.label = it.label.slice(0, 80); // vinea refuses a Status label over 80 characters
+  for (const it of items) it.label = it.label.slice(0, 80); // the dashboard refuses a Status label over 80 characters
   const delivery = {
     columns: [{ key: "kind", label: "Mailbox" }, { key: "n", label: "Delivered" }, { key: "shown", label: "Shown" }, { key: "fast", label: "Within 10 min" }, { key: "handled", label: "Handled" }, { key: "expired", label: "Expired" }],
     rows: h.delivered.map((d) => ({ kind: ({ role: "roles", session: "sessions", agent: "machines", human: "people" } as Record<string, string>)[d.kind] ?? d.kind, n: d.n, shown: `${pct(d.shown, d.n)} %`, fast: `${pct(d.within_10m, d.n)} %`, handled: d.handled, expired: d.expired })),
@@ -1893,7 +1893,7 @@ export function boardWidgets(h: BoardHealth, me?: string): Record<string, [strin
   return { summary: ["Summary", summary], attention: ["Status", { items: items.slice(0, 50) }], machines: ["Table", machines], delivery: ["Table", delivery], roles: ["Table", rolesTable], asks: ["Table", asks] };
 }
 
-// The connected board, if any (the vinea bridge feeds it on this schedule).
+// The connected board, if any (the dashboard bridge feeds it on this schedule).
 export function boardSettings(): { id: string; every_s: number } | null {
   return config()?.board ?? null;
 }

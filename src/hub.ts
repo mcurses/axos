@@ -250,7 +250,7 @@ const SHA_RE = /^[0-9a-f]{7,64}$/;
 export const SYSTEM_SENDER = "axos";
 // The project's main seat (takeMain); calls to the whole project go to it while its holder is online.
 export const MAIN_ROLE = "main";
-// One main seat per person and project (Max, 2026-11-03: in a shared project one person's session held the only main,
+// One main seat per person and project (2026-11-03: in a shared project one person's session held the only main,
 // and calls to the project reached nobody else): the role `main.<human>`. `role:main` means the sender's own.
 export const mainRole = (human: string) => `${MAIN_ROLE}.${human}`;
 const isMainRole = (role: string) => role === MAIN_ROLE || role.startsWith(`${MAIN_ROLE}.`);
@@ -268,14 +268,14 @@ const DARK_MAX_MS = 7 * 86_400_000;
 // The errors of Claude Code's StopFailure hook that leave a session unable to read for a while. The rest (a server
 // error, an overlong answer, a bad request) pass with the next turn.
 const DARK_ERRORS = new Set(["rate_limit", "billing_error", "account_on_hold", "authentication_failed", "oauth_org_not_allowed"]);
-// What another tool asks of a main session is that tool's own hook's to say (meum's since 2026-11-05, suite owner 3500).
+// What another tool asks of a main session is that tool's own hook's to say (a terminal app's since 2026-11-05, suite owner 3500).
 const MAIN_DESCRIPTION = "main session here: calls to the whole project reach this person here; their first session holds it, claim_role main moves it";
 
 // Types that call for someone to act: sent to the project address and fanned out to several, they have one taker.
 export const ONE_TAKER_TYPES: readonly string[] = ["ask", "request", "review", "handoff"];
 
 // A holder key is an agent id ('agt_…'), a session key ('agt_…#7b9f51e0') or a role address
-// ('role:prj_…/main-coordinator'); this is its mailbox.
+// ('role:prj_…/maintainer'); this is its mailbox.
 export function addr(holder: string): string {
   if (holder.startsWith("role:") || holder.startsWith("session:") || holder.startsWith("agent:")) return holder;
   return holder.includes("#") ? `session:${holder}` : `agent:${holder}`;
@@ -1364,7 +1364,7 @@ export class Hub {
     if (openRole?.human) {
       const own = this.projectId(target, this.projectsOfHuman(openRole.human).filter((q) => this.projectOwner(q) === openRole.human && !this.isPair(q)));
       if (own) return own;
-      // A role the operator opened to the whole hub (Max, 2026-11-05, "yes build 3": Elli's feedback): every person's
+      // A role the operator opened to the whole hub (2026-11-05, "yes build 3": a second person's feedback): every person's
       // session reaches that one role from any project of theirs. Nothing else of its project.
       const hubWide = this.projectId(target, this.hubOpenProjects(openRole.role));
       if (hubWide) return hubWide;
@@ -1677,8 +1677,8 @@ export class Hub {
   // Every project has a main seat: the role `main`, held by the first session that comes and kept by it while it is
   // online. Calls to the whole project go to it (send). It passes by itself only from a holder that ended or went away,
   // and only to a session of the same person; anyone else claims it with claim_role (an online holder: force).
-  // (Max, 2026-11-03: "every project always has a main … by default the first session … main can be switched";
-  // Ensemble's rework 3, R1.)
+  // (2026-11-03: "every project always has a main … by default the first session … main can be switched";
+  // the suite's rework 3, R1.)
   // (2026-11-14: an operator's watchdog program held a main seat for 11 days; only a session with hooks, a model a
   // person runs, takes it.)
   takeMain(key: string): void {
@@ -1855,7 +1855,7 @@ export class Hub {
         // Out of its usage limit (or an account error): present, but it cannot read until then.
         // Its person's own business: callers show it only to that person (others read "away").
         cannot_read: ((d) => d ? darkText(d) : null)(this.dark(s.key)),
-        // Its folder's name, and the other present sessions of the same machine in the same checkout (Elli, 2026-11-05:
+        // Its folder's name, and the other present sessions of the same machine in the same checkout (a second person, 2026-11-05:
         // two sessions in one working tree, nothing said so). Callers show these only to the session's own person.
         folder: s.cwd, same_tree: s.tree ? present.filter((x) => x.key !== s.key && x.agent_id === s.agent_id && x.tree === s.tree).map((x) => x.name ?? x.key) : [] as string[],
       };
@@ -2146,7 +2146,7 @@ export class Hub {
 
   // What a starting session is told about seats: the roles its predecessor here held (same machine, same project,
   // ended within NEXT_WINDOW_MS) that are still vacant, and, if it holds its main seat, the vacant roles with mail.
-  // A hint, never a claim (identity design R2; the suite owner 2708: vigil-6b did not take vigil-4e's maintainer).
+  // A hint, never a claim (identity design R2; the suite owner 2708: one session did not take another's maintainer).
   seatHints(session: string, project: string): string[] {
     const s = this.session(session);
     if (!s) return [];
@@ -2167,7 +2167,7 @@ export class Hub {
     return out;
   }
 
-  // The labels a session's terminal tab shows (meum's tab labels, written by the plugin): the roles it holds here, its
+  // The labels a session's terminal tab shows (a terminal app's tab labels, written by the plugin): the roles it holds here, its
   // own main seat as "main" and first, at most four, each at most 24 characters.
   tabLabels(session: string, project: string): string[] {
     const own = mainRole(this.humanOfHolder(session) ?? "");
@@ -2431,7 +2431,7 @@ export class Hub {
       // A note for whoever picks the work up: held for the next session of the sender's human that starts in this project.
       if (!senderHuman) throw new AxosError("only a session or agent of a person can leave a note for their next session");
       const box = `next:${project}/${senderHuman}`;
-      // The human often starts the new session while the old one still writes the handoff (meum-05 started five seconds
+      // The human often starts the new session while the old one still writes the handoff (one session started five seconds
       // before the first of three notes it never got, 2026-11-02): a session of theirs in this project that started
       // within the window, and is not the sender, is the next session and gets it at once; the youngest if several.
       const me = sender.replace(/^session:/, "");
@@ -2671,7 +2671,7 @@ export class Hub {
       }
     }
     // A call to a whole project (an ask, request, review or handoff that the project address fanned out to several) has
-    // one taker: the first to answer it or ack it done (Max, 2026-11-03: two meum and two vinea sessions each answered
+    // one taker: the first to answer it or ack it done (2026-11-03: sessions of two projects each answered
     // one review request; "footgun").
     const fanned = [...recipients.values()].filter((v) => v.startsWith("project:")).length;
     const oneTaker = fanned > 1 && ONE_TAKER_TYPES.includes(input.type);
@@ -2781,7 +2781,7 @@ export class Hub {
       return `${this.label(r)} has not connected ${seen === null ? "yet" : `since ${when(seen)}`}: the message waits in its mailbox and expires unread after 7 days.`;
     });
     // A script's mailbox (a command line's `axos send --name`): only `axos inbox --name` reads it, and the run that sent
-    // is usually over; a reply to it is otherwise "delivered" to nobody (vlow and meum, 2026-11-02, messages 2187 and 2249).
+    // is usually over; a reply to it is otherwise "delivered" to nobody (two projects, 2026-11-02, messages 2187 and 2249).
     const scripts = [...recipients.keys()].filter((r) => r.startsWith("session:") && this.session(r.slice(8))?.kind === "script").map((r) => {
       const s = this.session(r.slice(8))!;
       return `${this.label(r)} is a script's mailbox (a command line sent with axos send --name ${s.name}): nobody reads it until ` +
@@ -2793,7 +2793,7 @@ export class Hub {
         ? `${this.label(r)} has never read a message: it runs without AXOS's hooks (another app, or an older plugin), so it sees mail only when it calls inbox. If it is waiting on this, tell its person; a role it holds is the steadier address.`
         : `${this.label(r)} has never read a message: it looks like a program that only sends, so this waits unread. If it spoke for a role, the role is the one to answer; if it needed no reply, ack its message done instead.`);
     // A request to a whole project reaches every receiver as its own, and nothing tells them who took it: two live
-    // sessions both started on one (meum-05's report, 2026-11-02, messages 2250 and 2260). The sender is told.
+    // sessions both started on one (a session's report, 2026-11-02, messages 2250 and 2260). The sender is told.
     const many = oneTaker
       ? [`Through the project address, ${fanned} receivers got this ${input.type}; the first to answer it or ack it done takes it, and the others' copies are withdrawn (thread ${id} says who took it). For a taker you choose, address a role or one session.`]
       : [];
@@ -2807,7 +2807,7 @@ export class Hub {
     };
   }
 
-  // A send for later (Max via a desk session, 2026-11-03: a reminder that wakes whoever holds the seat tomorrow, with the
+  // A send for later (a person via a desk session, 2026-11-03: a reminder that wakes whoever holds the seat tomorrow, with the
   // Mac closed): the addresses are checked now, the message is held as a row without deliveries, and the sweep sends it
   // at its time through send() itself, so it reaches the addresses as they resolve then, with every rule of a send.
   private schedule(actor: Actor, input: Parameters<Hub["send"]>[1]): ReturnType<Hub["send"]> {
@@ -3786,7 +3786,7 @@ export class Hub {
 
   // ---------------------------------------------------------------- housekeeping
 
-  // Role mail nobody has read (Max, 2026-11-25: "when nobody is there it must be escalated", and bringing that agent
+  // Role mail nobody has read (2026-11-25: "when nobody is there it must be escalated", and bringing that agent
   // back is then his to-do). Past its limit (UNREAD_*) the sender hears it once per message, and the role's person gets
   // an item on the page, no push: what waits, from whom, and how to get it read. At most one item per role a day, and
   // only for mail that came after the last one, so marking it read dismisses it.
@@ -4019,7 +4019,7 @@ export class Hub {
     };
   }
 
-  // The hub's health board (Max, 2026-11-04, through the suite owner): the numbers the daily round reads, for the
+  // The hub's health board (2026-11-04, through the suite owner): the numbers the daily round reads, for the
   // operator only. Delivery per mailbox kind since `since`, present sessions per machine, vacant or away roles with
   // waiting mail, open questions to people and their age, open invites. Names as people read them.
   boardHealth(since: number) {
@@ -4044,11 +4044,11 @@ export class Hub {
     };
   }
 
-  // Every message that did not reach a reader (Max, 2026-11-04: "checking every not delivered message and ask the
+  // Every message that did not reach a reader (2026-11-04: "checking every not delivered message and ask the
   // sender, if applicable the receiver as well, about more context"): each delivery of a message sent in the window
   // that was not shown within an hour and is not handled, or that expired unread, with the likely cause. Metadata
   // only: who, to whom, through which address, when, type and priority; never the summary or the body (reading
-  // what people wrote is Max's call). The cause is read from the recipient's state now, not at the send.
+  // what people wrote is the operator's call). The cause is read from the recipient's state now, not at the send.
   undelivered(since: number) {
     const t = this.now();
     const rows = this.db.query(
@@ -4111,7 +4111,7 @@ export class Hub {
     const why = (r: (typeof rows)[number]): string => {
       const c = cause(r);
       if (r.priority !== "low" || !/present|does not wake|hooks did not|without a wake-up/.test(c)) return c;
-      // News waits by design; a question or request at low priority is the sender's mistake (Max, 2026-11-04).
+      // News waits by design; a question or request at low priority is the sender's mistake (2026-11-04).
       return ["note", "status"].includes(r.type) ? `low priority, waits for the reader's next step (by design); ${c}`
         : `${/^[aeiou]/.test(r.type) ? "an" : "a"} ${r.type} sent at low priority to an idle reader: nothing wakes it (should have been normal); ${c}`;
     };
@@ -4182,7 +4182,7 @@ export function iso(ms: number): string {
 
 // A time in text for people and models: the hub's zone (AXOS_TZ, else the system's), to the minute, zone named.
 const ZONE = process.env.AXOS_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
-// The reset a usage-limit line names, e.g. "You've hit your Fable limit · resets Nov 24, 3am (UTC)" or "resets 7:30pm
+// The reset a usage-limit line names, e.g. "You've hit your usage limit · resets Nov 24, 3am (UTC)" or "resets 7:30pm
 // (Europe/Berlin)": a time within the next eight days, or null when the line names none that can be read.
 export function parseReset(text: string, now: number): number | null {
   const m = /resets\s+(?:([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([^)]{1,40})\))?/i.exec(text);

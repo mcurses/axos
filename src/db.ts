@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS leases (
   project       TEXT NOT NULL,
   resource      TEXT NOT NULL,
   holder        TEXT NOT NULL,
-  mode          TEXT NOT NULL,                 -- 'exclusive' | 'shared'
+  mode          TEXT NOT NULL,                 -- always 'exclusive' (shared leases retired in 0.26.7)
   note          TEXT NOT NULL DEFAULT '',
   ttl_s         INTEGER,                       -- what it was granted for; a renewal without ttl_s extends by this
   granted_at    INTEGER NOT NULL,
@@ -380,7 +380,7 @@ function migrate(db: Database): void {
   column("login_links", "read_only", "INTEGER NOT NULL DEFAULT 0");
   column("asks", "action_json", "TEXT");
   column("asks", "decision_json", "TEXT");
-  // The main seat's description no longer carries meum's instruction (meum's own hook says it, 2026-11-05).
+  // The main seat's description no longer carries a terminal app's instruction (that app's own hook says it, 2026-11-05).
   if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roles'").get()) db.exec("UPDATE roles SET description = substr(description, 1, instr(description, '. As main, keep the project''s meum') - 1) WHERE instr(description, '. As main, keep the project''s meum') > 0");
   column("roles", "open", "INTEGER DEFAULT 0");
   column("sessions", "tree", "TEXT");

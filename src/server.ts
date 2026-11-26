@@ -280,7 +280,7 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
     if (!v || body.stop || !older(v, PLUGIN) || told.has(`${session}|${PLUGIN}`)) return "";
     told.add(`${session}|${PLUGIN}`);
     // Addressed to the agent, at session start only (the hook's context, never the wake-up channel, which the person
-    // sees): Max, 2026-11-05, "I'd rather have my agent tell me 'hey, there's a new axos, want me to update?'".
+    // sees): 2026-11-05, "I'd rather have my agent tell me 'hey, there's a new axos, want me to update?'".
     return `AXOS: a newer AXOS plugin (${PLUGIN}) exists than the one this session runs (${v}). Tell your human once, in one ` +
       "sentence, and offer to update it; on their yes run `claude plugin marketplace update axos && claude plugin update axos@axos` " +
       "(new sessions get it; this one keeps its skill until it restarts). If `claude plugin list` also shows axos at project scope with an " +
@@ -321,7 +321,7 @@ async function handleHook(hub: Hub, req: Request, agent: AgentRow, conn: Connect
               shown.map((e) => `- ${e.when ? defang(quotedPeer(e.when, 120)) : "(no condition written: read the line)"} \u2192 role:${e.project}/${e.role}`).join("\n") +
               (list.length > shown.length ? `\n- ${list.length - shown.length} more: the projects tool` : "");
           })(hub.liveEntriesOf(agent.human)),
-          // The main seat's duty (Max, 2026-11-03, through the suite owner 2667).
+          // The main seat's duty (2026-11-03, through the suite owner 2667).
           held.includes(mainRole(agent.human))
             // The workspace's icon and colour are the workspace tool's to ask for, of every session there (since 2026-11-24).
             ? `You hold this project's main seat (${mainRole(agent.human)}): calls for ${agent.human} in this project (role:main) come to this session.`

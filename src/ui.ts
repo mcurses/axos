@@ -23,7 +23,7 @@ const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inl
 
 // "iPhone, Safari" from a user agent, for the person's own list of logins; never shown to anyone else.
 function deviceLabel(ua: string): string {
-  // A program that names itself (vinea's axos-bridge logs in as one of the person's devices) is listed by that name.
+  // A program that names itself (a dashboard app's bridge logs in as one of the person's devices) is listed by that name.
   if (!ua.startsWith("Mozilla/") && /^[A-Za-z][\w .\/-]{0,39}$/.test(ua)) return `program: ${ua}`;
   const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Mac OS/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "device";
   const app = /Firefox/.test(ua) ? "Firefox" : /Edg\//.test(ua) ? "Edge" : /Chrome/.test(ua) ? "Chrome" : /Safari/.test(ua) ? "Safari" : "browser";

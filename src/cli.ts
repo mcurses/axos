@@ -296,7 +296,7 @@ Next: a project for a repo: axos project add ${name}/<name> --repo <git address>
       out("ok");
       return;
     }
-    // The first project with each of the others (Max, 2026-11-03: `project link max/enseble max/axos max/vlow max/vinea`
+    // The first project with each of the others (2026-11-03: `project link a/one a/two a/three a/four`
     // linked only the first two and said nothing of the rest). Every name is checked before anything is linked.
     case "project link": {
       need(2);

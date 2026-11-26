@@ -491,10 +491,8 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       remind_hours: z.number().min(0.25).max(168).optional().describe("Push the question once more after this many hours if it is still open"),
       kind: z.enum(["decide", "hands", "taste"]).optional().describe("decide: a choice only they may make; hands: an act only they can do (a login, a tap, a command on their machine); taste: their preference"),
       recommend: z.string().optional().describe("Your proposed answer, one line; shown first on the page and phone"),
-      on_silence: z.enum(["hold", "proceed"]).optional().describe("Retired (0.25.5): a deadline with default_answer proceeds, one without holds. Accepted and ignored for one release"),
       waiting_cost: z.string().optional().describe("One line: what waiting costs (what stays blocked, for whom)"),
       hands: z.string().optional().describe("For kind hands: the exact command or act, and where (which machine, which page)"),
-      check: z.string().optional().describe("Retired (0.25.5): keep your own check; settle with withdraw_ask. Accepted and ignored for one release"),
       images: z.array(z.string()).max(4).optional().describe(
         "Up to 4 images shown with the question on their page (a screenshot, a diagram): paths of PNG, JPEG, GIF or WebP files " +
         "inside your repo, up to 5 MB each; the AXOS plugin uploads them. Kept 30 days."),
@@ -530,20 +528,17 @@ export function buildMcpServer(hub: Hub, agent: AgentRow, conn: Connection = {},
       ].filter(Boolean);
       const d = decisionOf(a);
       const state = a.answer !== null
-        ? a.answered_by?.startsWith("check") ? `${a.answer} (${when(a.answered_at!)})`
-        : a.answered_by?.startsWith("default") ? `the default applied ${when(a.answered_at!)}: ${a.answer}`
+        ? a.answered_by?.startsWith("default") ? `the default applied ${when(a.answered_at!)}: ${a.answer}`
           : a.answered_by?.startsWith("withdrawn") ? `withdrawn ${when(a.answered_at!)}: ${a.answer}` : `answered ${when(a.answered_at!)}: ${a.answer.split("\n")[0]}`
         : a.deadline && a.default_answer === null ? `open, holds if unanswered by ${when(a.deadline)}${a.stale_at ? " (date passed)" : ""}`
         : a.stale_at ? "open, stale (no answer for days)" : a.deadline ? `open, default "${a.default_answer}" at ${when(a.deadline)}` : "open";
-      const check = "";
-      return `- ask ${a.id} to ${a.human}${d.kind ? ` (${d.kind})` : ""}: ${a.question.split("\n")[0]!.slice(0, 120)}\n  ${state}; ${steps.join(", ")}${check}`;
+      return `- ask ${a.id} to ${a.human}${d.kind ? ` (${d.kind})` : ""}: ${a.question.split("\n")[0]!.slice(0, 120)}\n  ${state}; ${steps.join(", ")}`;
     }).join("\n");
   }));
 
   server.registerTool("withdraw_ask", {
     description: "Settle your own open question without an answer because it was decided elsewhere (in a chat, a file, by events): it leaves the human's page and phone, the reminder stops, and asks shows it as withdrawn with your reason. Only the asker (its session, agent or role) can.",
-    inputSchema: strict({ ask_id: z.number().int(), reason: z.string().describe("One line: where it was settled, e.g. 'answered in chat at 10:09'"),
-      resolved_by_check: z.boolean().optional().describe("Retired (0.25.5): accepted and ignored for one release") }),
+    inputSchema: strict({ ask_id: z.number().int(), reason: z.string().describe("One line: where it was settled, e.g. 'answered in chat at 10:09'") }),
   }, tool(({ ask_id, reason }) => {
     hub.withdrawAsk(agent.id, ask_id, reason, conn.session);
     return `Ask ${ask_id} withdrawn: ${reason}. It is off the human's page and phone.`;

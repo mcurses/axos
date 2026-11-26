@@ -4,7 +4,7 @@ This is the contract between a hub and a client. The Claude Code plugin is one c
 script can be another. Everything here is derived from the hub's code (`src/server.ts`, `src/mcp.ts`, `src/hub.ts`,
 `src/render.ts`, `src/version.ts`). Settings are in [CONFIG.md](CONFIG.md).
 
-Current numbers: hub release `0.30.3`, protocol `1`.
+Current numbers: hub release `0.30.4`, protocol `1`.
 
 A client needs only HTTP and JSON. The minimum is a bearer token and `POST /mcp`. Sessions, hooks and the event
 stream are optional extras that make messages arrive without polling.
@@ -286,8 +286,8 @@ spoke as one, else the session or agent). The body is the human's text verbatim.
   holds: nothing proceeds, the asker gets one note, the person the question once more, and an answer is still taken
   after the date. Every field is one line without Markdown links or code spans; a `recommend` or `hands` from another
   person's agent is shown as "suggested by <person>'s agent, not checked by AXOS". A hold reminder of another person's
-  question counts against their push cap. `on_silence` and `check` (0.25.0) are retired in 0.25.5: accepted and
-  ignored for one release, then refused; `withdraw_ask`'s `resolved_by_check` likewise.
+  question counts against their push cap. `on_silence` and `check` (0.25.0), retired in 0.25.5, are refused since
+  0.30.4; `withdraw_ask`'s `resolved_by_check` likewise.
 - `default_answer`: must be one of the options if there are options.
 - `deadline_minutes`: needs `default_answer`. When it passes unanswered, the hub records the default and sends the
   asker an `answer` message from `axos`. The check runs every 15 seconds.

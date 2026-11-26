@@ -655,6 +655,9 @@ test("an argument a tool does not take is refused, not dropped; send defaults it
   expect(wrong.isError).toBe(true);
   expect(wrong.text).toContain("unknown argument message; this tool takes project, to, type, summary, body,");
   expect(wrong.text).toContain(". The text goes in body");
+  // Arguments retired in 0.25.5 are refused since 0.30.4, as PROTOCOL says.
+  expect((await call(c, "ask_human", { human: "alice", question: "Ship it?", on_silence: "hold" })).text).toContain("unknown argument on_silence");
+  expect((await call(c, "withdraw_ask", { ask_id: 1, reason: "settled", resolved_by_check: true })).text).toContain("unknown argument resolved_by_check");
   const before = hub.inbox(`agent:${ids.dev3}`, { unreadOnly: false, limit: 100 }).length;
   expect(hub.inbox(`agent:${ids.dev3}`, { unreadOnly: false, limit: 100 })).toHaveLength(before);
   const sent = await call(c, "send", { to: "agent:alice/dev3", body: "Use the small fixture.\nThe large one is stale since Monday." });
@@ -1441,7 +1444,7 @@ test("axos use connects every checkout of a remote on this machine, writes nothi
     expect((config().folders ?? []).filter((f: { path?: string }) => f.path === bare)).toEqual([{ path: bare, project: PLAIN2, name: "alice/plain-two", born: expect.any(String) }]);
 
     // A connected folder moved or renamed with mv keeps its project; the rule follows it (Max, 2026-11-03: atrium →
-    // Ensemble left the folder unconnected).
+    // a suite owner left the folder unconnected).
     const renamed = join(dir, "Renamed");
     renameSync(bare, renamed);
     mkdirSync(join(renamed, "deep"));
@@ -1821,7 +1824,7 @@ test("the login form: a password set on the page logs a device in; a cross-site 
   expect((await change({ password: "a thief's new password", current: "wrong" })).status).toBe(400);
   expect((await change({ password: "the owner's new password", current: "a long enough password" })).status).toBe(200);
   expect((await form({ name: "alice", password: "the owner's new password" })).status).toBe(200);
-});
+}, 30_000); // argon2id hashes take seconds on a busy machine
 
 test("share and link from the page: the asked person joins or links on theirs, the asker's phone hears; a machine makes a project", async () => {
   const login = await fetch(`${base}/ui?key=${uiKey}`, { redirect: "manual" });
@@ -2088,7 +2091,7 @@ test("a session started while the hub is away still gets its tools: the handshak
     const reader = proxy.stdout.getReader();
     let buf = "";
     const out: { id: number }[] = [];
-    const until = Date.now() + 15_000;
+    const until = Date.now() + 40_000; // a busy machine starts bun slowly; the loop ends as soon as both answers are in
     while (out.length < 2 && Date.now() < until) {
       const chunk = await Promise.race([reader.read(), Bun.sleep(200).then(() => null)]);
       if (chunk && chunk.value) buf += new TextDecoder().decode(chunk.value);
