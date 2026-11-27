@@ -369,6 +369,11 @@ test("the plugin's hooks: start orients in a few lines, check shows new messages
   hub.setEntry("alice", side, "keeper", "Side notes go here.", "a side note turns up");
   const passed = await call(dev1, "send", { project: "shop", to: "role:alice/side/keeper", summary: "A side note turned up." });
   expect(passed.text).toContain("is on alice's list of who handles what");
+  // A holder in another project is not named, and the text still reads (it said "held by connected" until 0.30.5).
+  const keeper = hub.openSession(ids.dev3!, { client_session: "5e5e5e5e-1111-2222-3333-444444444444", project: side, name: "side-1" });
+  hub.claimRole(ids.dev3!, side, "keeper", undefined, keeper);
+  expect((await call(dev1, "send", { project: "shop", to: "role:alice/side/keeper", summary: "Another side note." })).text).toMatch(/role:alice\/side\/keeper \(held, (connected|away)\)/);
+  hub.endSession(keeper);
   const sentId = Number(passed.text.match(/Sent message (\d+)/)![1]);
   expect((await call(dev1, "send", { project: "shop", re: sentId, to: "role:alice/side/keeper", summary: "One more detail on it." })).text).not.toContain("list of who handles what");
   hub.setEntry("alice", side, "keeper", "");

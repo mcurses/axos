@@ -2800,7 +2800,7 @@ export class Hub {
     return {
       id,
       duplicate: false,
-      delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => masked.has(r) ? `a role of ${masked.get(r)!.who}'s (${holderText(r)})` : r.startsWith("role:") ? `${r} (held by ${holderText(r)})` : r),
+      delivered_to: [...recipients.keys()].filter((r) => !vacant(r)).map((r) => masked.has(r) ? `a role of ${masked.get(r)!.who}'s (${holderText(r)})` : r.startsWith("role:") ? `${r} (held${outsideRole(r) ? ", " : " by "}${holderText(r)})` : r),
       waiting_for_role: [...recipients.keys()].filter(vacant),
       not_sent: notSent,
       unattended: [...redirected, ...unattended, ...stale, ...scripts, ...sendOnly, ...many, ...takenNote, ...toMain, ...cappedLines],
